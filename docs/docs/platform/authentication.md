@@ -83,7 +83,7 @@ For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Agent.
 
 The Auto-Optimize pipeline runs as a Lakeflow Job — a long-running, multi-task DAG. Lakeflow Jobs execute in a separate environment with a fixed `run_as` identity. There is no mechanism to forward the user's short-lived OAuth token into a background job that may run for minutes.
 
-The job is configured to `run_as` the app's SP. At startup, `_ensure_gso_job_run_as()` in `backend/main.py` verifies and updates the job's `run_as` to match the current app SP.
+The job is configured to `run_as` the app's SP by the deployer. At startup, `_verify_gso_job_run_as()` in `backend/main.py` verifies the job's `run_as` and never updates it: a readable, wrong `run_as` fails app boot, and an unreadable one leaves the app up but makes `POST /api/auto-optimize/trigger` return 503 until a per-trigger re-check succeeds. See [Job `run_as` Verification](/docs/platform/operations#job-run_as-verification).
 
 #### 3. GSO Delta table operations
 
@@ -98,7 +98,7 @@ When a user triggers Auto-Optimize, the app uses **both** identities in a carefu
 flowchart TB
     subgraph r1 [" "]
         direction LR
-        click(["User clicks Optimize"]) --> trigger["POST /api/auto-optimize/trigger"] --> s1["1 · user_can_edit_space (OBO)<br/>verify CAN_EDIT / CAN_MANAGE<br/>— reject if unauthorized"]
+        click(["User clicks Optimize"]) --> trigger["POST /api/auto-optimize/trigger"] --> s1["1 · require_space_access (OBO)<br/>Genie answers: Can Edit?<br/>— reject if not"]
     end
     subgraph r2 [" "]
         direction LR
@@ -181,16 +181,30 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 |-----------|----------|---------------|-----------|
 | Browse Genie Agents, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
 | GenieWatch traffic-gap analysis | OBO only, no SP fallback | `watch/routers/traffic_gaps.py` `require_obo_workspace_client()` | Conversation traffic requires `CAN_MANAGE`; SP fallback would leak other users' questions |
-| Genie API — fetch/list agents | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
+| Genie API — fetch a gated agent's configuration | OBO (user) only | `services/genie_client.py` `get_genie_space` / `get_serialized_space` | Strict OBO; no SP retry on a gated path |
+| Genie API — list agents for the space list | OBO (user) | `routers/spaces.py` `list_genie_spaces(sp_fallback=False)` | Genie filters the list to the caller |
+| Admin dashboard, leaderboard and alerts | OBO (user) | `routers/admin.py` `list_genie_spaces(sp_fallback=False)` | Counts and alerts cover the agents the caller can see; an alert's finding is its viewer-safe form; a listing failure is an error |
 | Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
-| Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
+| Create Agent — new chat session on an existing space | OBO (user) | `routers/create.py` `POST /api/create/agent/chat` | Can Edit when `body.space_id` pre-seeds a new session |
+| Trigger optimization — permission check | OBO (user) | `backend/services/space_access.py` `require_space_access()` | Genie answers under the user's token; no SP fallback |
+| Auto-Optimize reads that expose configuration | OBO (user) | `routers/auto_optimize.py` `require_space_access` / `_require_run_space_access` | Can Edit (MV-D110): proposals, semantic graph, join advice, mv-ddl, mv-created, run detail |
+| Run status, run list, and active-run badge | OBO (user) | `routers/auto_optimize.py` | Can View on the run's agent |
+| Auto-Optimize writes and metric-view routes | OBO (user) | `routers/auto_optimize.py` | Can Edit; create-and-attach asks Can Edit again in the probe, which downgrades |
+| Run apply / discard / revert / history removal | OBO (user) | `routers/auto_optimize.py` `_require_run_space_access()` | Can Edit on the run's agent |
+| Space detail, history, and star | OBO (user) | `routers/spaces.py` | Can View; below Can Edit the stored scan's findings, warnings, and check details appear only in the scorer's count-only forms (`viewer_safe_text()` in `iq_scan/scoring.py`, applied by `services/scanner.py` `redact_for_viewer()`), and anything else is blanked; history carries score, maturity, accuracy, and time only |
+| IQ Scan | OBO for the space; SP for GSO run data | `routers/spaces.py` scan; `services/scanner.py` | Can Edit (the scan reads the export); the GSO run lookup (Lakebase, then Delta) runs as the SP |
+| `/api/space/fetch` | OBO (user) | `routers/analysis.py` fetch | Can Edit (the fetch reads the export) |
+| Version history list and tags | OBO (user) | `services/version_control/space_authz.py` `authorize_space()` | Can View on the agent |
+| Version detail, diff, capture, restore, tag writes | OBO (user) | `space_authz.py` `authorize()` / `authorize_space()`; live read/write in `routers/vc_spaces.py` | Can Edit; the live read and write run under the user's token, with no SP fallback |
+| The user's access level, for the UI | OBO (user) | `routers/spaces.py` `GET /api/spaces/{space_id}/access` | Genie answers once per agent page; below Can Edit the page shows the score, runs and history read-only, and sends no request that needs Can Edit. The highest level it reports is Can Edit, because the app's user token can't prove Can Manage, so a manager reads as Can Edit |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
-| Optimization job execution (4-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
+| Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
 | Lakebase persistence | SP | `services/lakebase.py` | App-level storage, not user-scoped |
-| IQ Scan | OBO (user) → SP for GSO data | `services/scanner.py` | Space fetch via OBO; GSO run data via SP |
-| Apply optimization results | OBO (user) | `routers/auto_optimize.py` `/runs/{id}/apply` | Changes applied under user identity |
+| GenieWatch space reads and listings | OBO → SP fallback (flagged) | `watch/services/genie_client.py` `get_genie_space_with_sp_fallback` and `list_genie_spaces()` (default `sp_fallback=True`), called from `watch/routers/*.py` | Outside MV-D109; keeps the scope fallback |
+
+Space configuration reads and writes on user paths run as the user, with no service-principal fallback. That includes the Create Agent's `update_space` tool: the model chooses the space, so Genie's Can Edit check on the user's token is the authority for the write. Flagged exceptions keep an SP fallback: GenieWatch space reads and listings (scope fallback) and new-agent creation in `genie_creator.py` (`create_genie_space` uses the OBO-first client, which falls back to the SP when no user token is set, and the post-create list lookup also retries as the SP on an OAuth scope error).
 
 ## Security Considerations
 

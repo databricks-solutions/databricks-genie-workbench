@@ -1,0 +1,6515 @@
+# Cursor Prompt Playbook — Building the Metric View Advisor in Genie Workbench
+
+*A sequenced set of Cursor prompts that take the POV document from design to a tested, PR-ready feature branch in `databricks-solutions/databricks-genie-workbench`. One prompt ≈ one reviewable commit. Run them in order; each prompt's output is the next prompt's input.*
+
+> **Custody.** From this commit forward, this in-repo copy is the canonical playbook and the canonical MV-D register. Any external copy is downstream: reconcile it to this file, never the reverse.
+
+---
+
+## Before you start (manual steps, 10 minutes)
+
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D35 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+   ```bash
+   git checkout main && git pull
+   git checkout -b feature/metric-view-advisor
+   mkdir -p docs/design
+   cp metric-view-suggestion-engine-pov.md docs/design/
+   cp cursor-prompt-playbook-mv-advisor.md docs/design/mv-advisor-playbook.md
+   git add docs/design && git commit -m "docs: metric view advisor design POV + build playbook"
+   ```
+   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D10**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
+2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. *(This needs a `.gitignore` change, done in the Prompt 1 follow-up: the repo ignored `.cursor/`, so the in-repo copy was just as unversioned as a workspace-root one. `.gitignore` now reads `.cursor/*` plus `!.cursor/rules/`, because a re-include cannot reach inside an excluded parent directory.)* This keeps every prompt honest without repeating the guardrails each time:
+
+   ```
+   ---
+   description: Non-negotiables for the metric view advisor feature
+   alwaysApply: true
+   ---
+   Paths below are under databricks-genie-workbench/ from this workspace root.
+   Repo reality (and the gap report) wins over older POV wording. Do not
+   revive taskValues, condition tasks, run_if, extra job tasks, or a second
+   eval adapter.
+
+   READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
+   - Before modifying ANY file, you must first output a PLAN section containing:
+     (1) the exact file paths you intend to modify or create,
+     (2) for each existing file, a quoted excerpt of the CURRENT code at the
+         location you will change (read it fresh in this session — do not rely
+         on memory of a previous session),
+     (3) every existing function, class, endpoint, table, task_key, or config
+         key you intend to call or extend, each with the file:line where it is
+         defined today.
+   - If any item in (3) cannot be located in the current codebase, STOP after
+     the PLAN and report it as a blocker. Do not scaffold a stand-in.
+   - If the PLAN contradicts docs/design/mv-advisor-gap-report.md or the POV
+     doc, STOP and report the contradiction before editing.
+   - After edits, output a VERIFY section: run the test suite and linter for the
+     touched packages, and confirm (by search) that every symbol you referenced
+     exists and every symbol you defined is exported/registered the way this
+     repo registers it (router inclusion, entrypoint table, migration list).
+   - ABSENCE claims require a positive control. Any "X does not exist in this
+     repo" check must run from the repo root and first confirm a known-present
+     sentinel (e.g. databricks.yml) resolves from the same working directory.
+     An absence check whose positive control fails is void — rerun it, do not
+     report it.
+   - VERIFY includes `git status`. Run Python tooling with a frozen lockfile
+     (`uv run --frozen` or equivalent); the working tree after VERIFY must be
+     clean apart from the intended changes. A dirtied uv.lock is a finding to
+     report, never a file to commit.
+   - Context discovery stays inside the repository. Do not read files outside
+     the repo (home directories, ~/Downloads, other checkouts) unless the
+     prompt names them explicitly.
+   - RULES COPIES: exactly two exist — .cursor/rules/mv-advisor.mdc in this
+     repo and the fenced block in docs/design/mv-advisor-playbook.md — and they
+     are kept byte-identical. Any third copy found outside the repository (a
+     workspace-root .cursor/, another checkout) is stale by definition: report
+     it, do not read it as guidance.
+
+   FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
+   - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
+     AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
+     the gap report wins.
+   - Never invent API endpoints, table names, task names, wheel entrypoints,
+     or config keys. Read existing code first. If a name is not in the repo,
+     ASK.
+   - The GSO job is a LINEAR FOUR-TASK NOTEBOOK DAG: intake_and_snapshot →
+     benchmark_qc_and_repair → optimize → publish_and_audit. Do NOT add tasks,
+     condition tasks, run_if edges, or wheel entry points. GSO v2 playbook decision D9 (a different D-namespace from this playbook's
+     MV-D numbering) and test_phase7_job_dag.py forbid condition tasks and
+     taskValues — respect the
+     tests, do not delete or weaken them.
+   - Cross-task and cross-phase state passes through Delta tables keyed by
+     run_id (genie_opt_* via optimization/ddl.py). NEVER dbutils.jobs.taskValues.
+     SCOPE (MV-D23): this governs state passing INSIDE the job. It does not make
+     run_id the only legitimate key on the MV tables. genie_opt_mv_candidates is
+     partitioned by target_space_id precisely because a candidate outlives the run
+     that proposed it (MV-D7), and wh_load_mv_candidates already reads by
+     target_space_id or run_id. A space-keyed READ of metric-view state is correct
+     and is not a violation of this rule.
+   - Job parameters are read with dbutils.widgets. Any new parameter is added
+     IN LOCKSTEP to all three job-definition mirrors — root databricks.yml,
+     packages/genie-space-optimizer/databricks.yml, and
+     scripts/deploy_lib/gso_job.py — plus backend/job_launcher.py's run_now map.
+     A parameter present in fewer than all four places is a bug.
+   - Metric-view code inside the job runs as GATED PHASES within the existing
+     optimize task, each wrapped in try/except; on failure, persist a status
+     row to Delta and let the optimization continue. Never raise across the
+     phase boundary.
+   - All benchmark eval calls go through the EvalRunner seam in
+     optimization/eval_runner.py (OfficialBenchmarkRunner). No second adapter,
+     no raw SDK eval calls anywhere else.
+   - Patches are dicts with type/target/new_text/old_text, registered in
+     PATCH_TYPES (common/config.py) and allowlisted in unified_loop. New MV
+     patch types must implement a REAL applier action that mutates
+     data_sources.metric_views — the current Lever-2 MV path renders then
+     no-ops at config level, and that no-op is the bug this feature fixes.
+   - Rollback is whole-snapshot revert (integration/revert.py). Detach-on-
+     regression = snapshot revert. NEVER auto-drop the created UC object
+     outside sandbox mode; drop is an explicit backend OBO endpoint.
+   - The job runs as the SERVICE PRINCIPAL. Therefore the job NEVER executes
+     CREATE VIEW ... WITH METRICS. UC object creation happens ONLY in the
+     FastAPI backend under OBO (require_obo_workspace_client), against a
+     recorded consent. The job attaches (patch), measures, and
+     reverts — writes it already performs as SP today.
+     "AT TRIGGER TIME" IS NOT ONE OF THE INVARIANTS (MV-D23). Through Prompt 9 it
+     was the only moment a create could happen, so the rule read as though the
+     timing carried the safety. It does not. The four invariants are: the identity
+     (require_obo_workspace_client, which hard-fails — never the SP-tolerant
+     get_workspace_client), a recorded and freshly re-verified consent,
+     downgrade-never-upgrade on any mismatch, and the target being the consented
+     schema and nowhere else. A create initiated outside a run must satisfy all
+     four. Until MV-D23 is decided, do not build one — but do not treat the
+     timing as the reason.
+   - Do not reuse GET /permissions/{space_id} for entitlement: it probes the
+     SP's privileges, not the user's. The entitlement probe is new OBO code.
+   - On entitlement/consent mismatch, DOWNGRADE to suggest_only — never
+     upgrade, never fall back to a different schema.
+   - MLflow is decommissioned in GSO except tracing. No experiments, registry,
+     or judges. Grading comes ONLY from native benchmark eval runs.
+   - Backend routes live under the /api/auto-optimize router prefix; the
+     run-start endpoint is POST /api/auto-optimize/trigger with the inline
+     TriggerRequest model — extend it, never add a parallel start endpoint.
+   - Run artifacts persist to the genie_opt_artifacts Delta table, not a
+     Volumes path.
+   - Firewall: extend optimization/leakage.py for MV metadata/DDL rather than
+     writing a second scanner. No literals, sample values, or PII in shipped
+     metadata, DDL comments, or logs.
+   - Materialization is a separate consent (mv_materialize); never bundled.
+   - SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
+     metric VIEW bundling the measures of one grain, never one card per measure;
+     MEDIUM+ (and a curated, fact-passing LOW — MV-D100) surface by default,
+     other LOW behind explicit disclosure, and a proposal
+     with no proposed_object never renders; a proposal whose body predates the
+     current renderer surfaces only as a labelled re-scan notice — never with
+     DDL, validated/executable facts, or a create or claim action (MV-D117);
+     no proposal surfaces without a
+     servable DDL body (a render failure is loud in the run outcome, never a
+     silent gate); every surfaced card carries its
+     justification (measures, evidence counts, gain); EMPTY states are variant-
+     specific (already-governed / nothing-recurring / no-corpus), never one
+     generic shrug; results hydrate from persisted candidates on mount and are
+     never lost to navigation; long operations show staged progress and report
+     where they stopped on failure. A visualization must never crash the page —
+     error boundaries are mandatory on graph surfaces.
+     FACTS LEAD, THE SCORE RANKS (MV-D35): quality is binary and gated — a card
+     leads with the proven checks (validated / executable / no-overlap), each
+     wired to the gate that proved it; the numeric score orders the list and
+     picks one Recommended (or the orthogonality callout when all are
+     independent) and is NEVER displayed as a percent or the word "confidence".
+     Both suggestion surfaces (IQ panel and run-output panels) render through
+     SHARED components — one card, one accept flow, one display module — so a
+     fix on one surface is a fix on both by construction.
+   - CONTRACT SWEEPS ARE GREP-VERIFIED, NOT TEST-VERIFIED (from the fourth-look
+     autopsy: MV-D35 landed on the card and not the list chrome; the ACL grantee
+     landed in the consent modal and not the card DDL; a contract applied to one
+     call site and not its sibling passed every component test). When a prompt
+     changes a CONTRACT — a forbidden string, a required affordance, a resolved
+     value, a shared component — its VERIFY must include a repo-wide grep whose
+     output is pasted in the report, proving ZERO residual violations across
+     every surface, including list/section/disclosure chrome, empty states, and
+     the sibling surface. "The component is fixed" is not the contract; "no
+     instance of the violation remains in the repo" is. Chrome is surface.
+   - TERMINAL UI STATES MUST BE EARNED. A component that renders a
+     post-action state (approved / created / done) initializes that state ONLY
+     from a persisted record of the user's own action. Deriving a success state
+     from an ambient default, a null decision, or a server field that means
+     something adjacent is a defect of the worst kind: it tells the user they
+     did something they did not, and it MASKS the action it replaces.
+   - FIDELITY GATE (from the third-smoke process autopsy — three waves of
+     green-tested patches missed the experience): any prompt that changes a
+     user-facing surface must, in its VERIFY, export the changed surface states
+     through the mockup emitter (both themes) and attach them to the report
+     next to the approved reference frames; the reviewer compares them and
+     adversarially re-greps every numbered spec item before accepting.
+     Structural tests green is NOT acceptance. An approved mockup is a visual
+     CONTRACT: implementation matches its default-view density and layout, or
+     the deviation is called out in the report with a reason — never
+     discovered by the reviewer in the deployed app.
+   - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
+     API — they are created in the Discover UI. Never invent a Pages endpoint.
+     The workbench emits copy-ready Page drafts (manual paste) and API-writes
+     ONLY text_instructions, under OBO with diff preview and explicit consent,
+     never auto-applied. The GSL instruction schema
+     (docs/docs/platform/gsl-instruction-schema.md) is authoritative for every
+     instruction write; single text_instruction; respect the length budget.
+   - Web enrichment in Page drafts is BEST-EFFORT and labeled: "informational,
+     as of DATE — not certified" plus a Sources list, or the section is absent.
+     A failed search never blocks a suggestion and never hangs a route. All LLM
+     calls go through llm_utils.call_serving_endpoint with
+     model_catalog.validate_chat_model — no second client. Benchmark question
+     text never lands verbatim in a Page draft or instruction delta (extend
+     LeakageOracle, no second scanner).
+   - GAP-REPORT FRESHNESS (MV-D9): the gap report outranks the POV, so a stale
+     quote there actively misleads. Any commit that changes something the gap
+     report quotes or counts — _ALL_DDL membership, task keys, patch shape,
+     router paths, parameter lists, file:line anchors — MUST refresh the
+     affected gap-report sites in the SAME commit, re-quoting live code rather
+     than editing the prose around it. Every PLAN that touches such a surface
+     states which gap-report sites it will refresh, or asserts none apply.
+   - LIVE CLAIMS vs FROZEN TRANSCRIPTS: prompt bodies for already-executed
+     prompts are historical records — do not retrofit them when facts change.
+     Statements outside those bodies (headings, register preamble, custody
+     notes, rules, gap-report quotes) are live claims and must be refreshed
+     under MV-D9. When in doubt, ask rather than edit a transcript.
+   - CITE DOCUMENTS BY SECTION, CODE BY FILE:LINE. Never cite another design
+     document by line number — doc line anchors rot on every edit and each
+     rot costs a reconciliation pass. Use section headings or quoted phrases.
+     file:line into source code is required and unchanged.
+   - DOC FREEZE: no further doc-only commits on this branch. Playbook, POV,
+     and gap-report changes ride inside the code commit that made them
+     necessary (MV-D9 already requires same-commit gap-report refresh).
+     Exception: a factual error that would misdirect the next prompt.
+   - METRIC VIEW BEST PRACTICES: before authoring or reviewing metric view YAML,
+     joins, level-of-detail semantics, validation queries, or Genie-facing MV
+     metadata, read the skills under
+     /Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+     — SKILL.md plus references/ (yaml-reference, advanced-patterns,
+     composability-patterns, level-of-detail, querying-metric-views,
+     validation-checklist, validation-queries, implementation-workflow) and
+     scripts/validate_metric_view.py. This is a standing NAMED EXCEPTION to the
+     in-repository context rule above, and the only one. It is external,
+     machine-local guidance: it informs generated YAML and validation but never
+     outranks repo reality, the gap report, or MV-D8 below. If the path is not
+     present on this machine, proceed without it — do not block, and do not
+     substitute a different checkout.
+   - GENERATED YAML conforms to the generation quality standard in POV Part 4
+     (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
+     window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
+     nested joins only on DBR>=17.1 with profiling-proven 1:1 keys ->
+     subquery-source fallback); NEVER a flat sibling join referencing another
+     join alias; SCD2 joins carry is_current=true; rely.at_most_one_match only
+     with proven uniqueness; format types from the closed set (percentage not
+     percent, number not decimal); additive measures aggregate fact columns.
+   - MV comments use the structured format (PURPOSE/BEST FOR/NOT FOR/...).
+     BEST FOR lines are PARAPHRASED intents — verbatim benchmark question text
+     in any shipped MV metadata contaminates the benchmark and is a firewall
+     violation, same class as literals/PII.
+   - Updates to an existing metric view use ALTER VIEW ... AS $$...$$, never
+     CREATE OR REPLACE or drop+create (replace deletes UC grants).
+   - Post-create: DESCRIBE EXTENDED must show Type: METRIC_VIEW. Validation
+     queries use MEASURE(`name`) with GROUP BY — never SELECT *, never a
+     re-typed aggregate. Fan-out smoke test on every join.
+   - Every new module ships with pytest tests in the same PR-sized commit.
+     The repo has NO test CI — run the suites locally and report results in
+     every VERIFY section.
+
+   - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
+     `uv run --frozen --extra dev`. Expected baseline: 1697 backend + 2221 GSO,
+     measured 2026-10-02 (this supersedes the prior 1697 + 2216 floor, measured 2026-10-02). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). +16 backend / +57 GSO at M6c (MV-D118: the exception type only in the rollback compensation error and the pre-deploy, post-deploy and revert outcomes, with the measured fields kept after the measurement; the net-suite detach, the even-suite keep, the `delta_suite` diagnostic and the flipped outside-the-subset wash; the widened matcher's unqualified-SQL, other-table and no-candidate-tables pins and its per-key selection; either shelf blocking a second add, `pre_attached` on the stage row with its restart survival, loop hand-off and unmeasured-report skip, and the bring-your-own view with no candidate; the unconfirmed PATCH reverted on either shelf when it landed and left when it did not, an unreadable space counted as landed, a failed revert reported, a validation failure not unconfirmed, the real applier's raised PATCH read back and the loop's live reader; the baseline-reset parser, the remaining-failures count, the restart lookup, the attach trajectory step with its champion flag, and the residual count and audit context; the wide-schema re-plan after a kept attach and none after a detach; the status and run-detail headline, the attach stage read while the Jobs API answers, and the run-scores contract; the serialized `run` and the seam with no subset method, three `run_subset` tests removed; the uncovered-table refusal at run hook and approval with its name match, named skip and unreadable body; the drop's plain-name refusal and the level ladder that never asks MANAGE, net zero; and the stale-sibling drop on the run-keyed list and the semantic graph with the `/mv-ddl` current-row fallback. Vitest grew +13 to 685 — the score display, the m6c-a to m6c-d frames, the singular measure sentence and the latest probe answer — and is not counted in this floor). +6 GSO at the M6c final-review fix wave (MV-D118: a mixed kept attach and a mixed detach write only the applied view's row and name only it, and the affected subset drops the pre-attached view's own questions; the even-suite wash whose only regression is outside the subset; the bare no-FROM expression through the fallback; and `run` forwarding its ids and scope label. Vitest grew +1 to 686 — the m6c-d SQL block — and is not counted in this floor). +22 backend / +6 GSO at M7b (MV-D119: the scorer's viewer-safe forms with their every-emitted-string, no-dead-form, quoted-content, kept-count, outside-the-forms and literal next-step and check-label pins; the viewer scan's blank-in-place finding and warning that keep their remediation, the viewer-safe check details with labels kept, and the blank pre-rename wording; each admin route's listing under the caller's token, its 503 on a listing failure and 500 on a summary failure with no exception text, the count-only `top_finding` that skips text with no form, and the space the caller cannot list left uncounted; the detail route's concurrent reads after the View check; and the UTC stamps on a scan, an optimization run, join advice and the watch writes, with the no-`utcnow` source pin. Pytest warnings fell from 10 to 4. Vitest grew +21 to 707 — the single 404 retry after a create, the deep-link no-access state, the admin card's scope and the scope-neutral page subtitle, the m7b-a to m7b-c frames and the centred Return — then +2 to 709 at the M7b final-review fix wave — the App deep-link status pins (a 403 is the no-access state, a 500 is not) — and is not counted in this floor). +32 backend at M7c (MV-D120: the definition match's UC owner and an owner-less view that is not the caller's, and the existing-view helper's non-metric-view refusal and pass-through; the run hook's adoption of an owned matching view and refusal of someone else's, the failed CREATE recorded when its view exists and an `error` skip when it doesn't or its lookup raises, the landed ledger write kept, the proven absence dropped and the unreadable ledger kept, and neither an adopted view nor one found after a failed CREATE dropped when its record fails, with `unrecorded_kept` added to the existing skip-order pin and the CREATE, re-read, DROP order to the existing drop pin; approval's failed CREATE attached when its view exists, owned or not, and a reason when it doesn't, the post-create ledger failure a reason that keeps the view for each write, the fresh create with no owner, the warehouse `RuntimeError` a 500 and not a 401, and `grant_sql` for the owner only. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +30 to 739 — the confirm re-probe with no materialize flag, the owner named with no GRANT, the created terminal's copy, the debounced permission check, the prefill consume, the m7c-a and m7c-b frames, and the card detail's owner-gated GRANT on both surfaces — and is not counted in this floor). +9 backend at the M7c final-review fix wave (MV-D120 Ruling 21: a fresh view whose ledger write failed is kept and not attached when the re-read finds no row, with no DROP, CREATE on the OBO client and the ledger on the SP, where the two drop pins stood, and the `unrecorded` skip label is gone; the strict ledger re-read's present, empty, raising and `_wh_literal`-quoted pins; a view found after a failed CREATE that isn't the caller's is an `exists` skip, and a lookup that raises is logged by type only; approval's not-found reason for an absent view and a raising lookup, a refused view's own reason, the "found" wording on a ledger failure, and the existing-view helper's not-found answer. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +8 to 747 — the space in the probe key, an older probe's answer discarded while a newer timer waits, and the card GRANT after a degraded or refused create and beside a sibling's `USER_CREATED` create — and is not counted in this floor). +41 backend / +36 GSO at M7d (MV-D121: the run-scores contract's attach score when a lever wins, tied with the baseline, absent for another baseline or without a reset, with an empty reset `eval_run_id` and tied with enrichment, and the run list's stored champion accuracy; the status poll's attach stage read from Delta when Lakebase is off, none before a baseline and one when the Jobs API is down, and the run detail's attach score with its no-attach control; the failed revert's audit row, the applied-only settle log, a raised PATCH with an empty message read back, no error type not unconfirmed and the validation return's empty error type; `remove` in any case, from `tables`, and absent; the two log-firewall source pins over the metric-view modules, the applier's `apply_patch_set` and `rollback`, the metric-view services and routes, each with its glob control, seeded self-tests, type-only control and named-function check, and the type-only failed patch, rollback, advisor phase, hook, probe user and privileges row; the route source pin, the lift-row pin, the probe and register 500s and the probe's up-front OBO check; the unpinned `/mv-ddl` that falls back to its own proposal only; and the backtick-aware name split in the drop, coverage, a quoted consent securable, `_valid_uc_identifier` and register, with the hook's CREATE asserted and the re-plan's result checked. Pytest warnings stayed at 4. Vitest grew +14 to 761 — the full-scope-only baseline rule and the enrichment gain, the "Metric view attach" label, the chart's attach point after the baseline, the m7d-a frame and a stale probe that rejects after the latest answer — and is not counted in this floor). +7 backend / +2 GSO at the M7d final-review fix wave (MV-D121: a failed lineage or demand read logs its reason code and exception type only; the route pin lists `/mv/create`, `/mv-ddl` and the two DDL loaders, with a tripwire over every metric-view router path; the backend checker's drift guard against its GSO twin; and the dotted quoted names that are not three parts. Pytest warnings stayed at 4. Vitest stayed at 761 — `METRIC_VIEW_SCOPE` was removed with no importer — and is not counted in this floor). +40 backend / +63 GSO at M7e-1 (MV-D122: a `joins` value that is not a list adds no table, at the top level and nested, and a governed view with a numeric `joins` no longer fails the scan; colliding CONFLICT proposals named by table whatever the scan order, with the non-colliding control; a decided name kept by its own row, never taken by another proposal, held alone, kept when its partner leaves, advancing the ordinal and compared without case or backticks; a failed decided-names read that still renames and logs the type only; leaves that sanitize alike taking an ordinal; an undecided or NULL cell reserving no name; and the in-job and IQ-scan readers injected; the older undecided row of a view leaving the list, with approved, rejected, created and claimed rows kept and hiding nothing, the newest across timestamp types with its fingerprint tie-break, the name compared without case or backticks, every list site including the suggest and stream reloads and the semantic graph, the re-run gate unchanged, the ledger asked once and only about contested rows, a failed ledger read that drops nothing and logs the type only, no default lookup, and the timestamp parser; the created-ledger read's quoting, refused ids, empty input and raising read; the probe's backtick-aware split with its refuse and accept cases; no GRANT for a stored name `quote_fqn` refuses, on `/mv-ddl` too; the unreachable-rung pin's positional and `**kwargs` gaps with their pass controls; and the warehouse metric-view and join-advice reads that log the exception type only, with their named-function pin, seeded self-tests, list parity and behaviour pins. Pytest warnings stayed at 4. Vitest grew +19 to 780 — no ghost, no "View in graph", and no config preview or Lift label on a stale proposal; the summary that counts current proposals and each shared measure once, says how many need a re-scan and keys its items by suggestion id; and the m7e1-a to m7e1-c frames with the m6b-b and m6b-d pins — and is not counted in this floor). +14 backend / +25 GSO at the M7e-1 final-review fix wave (MV-D122: a created view's proposal keeps its name and a kept name its stored spelling, with the two-kept-rows, created-undecided, ledger-miss, missing-id and malformed-id pins; a failed candidates or ledger read that persists no CONFLICT proposal and records `CONFLICT_NAMES_UNREAD`, in the advisor, the in-job phase and the IQ scan, and leaves the bundles alone; both injections' strict reads; the Spark ledger twin's quoting, refused ids, empty input, raising read and empty answer, and both strict candidates reads; the rung pin's starred cases; the no-SP GRANT branch's refused and quoted names and the run list's single client; and the shared name-split case list, which replaces five entitlement cases. Pytest warnings stayed at 4, and vitest stayed at 780). +23 backend / +197 GSO at M7e-2 (MV-D123: the v1 identity map captured at 3e71d66f with its control and mover pins; the frozen v1 grouping with its import pin and its M8 docstring; the table resolver's three states with `same_fq_tables` and `fq_tables_overlap`; a derived-table or CTE row count that names no table, and an aliased table that answers only to its alias; grouping by the full names the space resolves, with `unresolved_table` checked first and the table-less sole-row rule; the dual read and the rekey `MERGE` with its validation, window, provenance and failure, the retired merged key, and a governed query source that governs nothing; demand per history row with its sole-row flag; the matcher over resolved tables; the continuity pins on approved and created v1 rows; and the table-aware semantic graph. Four baseline assertions were retired with named replacements (the capture reproduction, the merged key recorded at base, and the two merged-measure rejections), and seven tests changed behaviour (three Ruling 16 helper pins rewritten, and four renames or flips the brief directed). Pytest warnings stayed at 4. Vitest grew +10 to 790 — the m7e2-a frame, the chip-id helper, and the no-duplicate-key and chip-click pins — and is not counted in this floor). +1 backend / +9 GSO at the M7e-2 final-review fix wave (MV-D123: the matcher that selects no `COUNT(*)` over a CTE or a derived table, nor an unqualified statement over a table the space does not list, each with its listed-table control; one v1 key over two v2 halves handed to each rekey twin in two calls, with the replayed `MERGE` writing both copies; a table-less row and a join row beside history over two tables, counted toward a sole-row candidate and toward neither half otherwise; the claim that refuses a stored member key v2 cannot reproduce; the `Z`-suffixed stamp parsed as UTC; and the in-job caller's one fixed reason with no table list, with its with-config control. Pytest warnings stayed at 4, and vitest stayed at 790). +5 GSO at M7f Task 2b (FINDING-1: the subquery rung's natural depth-2 body with every `ON` column projected by its relation, checked by sqlglot, with the pre-fix body as the check's control; a depth-3 chain that projects each middle key; a child key also requested as an attribute, projected once; and a leaf relation unchanged byte for byte. Pytest warnings stayed at 4, and vitest stayed at 790). +31 backend / +37 GSO at the rest of M7f (MV-D124; with Task 2b, +31 backend / +42 GSO since the 1666 + 2174 base: the coverage reader `subquery_tables` with its golden-source, quoted-name, nested and `IN` subquery and named-twice pins, its twelve unreadable-input cases, its six CTE and two hint refusals and the plain-comment control; coverage at both create paths over a covered, an uncovered and an unparsable subquery body, a query in a nested join, an unreadable inner table and a query join under an empty base, with the `_definition_tables` governs-nothing control at each path; each proven join strategy created at both paths from its golden, an unknown strategy refused, a missing one read as `direct`, and a nested body on a warehouse refused below the rendered rung under its own label and under a `subquery_source` label, with the strategy-set unit cases, the probe-row control and the label-mismatch `test_rung_below` case, and that test's matching-label case flipped to a refusal; and the golden binding of the live proof: each body regenerated byte for byte, the goldens equal to the proven set, the direct golden's first-level joins, the recorded live run and its nine checks, the nested body downgraded without the capability, and no host, token or email in the golden. Pytest warnings stayed at 4, and vitest stayed at 790). +5 GSO at the M7f final-review fix wave (MV-D124: `subquery_tables` lets no record the `sqlglot` logger emits while it parses reach a handler, at the root or on the logger, with its return unchanged; sqlglot still logs the literal outside the helper, after a refused parse; another thread's `sqlglot` record passes while the helper parses; the quiet filter is installed once; and sqlglot 30.0.3 logs only through its root logger. The golden's `renderer_commit` assertion became its absence, and `test_rung_below` keeps four cases over `downgrade_to` alone. The backend count did not move. Pytest warnings stayed at 4, and vitest stayed at 790). A count BELOW this is a regression — investigate. A
+     count ABOVE it is normal growth: update this line and the playbook's copy in
+     the same commit that adds the tests (test_rules_parity.py enforces the two
+     copies match, so you cannot update one).
+     `--extra dev` is mandatory, not stylistic: `asyncio_mode = "auto"` needs
+     pytest-asyncio, which lives in the dev extra, and without it exactly 12
+     async backend tests fail on uncollectable coroutines. Those 12 are an
+     INVOCATION defect. Do NOT report them as pre-existing and do NOT debug the
+     code — fix the command. If you call pytest directly, it is
+     `uv run --frozen --extra dev pytest`.
+   - IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
+     trusting any backend pytest result, print
+     `uv run --frozen --extra dev python -c "import genie_space_optimizer as g; print(g.__file__)"`
+     and confirm the path resolves inside THIS repository checkout. A test run
+     against a foreign checkout is void — report it, do not interpret it.
+   - PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
+     library version (sqlglot parsing and rendering above all), run only under
+     `uv run --frozen`. A bare pytest on an ambient interpreter is a void run:
+     the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
+     canonicalization output can differ across parser patch releases. Report
+     the resolved version in VERIFY alongside the import path.
+   - `uv lock --check` FAILS STRUCTURALLY on this repo and is NOT drift: the GSO
+     package version is dynamic (git-describe), so re-resolution differs from the
+     lockfile at every commit, on a clean tree. Verify with
+     `git status -- uv.lock` instead. Never run `uv lock` to silence it, and do
+     not wire `uv lock --check` into CI.
+   ```
+
+3. **Have a dev workspace ready** with the TPC-H samples catalog, a scratch schema you own (e.g. `main.mv_advisor_dev`), a small Genie Space with 10–15 benchmark questions, and a second test identity that *lacks* `CREATE TABLE` on the scratch schema (you need it for the denial-path E2E test).
+
+---
+
+## The standard preamble (paste at the top of every prompt, 1 through 17)
+
+Cursor sessions do not share memory. A prompt run in a fresh chat carries none of the recon from Prompt 0, and the rules file constrains behavior but cannot inject knowledge. So every implementation prompt starts with this block, verbatim, above the prompt body:
+
+```
+CONTEXT: @docs/design/metric-view-suggestion-engine-pov.md
+         @docs/design/mv-advisor-gap-report.md
+
+PHASE 1 — EXPLORE (no edits): Re-read the two context docs. Then read, in this
+session, every file you expect to touch for the task below, plus the files that
+define anything you will call. Output your PLAN per the read-before-write
+contract in .cursor/rules — file paths, quoted current code at each change
+site, and file:line for every existing symbol you will use. If anything the
+task assumes does not exist in the current code, or the gap report is stale
+relative to what you just read, STOP and report; do not proceed to Phase 2.
+
+PHASE 2 — IMPLEMENT: Only after I reply "proceed" (or if the plan has zero
+blockers and zero doc conflicts, in which case say so explicitly and continue).
+Then output the VERIFY section: tests, linter, and symbol checks per the rules.
+```
+
+Two-phase execution costs one extra reply per prompt and is the single most effective drift control in this playbook: the model must demonstrate it has read the current code — by quoting it — before it is allowed to change it. When a PLAN quotes code that doesn't match what you know is there, you've caught a stale context before it became a bad diff, not after.
+
+If you use Cursor's agent mode end-to-end instead of reviewing each phase, keep the preamble anyway — the STOP conditions still fire on missing symbols and doc conflicts, which are the two failure modes that matter.
+
+---
+
+## Phase 0 — Recon (do not skip)
+
+The POV doc makes assumptions about task names, entrypoints, and schemas that must be reconciled against the real repo before any code is written. This prompt produces the map every later prompt depends on.
+
+### Prompt 0 — Repo reconnaissance and gap report
+
+```
+Read docs/design/metric-view-suggestion-engine-pov.md in full, especially Parts 1c,
+7, and the Caveats.
+
+Then explore this repo and produce docs/design/mv-advisor-gap-report.md containing:
+
+1. REPO MAP: For each of the following, the exact file paths and names as they
+   exist TODAY (quote the code, do not paraphrase):
+   - The GSO job definition (Databricks Asset Bundle YAML): every task_key, its
+     task type, entrypoint, and parameters. Confirm or correct the doc's claimed
+     preflight → baseline → enrichment → lever_loop → finalize → deploy sequence.
+   - The optimizer Python package: package name, where entrypoints are registered,
+     how a task reads job parameters and task values today.
+   - How the codebase currently calls the Genie Benchmark Eval APIs (create eval
+     run / get run / list results). File, function names, retry handling.
+   - The patch model: the class/schema for field_path + new_value patches, where
+     patches are applied, and where rollback lives.
+   - Persistence: the Lakebase models and Delta tables a GSO run writes, and the
+     migration mechanism for adding new tables.
+   - The FastAPI app: router layout, how OBO tokens are extracted and used, how
+     the app service principal is used, and the existing run-config endpoint that
+     starts an Auto-Optimize run.
+   - The React app: component layout, state management, the run-config panel
+     component, the run output/results screen, and any existing graph or
+     visualization library already in package.json.
+   - The existing test layout: unit test framework, fixtures, any integration
+     test harness against a live workspace, CI config.
+
+2. GAP TABLE: For every assumption in the POV doc's Part 7 (task names like
+   mv_gate/metric_view_advisor/metric_view_apply/mv_baseline, parameter names,
+   task-values names), state MATCHES / CONFLICTS / DOES-NOT-EXIST-YET, with the
+   repo evidence.
+
+3. DECISIONS NEEDED: A short list of naming or placement decisions I must make
+   before implementation (e.g. "the repo calls the loop task `optimize_loop`,
+   not `lever_loop` — doc should be amended").
+
+Do not write or modify any feature code in this prompt.
+```
+
+**Your job after Prompt 0:** read the gap report, make the naming decisions, and amend the POV doc where the repo wins. Commit both. Every prompt below says "per the gap report" — that is deliberate.
+
+---
+
+## Decisions register (MV-D1–MV-D35, MV-D98–MV-D100, MV-D109 onward)
+
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+
+**MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
+
+**MV-D2 — Attach is a real patch type, and it fixes an existing no-op.** New entries in `PATCH_TYPES` (e.g. `mv_attach_data_source`, plus optional raw-table removal) with genuine applier actions that mutate `data_sources.metric_views`, added to the unified-loop allowlist. The recon found Lever-2 MV patches currently render and then no-op at config level (`applier.py:3914-3932`) — this feature ships the missing applier action rather than working around it.
+
+**MV-D3 — In-job work is phases inside the optimize task, not new tasks.** Sequence inside `run_optimize`: iteration-0 baseline eval (already exists) → *mv_attach phase* (only when an approved-view identifier arrived as a job parameter) → *mv-lift eval* (a labeled eval run via the EvalRunner seam, isolating the metric view's delta before the loop moves anything else) → unified loop → *mv_advisor phase* persisting proposals for the next run. Each phase is try/except-isolated with a Delta status row; handoff is Delta-by-run_id per GSO v2 D9. *Amended by MV-D114: the mv-lift eval is now one full-suite post-attach eval through the loop's `_native_eval`.*
+
+**MV-D4 — The rules file and POV are amended, not the tests.** `test_phase7_job_dag.py` encodes deliberate decisions (no condition tasks, no task values, the four-task collapse). The feature conforms; Prompt 0.5 records the deltas in the POV.
+
+**MV-D5 — Four-place lockstep for job parameters.** Root `databricks.yml`, the package-bundle mirror, `scripts/deploy_lib/gso_job.py`, and `backend/job_launcher.py` must all carry every new `mv_*` parameter. The gap report should state this explicitly so no prompt touches one mirror without the others.
+
+**MV-D6 — Rollback simplifies; drop stays manual.** Whole-snapshot revert means detach-on-regression comes free with the existing `integration/revert.py` path. The never-auto-drop rule is unchanged; drop is a backend OBO endpoint gated on DETACHED status.
+
+**MV-D7 — Stateful MV entities get dedicated tables; run-scoped blobs stay in `genie_opt_artifacts`.** Three tables join `_ALL_DDL`: `genie_opt_mv_candidates` (partitioned by target_space_id — the upsert key is space-scoped and a candidate outlives the run that proposed it under MV-D1), `genie_opt_mv_consents` (unpartitioned — run_id is NULL at probe time and filled at trigger), and `genie_opt_mv_created_objects` (partitioned by run_id; merge key run_id + suggestion_id). The rendered DDL text remains a `genie_opt_artifacts` row under a new artifact_kind, with `content_hash` set to the dedup fingerprint so the stores cross-reference. *(True as of Prompt 6, and it was not before: `write_artifact` computed `content_hash` from the payload bytes and had no parameter to override it, so this sentence and the matching comment on `genie_opt_mv_candidates.dedup_fingerprint` described a cross-reference that did not exist. Prompt 6 adds `content_hash` as a keyword-with-default and the advisor passes the fingerprint. A content hash could not have served the purpose anyway — MV-D15 requires Prompt 9 to regenerate the YAML under the backend's probe capabilities, so the same candidate's text legitimately differs between the two stores while its identity does not.)* Rationale: all three entities carry mutable, cross-run-lifecycle state that a run-partitioned append-style handoff table cannot host without fighting its own partitioning. Supersedes POV Appendix A Deltas 4 and 6 where they assert otherwise. Process rule established alongside it: **appendices record decisions; they do not make them** — any new architecture call surfaces here as an MV-D entry first, then the appendix cites it.
+
+*As implemented (Prompt 1):* accessors live in `optimization/mv_state.py`, one module rather than an extension of the already-large `optimization/state.py`, following the `scan_snapshots.py` precedent for feature-scoped persistence. Every writer goes through a new `delta_helpers.merge_row` primitive, so the §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)` is enforced as a single-statement upsert-on-conflict rather than a read-then-insert a retry can duplicate. JSON payload columns carry a `_json` suffix in storage and travel base64-encoded; the accessor signatures use the POV Part 4 field names (`score_components`, `evidence`, `provenance`, `alternatives`, `conflicts`, `probe_results`) verbatim. POV Part 4's proposal `type` is stored as `candidate_type` to avoid shadowing the builtin at the API. `reverified_at_trigger` is a `TIMESTAMP` (NULL = never re-verified), and `updated_at` sits on all three tables. `lift_report_json` is deferred to an `ADDITIVE_COLUMN_MIGRATIONS` entry in Prompt 7, when the lift report exists to store. Three judgment items raised in the Prompt 1 VERIFY were reviewed and approved in the Prompt 1 follow-up and are now settled: decision-column ownership (`upsert_mv_candidate` never writes them; `record_mv_candidate_decision` owns them, pinned by `test_re_proposing_does_not_resurrect_a_rejected_candidate`), the "Resolved by MV-D7" pointers added to the gap report, and the user-facing table rows in `docs/docs/features/auto-optimize.md` with their empty-table-is-not-a-failed-run framing.
+
+*As implemented (Prompt 2) — `lift_report_json` contract:* Prompt 7 persists `LiftReport.to_dict()` verbatim into `genie_opt_mv_created_objects.lift_report_json`. The shape is frozen at `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py` (`LiftReport` fields at `:177-190`, `to_dict` at `:192-193`). Fourteen keys, 0–1 accuracy/delta fractions, regressions = GOOD→BAD excluding needs-review: `delta_affected`, `delta_suite`, `regressed_question_ids`, `needs_review_count`, `pre_eval_run_id`, `post_eval_run_id`, `question_subset`, `pre_accuracy_affected`, `post_accuracy_affected`, `pre_accuracy_suite`, `post_accuracy_suite`, `needs_review_question_ids`, `graded_affected_count`, `graded_suite_count`. Any later reshape needs an `ADDITIVE_COLUMN_MIGRATIONS` entry, not an in-place rewrite of this dict.
+
+**MV-D8 — Generation quality standard adopted (metric-views-patterns v5.2).** All engine-emitted YAML is rendered and validated by one module (`mv_yaml`, Prompt 5.5) enforcing: v1.1 unsupported-field and format-type lints; the multi-hop decision ladder (denormalize → nested joins on DBR ≥ 17.1 with profiling-proven 1:1 keys → subquery-source fallback) with a hard transitive-join gate; SCD2 `is_current` guards; `rely.at_most_one_match` only on proven uniqueness; `MEASURE()`-composed derived metrics, `FILTER`-clause conditional counts, and Fixed-LOD percent-of-total (never `MEASURE()/MEASURE()`); structured comments with **paraphrased** BEST FOR lines (verbatim benchmark text is a firewall violation — it contaminates the benchmark the view is graded by); `ALTER VIEW` for all updates (grants-preserving); post-create `DESCRIBE EXTENDED` type assertion; `MEASURE()`-syntax validation queries with a fan-out smoke test; a copy-ready `GRANT SELECT` checklist surfaced, never auto-applied; and capability rows (DBR 17.3/17.1/18.1 floors) in the entitlement probe that downgrade the join strategy rather than emit unplannable YAML. Origin: the metric-views-patterns skill (v5.2, 2026-06-06); the sample YAML in POV Part 4 was itself corrected under this standard (its customer join was transitive).
+
+*As implemented (Prompt 5) — the probe's two answer kinds, and where UNKNOWN goes.* `backend/services/mv_entitlement.py` (`probe`, `record_consent`, `verify`) behind `POST /api/auto-optimize/mv/probe`. Privileges come from `grants.get_effective(..., principal=<user>)` under `require_obo_workspace_client`, one read per securable, so a privilege held through a group counts; the space check is a new public `user_can_manage_space` in `common/genie_client.py` wrapping the previously-unused `_check_user_manage_from_rest_acl`, because CAN_EDIT does not authorize a `data_sources.metric_views` rewrite. Capability rows come from `current_version()` and follow **MV-D13**, registered in this commit: floors and the two-directional `UNKNOWN` contract live in `common/config.py` (`MV_CAPABILITY_FLOORS`, `MV_OPTIONAL_CAPABILITIES`), and each row carries `observed_warehouse_id` so `verify()` can refuse a compute swap. A NOT_FOUND securable is DENIED, not UNKNOWN: UC returns the same error for absent and for invisible, and either way the create cannot proceed — the detail line keeps the distinction readable for a human without pretending the probe resolved it. Consent is written by a new `wh_upsert_mv_consent` / `wh_load_mv_consent` pair in `common/warehouse.py` — the Statement-Execution twins of the `mv_state` accessors, because the backend has no SparkSession — and persistence is best-effort: a warehouse hiccup returns the probe with `consent_recorded=false` rather than losing it behind a 500. That reachability is exactly why **a missing consent row is a downgrade, never an absence that waves the write through** (`test_verify_treats_a_missing_consent_row_as_a_downgrade`). Cross-reference: MV-D7 for the table, MV-D8 for the floors, MV-D13 for the `UNKNOWN` contract. Prompt 5's playbook body did not specify capability rows and POV §7.3.1's sample JSON omitted them while its prose required them; both were corrected in this commit under the DOC FREEZE factual-error exception, since Prompt 5.5 reads these rows to choose a join strategy. *Superseded by MV-D109:* the space check now asks Genie under the caller's token; the ACL parser is deleted. *Superseded by MV-D115:* the space check asks CAN EDIT (`user_can_edit_space`); "CAN_EDIT does not authorize a `data_sources.metric_views` rewrite" was wrong — Genie grants space edits to CAN EDIT.
+
+**MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites — the §1.6 Persistence heading and its `_ALL_DDL` quote block, the §2.6 Evaluation verdict row, and the Appendix summary row — asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh. Keyword search is insufficient enforcement: a quote can go stale by *position* with its content unchanged, invisible to any grep for stale wording, so VERIFY must byte-match every fenced reference rather than search for stale words.
+
+*Mechanised after Prompt 5.5, and the rule is unchanged.* Four of nine line counts drifted inside one prompt, which is a tax every later prompt would keep paying, so the arithmetic moved off the human: `scripts/gap_report_counts.py` fills live counts into a curated template (`--write`) and fails on a stale report (`--check`), the package-layout block is now generated output between markers, and `test_gap_report_counts.py` asserts both the block and every `(N L)` claim outside it. What is **not** delegated is the part that requires reading: byte-matching fenced quotes and re-checking anchors stays manual, for the reason the paragraph below gives — a quote goes stale by position with its content unchanged, and no count check can see that. The curation stays editorial too; the template decides which modules are worth naming, and the script only supplies numbers.
+
+*Empirical record, as of Prompt 4.* Byte-match VERIFY has now caught **four** anchor defects that no keyword search could have detected: the §2.7 S row's `leakage.py:132-137` (pointing at the `BenchmarkCorpus` shingle block instead of the embedding path), `config.py`'s stale line count, and the two fenced quotes at `leakage.py:279-289` and `:284-289` (correct content, positions shifted seven lines). Two of the four — both `leakage.py` fences — quote `_PATCH_TEXT_FIELDS` and `_EXAMPLE_SQL_PATCH_TYPES`, the exact dict Prompt 5.5 must add an MV patch type to, so they would have misdirected that prompt specifically. Note also that three of the four were stale *by position with content unchanged*, and `leakage.py` is untouched on this branch: they were wrong when written rather than rotted by a commit, which is a defect class a freshness discipline keyed on "what did this commit change" cannot find at all. Keep the byte-match in every VERIFY that touches a quoted surface, whether or not the commit appears to have invalidated anything.
+
+*Third defect class, found in Prompt 7.* Two fences were already stale at HEAD when Prompt 7 began — `test_phase7_job_dag.py` and `ddl.py:182` — and neither file was touched by the commit that staled them. Prompt 6 changed the enumerated `artifact_kind` values; the gap report quoted them; the quote rotted in a file Prompt 6 never opened. So the classes are three, not two: **wrong when written** (the `leakage.py:132-137` mispointer), **shifted by an edit to the quoted file** (the two `leakage.py` fences), and **invalidated by an edit somewhere else entirely** (these two). The third is the one that defeats any freshness discipline keyed on the commit's own diff, because the changed path and the stale path have no overlap — which is precisely why the byte-match sweep runs unconditionally over every fence rather than only over the paths a commit touched.
+
+**MV-D10 — Two fingerprint levels, permanently distinct.** The readable composite string in the POV Part 4 sample payload (`"sha256:sum(l_extendedprice*(1-l_discount))|group:order_status,market_segment"`) predated the shipped key and was never implemented. It is not a format to resurrect: despite the prefix it is not a sha256 digest, it omits the space id, and it keys on the grouping set rather than the source set. Corrected to the hex-digest form in the same commit as Prompt 3, under the DOC FREEZE factual-error exception. The two levels that do exist are:
+
+- **`expr_fingerprint`** (`optimization/mv_fingerprint.py`) — *expression*-grained, `sha256` of the canonical expression text. It counts recurrence inside a corpus scan and does nothing else. It collides across spaces and across source sets by construction, so it is **never persisted as a dedup key** — pinned by `test_expr_fingerprint_appears_in_no_persistence_path`, which asserts no other module in the package even references it.
+- **`mv_state.mv_candidate_fingerprint`** — *candidate*-grained, `sha256(space_id | canonical_measure_expr | sorted_source_set)`. The MV-D7 upsert key for `genie_opt_mv_candidates.dedup_fingerprint` **and** the `genie_opt_artifacts.content_hash` cross-reference. It is the only thing this feature calls a "dedup fingerprint," and it consumes `MeasureRef.canonical_expr` from the fingerprint module as its `canonical_measure_expr` argument, so canonicalization has exactly one implementation. Cross-reference: MV-D7.
+
+Settled alongside it, from the same conflict: the new module's canonicalizer is `canonicalize_sql_ast` / `canonicalize_expr` rather than a reuse of `canonicalize_sql`, because `leakage.canonicalize_sql` already exists with the **inverted** literal contract — it *preserves* literals (verbatim benchmark text is the evidence it hunts) where the fingerprint module *erases* them (two queries differing only in a date are one shape). Both docstrings state the inversion; `leakage.py` behavior is untouched, and the firewall requirement is a property test on the new function.
+
+*Canonicalization invariants established by Prompt 3 (do not re-derive these).* Prompt 4's dedup gate and Prompt 5.5's generator both consume canonical forms produced here, and a second implementation of any of these rules is how two components start disagreeing about what one measure is:
+
+- **(a) Table qualifiers are STRIPPED from measure expressions, never renamed.** `SUM(l.l_extendedprice * (1 - l.l_discount))`, the `li.`-qualified spelling and the unqualified one all canonicalize to `sum(l_extendedprice * (?n - l_discount))`. Table identity is not lost — it travels in `MeasureRef.source_tables`, which is exactly what the MV-D7 key hashes as its sorted source set. Positional renaming (`t1`, `t2`) is correct for *whole statements* and wrong for measures: it would make the same measure fingerprint differently depending on the join order the query happened to use. Both levels therefore agree that one measure is one row.
+- **(b) Date-part units fold into the function name.** `DATE_TRUNC('month', d)` canonicalizes to `timestamp_trunc_month(d)`. Erasing the unit with the literals would merge a monthly grain with a daily one — the silent-wrong-numbers class of defect; keeping it quoted would leave a token in the canonical form indistinguishable from data. Folding preserves the grain *and* yields the firewall invariant in its mechanically-auditable form: **no quote character survives canonicalization.** That is a grep, not a judgment call — any quote in a canonical form or a fingerprint input is a firewall violation, full stop. Pinned across the whole test corpus by `test_no_corpus_statement_leaks_a_quoted_literal`.
+- **(c) Shape identity is the generator's TARGET form, not the corpus spelling.** `ShapeMatch.fingerprint` hashes `target_form` — what the generator will emit — so `SUM(CASE WHEN c THEN 1 END)` and `SUM(CASE WHEN c THEN 1 ELSE 0 END)` are one `CONDITIONAL_COUNT`. They ask for the same `COUNT(1) FILTER (WHERE c)` measure, and counting them apart would halve the recurrence of the exact thing being proposed. `SHAPE_GUIDANCE` holds the MV-D8 mandate per shape so the generator reads the rule rather than re-deriving it.
+
+*And the deliberate bias:* where canonicalization cannot prove two expressions are the same shape, it emits two fingerprints rather than one. **Recurrence therefore under-counts, never over-counts.** Under-counting can delay a proposal; over-counting would fabricate one. Two consequences are tested as intended behavior rather than left implicit: expressions differing only in a literal value *do* collapse (the firewall demands it, so a generator must recover concrete predicate values from profiling — there is nothing left in a fingerprint to read them out of), and aggregates in `ORDER BY`/`GROUP BY` positions are references to a projection, not second measures.
+
+**MV-D11 — Scoring: what Y multiplies, how Y and D normalize, and what gets persisted.** Taken during Prompt 4 execution, from four questions POV Part 3 leaves open or answers inconsistently.
+
+- **(a) Y's equivalence flag is corpus-internal, and governed-MV equivalence gates instead of damping.** Prompt 4's own bullet said "normalized recurrence × AST-equivalence flag *against existing MV measures*". That is not implementable against POV Part 3's first worked example, which scores **Y = 0.95 for a measure with no MV equivalent** — an MV-matching flag would zero it and yield 51.5, not the 80.0 the example asserts. The flag therefore asserts that the counted occurrences genuinely collapse to one canonical form; a consumer that bucketed by anything looser passes `False` and Y is zero. Equivalence against governed metric views lives in the dedup gate, where POV Part 3's "Conflicting or partial matches" paragraph already put it. **Gating is strictly stronger than damping:** a measure that is already governed is not a weaker proposal, it is not a proposal. Prompt 4's Y bullet is corrected in place under the DOC FREEZE factual-error exception so no later prompt re-derives the wrong reading from the prompt text.
+- **(b) Y's recurrence curve is log-saturating; D's factors combine as a geometric mean.** POV supplies component *values* in both worked examples and no curve for either, so the examples pin the blend, not the curves. Y is `min(1, log1p(r) / log1p(R_sat))` with `R_sat = 75`, which yields 0.9492 at the example's `r = 60` — the 0.95 it states, to two places — and gives diminishing returns so one pathological dashboard cannot saturate the signal alone. D saturates frequency, cost and breadth against their own ceilings and takes their **geometric mean**, not the literal product POV's prose ("frequency × cost × distinct users") suggests: three normalized factors multiplied collapse toward zero — `0.8³ = 0.512` — so a literal product **cannot reach the 0.80 that POV's own worked example asserts** for a busy measure. The geometric mean keeps D on the same 0-1 scale as L, Y and S, which is the only way the weights mean what they say. A zero on any factor still zeroes D. POV Part 3's D row now carries a one-line pointer here, since its body text is loose prose this register makes precise.
+- **(c) Only PROPOSE and CONFLICT are persisted.** `CONFLICT` persists as `candidate_type` (that is what the enum is for) and is never a suggestion. Dedup-**blocked** and sub-25 **suppressed** candidates are returned to the caller for run reporting and not written: `MV_CANDIDATE_TYPES` has no state for either and `genie_opt_mv_candidates.tier` is documented `HIGH|MEDIUM|LOW`. No `genie_opt_artifacts` row is written at scoring time either — the rendered DDL text that POV Appendix A Delta 4 assigns to that table does not exist until Prompt 5.5. `suggestion_id` is `"sug_" + dedup_fingerprint[:12]`, derived rather than random so a re-proposing run produces the same id (POV's `"sug_9f2a"` is illustrative). **If Prompt 13's UI later needs blocked-candidate counts persisted, that is an `ADDITIVE_COLUMN_MIGRATIONS` change plus an enum extension at that time — not a reason to widen `MV_CANDIDATE_TYPES` now.**
+- **(d) The MV-D10 guard test correctly blocks Prompt 4, and stays.** `test_expr_fingerprint_appears_in_no_persistence_path` is a substring scan over every package `.py` file, so it forbids even a prose mention of the name. Prompt 4 conformed — `mv_scoring.py` compares canonical expression *text* via `canonicalize_expr` and refers to "the expression-grained fingerprint in `mv_fingerprint`" — and the test was **not** weakened. Should a later prompt need a legitimate prose reference, the sanctioned fix is to narrow the scan to persistence modules **and** add a positive assertion that no call site feeds the expression-grained fingerprint into `upsert_mv_candidate`'s `dedup_fingerprint` kwarg — strictly stronger than the substring test it replaces. Deleting or loosening it without that replacement violates MV-D4.
+
+*As implemented (Prompt 4).* `optimization/mv_scoring.py`, with weights and every normalization constant in `common/config.py:2423-2506` (a `_float_env` helper sits there rather than beside `_int_env` at `:15`, whose `max(1, value)` clamp is wrong for weights, and appending held every gap-report `config.py` line anchor stable). The module **queries nothing** — lineage overlap, recurrence and demand arrive as frozen input contracts and existing metric-view definitions as `MetricViewField` values flattened from `metric_view_catalog.detect_metric_views_via_catalog`, so the `DESCRIBE ... AS JSON` parsing stays where it already lives. The embedding client is an injected `Protocol`; the production adapter borrows `leakage.get_embedding` and **no other firewall symbol** (pinned by an AST assertion, not a substring scan), defaults to `databricks-gte-large-en`, and L2-normalizes in our code because GTE does not normalize its output while BGE does. The blend is deliberately **not** rounded: both worked examples land on exact IEEE doubles, and rounding to two places would drag a 24.999 across the suppression floor into LOW. Benchmark question text cannot reach a proposal structurally — `MetricViewCandidate` has no field for it, so `evidence.benchmark_questions` carries ids because there is nothing else to carry.
+
+**MV-D12 — S has two reference kinds, because an MV-field-only reading retires a fifth of the blend.** Prompt 4 first implemented POV Part 3's S literally — "max cosine of intent text vs **MV field text**" — and reported the Part 4 payload's `{"field": null, "cosine": 0.40}` as an unresolvable inconsistency: a space with no metric views has no field text, so S is structurally 0.0. That reading is wrong, and the payload was the evidence. Consequences of the literal reading, which is why it cannot stand:
+
+- **S = 0.0 for every `NEW_METRIC_VIEW` candidate** — the class the engine exists to produce. Twenty percent of the blend becomes dead weight exactly where the feature earns its keep.
+- **Those candidates cap at 80** against thresholds calibrated for 100. HIGH stays reachable only because 0.35 + 0.30 + 0.15 = 0.80 clears 75 with nothing to spare; any future weight retune or threshold tightening makes the top tier structurally unreachable for the primary output. Systematically depressing the highest-value output is a worse defect than a null field in a sample payload.
+- **POV Part 3's own first worked example asserts S = 0.40 for a measure with no MV equivalent.** Under the literal reading that number is unreachable, so the document already contained the refutation.
+
+Resolved with the symmetry L already has (MV-D11's `reference_kind`): S takes a reference set plus a recorded kind.
+
+- **`GOVERNED_MV_FIELDS`** — preferred for `REPLACE_RAW_TABLE` and `ADD_MEASURE`, which act on an existing view. Max cosine of intent text against MV field text (display name, comment, synonyms).
+- **`SOURCE_COLUMN_METADATA`** — preferred for `NEW_METRIC_VIEW`, where no view exists yet. Max cosine of intent text against the candidate's source column names and comments.
+- **Neither available → 0.0 with a null field**, reported honestly rather than imputed.
+
+Preference is keyed on candidate type rather than availability because the question S answers differs between the two; where the preferred set is empty the other is used and **the kind recorded is always the one actually compared**, never the one wanted. `SOURCE_COLUMN_METADATA` is knowingly the weaker reference — a column comment describes a column, not a business measure — and that is acceptable because it is the only semantic evidence that exists before a metric view does, and the alternative is a structurally unreachable score band. Recording the kind is what keeps the weakness visible: 0.40 against a curated field and 0.40 against a column comment are different strengths of evidence, and a payload reporting only the number cannot be reviewed. POV Part 4's payload and Part 3's S row are corrected accordingly under the DOC FREEZE factual exception. **Neither pinned worked example changes** — both supply component values directly, so 80.0 and 58.75 still hold.
+
+*As implemented (Prompt 6) — the defect re-entered through the PRODUCER, and the scorer test passed the whole time.* MV-D12 was resolved in the scorer: `semantic_reference_for` prefers `SOURCE_COLUMN_METADATA` for `NEW_METRIC_VIEW` and `test_a_new_metric_view_candidate_scores_s_against_its_source_columns` proved it. When Prompt 6 built the first real producer of candidates, `candidate_from_measure` left `source_column_metadata` empty, so `semantic_reference_for` correctly found an empty reference set, `semantic_score` correctly reported `EMPTY`, and every `NEW_METRIC_VIEW` candidate in the real pipeline had S at 0.0 — the exact defect MV-D12 rejected, reached by a different route. Every MV-D12 test stayed green throughout, because none of them touched the producer.
+
+The general lesson, which is not specific to S: **a scorer test proves the consumer, not that anything feeds it.** A resolution expressed as "the scorer prefers X when X is available" is only half a contract; the other half is "the producer makes X available," and that half has no natural home in a scorer test file. The same shape is the standing risk for the `PROVEN`-fixture rung in `mv_yaml` — the fixture proves the consumer of `EXACT` uniqueness evidence, and the probe that will produce it does not exist yet.
+
+The standing assertion this implies, which now applies to every future producer: **for a candidate whose source columns exist in the wide-schema inventory, S's reference set must be NON-EMPTY** — not merely handled correctly when empty. Handling an empty set gracefully is necessary and is separately tested; it is not evidence that the set is ever populated. Pinned at both ends: `test_the_candidate_carries_a_semantic_reference_set` on the producer in isolation, and `test_a_candidate_whose_columns_are_in_the_inventory_has_a_non_empty_reference_set` end-to-end through `run_mv_advisor_phase`, asserting the persisted proposal's `semantic_top_match` reports `reference_kind: SOURCE_COLUMN_METADATA` with status `COMPUTED` rather than the `NONE`/`EMPTY` pair an unfed producer yields.
+
+Both halves of that were demonstrated by reintroducing the defect rather than argued: with `_source_column_metadata` stubbed back to `()`, the end-to-end pin fails with `reference_kind: NONE`, `status: EMPTY`, `field: None`, while the thirteen MV-D12 scorer tests stay green — they contain no reference to the producer at all, so no addition to that file could have caught this. **And `evidence_coverage` is 0.50 in both the healthy and the defective case in a workspace where L and D are also unavailable**, because `EMPTY` keeps its weight under MV-D15: the coverage figure is *by design* blind to a producer that never ran versus one that ran empty, so it cannot substitute for this assertion. That is the cost of MV-D15's `EMPTY`-keeps-weight rule, and it is the right trade — but it means an unfed producer is invisible in every persisted field except the reference kind.
+
+*One correction to the record.* The prompt authorizing this decision quoted POV Part 3 as reading "S = 0.40 (no MV text to match yet, only weak column-name signal)". That parenthetical is **not in the document** — Part 3 says only "L = 0.90, Y = 0.95 (identical canonical fingerprint seen 60×), S = 0.40, D = 0.80". The reasoning stands without it, and on stronger ground: the bare `S = 0.40` for a candidate with no MV equivalent is itself the proof that S was never meant to be structurally zero. But the "weak column-name signal" phrasing is this decision's own resolution, not a recovered authorial intent, and must not be re-cited as a POV quotation.
+
+**MV-D13 — Capability rows under a SQL warehouse: `UNKNOWN` resolves in two directions.** Taken during Prompt 5 execution. MV-D8 states the capability floors as Databricks Runtime versions because that is how the metric view documentation states them, and they are only *decidable* where the compute reports one. On a SQL warehouse `current_version().dbr_version` is NULL — only `dbsql_version` is populated, and Databricks publishes no DBSQL-to-DBR mapping — so the probe reports `UNKNOWN` rather than converting through a mapping the platform does not document. Under MV-D1 the create path is the FastAPI backend, whose only SQL compute is a warehouse, so `UNKNOWN` is the **normal** case and not an edge one. It therefore has to mean two different things, and the two directions are not symmetric:
+
+- **Optional capabilities (`mv_nested_joins`, `mv_fields_agg_window_offset`) → unavailable.** The generator steps down the ladder rather than emitting YAML the runtime may not be able to plan. Emitting an unvalidated construct is the silent-wrong-answer class MV-D8 exists to prevent; withholding a feature costs verbosity.
+- **`mv_create_edit` → never blocks authorization.** No `GRANT` can satisfy a runtime floor, so treating its `UNKNOWN` as a denial would deny every warehouse-only user — which under MV-D1 is all of them. Only the write itself can prove that floor, and a failed create is already handled as a downgrade. A *decided* `DENIED` (an actual cluster below 17.3) does yield `INSUFFICIENT`, and it carries **no** remediation SQL: the fix is a runtime upgrade, and a fabricated GRANT would send the user chasing the wrong thing.
+
+**The consequence, stated plainly: on a SQL warehouse the nested-join rung is unreachable, so every multi-hop candidate lands on rung 3 (subquery-`source`).** That output is correct on all runtimes and more verbose than necessary on a runtime that would have supported rung 2. That is the intended trade: verbose-but-correct over concise-but-unvalidated.
+
+*Revisit triggers* — either would make rung 2 reachable again, and neither has happened: Databricks publishes a DBSQL↔DBR mapping, or the create path moves to a DBR cluster (which MV-D1 does not currently allow). **An operator override forcing rung 2 is explicitly rejected.** A flag that says "assume ≥17.1" reintroduces exactly the unvalidated claim `UNKNOWN` exists to prevent, and it fails in the direction that produces confidently wrong numbers rather than verbose ones.
+
+*Binding on Prompt 5.5:* `mv_yaml.validate` MUST read the flat `results` map from the probe and **step down on `UNKNOWN`**. An absent row is never permissive — a missing capability key means the probe could not speak to it, which is the same instruction to step down. Capability rows also carry `observed_warehouse_id`, because a capability is a property of the compute and not of the user: `verify()` downgrades when trigger-time re-verification names a different warehouse, since a capability observed on warehouse A says nothing about a create executed on warehouse B.
+
+**MV-D14 — Uniqueness is a claim with provenance, and only an exact count is proof.** Taken during Prompt 5.5 execution. MV-D8 gates two constructs on a key being "proven 1:1": `rely.at_most_one_match: true` and the nested-join rung. The gate had no defined evidence standard, and the profiling GSO already computes cannot meet the obvious reading of it — `_data_profile` and `_join_overlaps` sample, so a sampled `COUNT(DISTINCT k) = COUNT(*)` says the duplicate rows were not in the sample and nothing more. Both constructs fail in the expensive direction when the claim is wrong: `at_most_one_match` is **unvalidated at runtime**, so a false claim silently inflates every `SUM` and `COUNT` through fan-out rather than erroring. So `MvProfiling` carries uniqueness as a `KeyUniqueness` with an explicit `kind`, and `generate` treats exactly one kind as proof:
+
+- **`EXACT`** — a full-relation count, not a sample. The only kind that is proof, and only when it actually shows no duplicates; an `EXACT` row reporting duplicates is decisive evidence *against*.
+- **`SAMPLED`** — recorded as evidence on the proposal, never used as proof.
+- **`UC_CONSTRAINT`** — a declared primary key is **not** proof either. Unity Catalog primary keys are informational and unenforced, so the declaration restates the same unvalidated claim one layer down. **This includes a key declared `RELY`, and that case was considered rather than overlooked** — see below.
+- **`UNKNOWN`** — absent evidence, which is the default and steps down.
+
+*The `RELY` case, considered and rejected — do not relitigate as an oversight.* A UC primary key declared `RELY` is genuinely a different act from inferring uniqueness off a sample: it is the customer asserting the constraint to the optimizer, and Databricks already rewrites queries on that assertion, so there is a real argument that trusting it merely inherits a trust the platform has already extended. It is still refused here, for three reasons that are about this generator rather than about `RELY`'s soundness. The **failure mode is not shared**: a wrong `RELY` on a query rewrite yields a wrong result set the customer can see and report, while a wrong `rely.at_most_one_match` in a metric view inflates `SUM` and `COUNT` through fan-out into numbers that look plausible and are never flagged, because nothing validates the claim at runtime. The **cost of refusing is near zero**: the two constructs it gates are optimizations — rung 3 answers every question rung 2 answers, and omitting `rely` changes no number — so conservatism buys correctness at the price of verbosity, not capability. And **the evidence is cheap to get properly**: one exact `COUNT(*) = COUNT(DISTINCT k)` on the dimension turns the claim into `EXACT` and unlocks both constructs through the gate that already exists, which is strictly better than promoting a declaration. If a later prompt wants `RELY` honored, the argument to make is that the exact count is too expensive on some dimension at some scale — not that this case was missed.
+
+**The consequence, stated plainly: nothing in the repository produces `EXACT` evidence today, so `rely` is never emitted and the nested rung is unreachable on every compute — independently of MV-D13's capability floor, which already blocks it on warehouses.** Multi-hop candidates land on rung 3 (subquery-`source`), where uniqueness is *enforced* by construction rather than asserted. That output is correct on all runtimes; the two blocked constructs are optimizations, and neither changes an answer. Prompt 6 may add an exact-count probe against the candidate's join keys, which would make `rely` reachable through the same gate with no change here.
+
+*Two sentences above are known optimistic and under revision in Prompt 6 — do not build on either.* Marked at review time rather than left to be found, because a correct-when-written claim that a later finding has undermined is precisely what a decision note exists to prevent and what a doc freeze otherwise preserves. **(1) "the evidence is cheap to get properly"**, in the `RELY` paragraph, was reasoned against promoting a declaration and not against a full scan: `COUNT(DISTINCT k) = COUNT(*)` on a large dimension is the very cost that made GSO sample in the first place, so Prompt 6 needs a cost guard or an opt-in rather than a bare probe, or it will define proof nobody can afford to produce. **(2) "with no change here"**, in the paragraph immediately above, holds only if evidence is timeless. It is not — a table proven unique at profile time can gain duplicates before the view is queried, and because `at_most_one_match` is unvalidated at runtime the failure is silent aggregate inflation rather than an error — so at minimum `KeyUniqueness` gains when the count was taken and against what, which is a change here.
+
+*Standing preference on (2), to be settled on measured cost rather than on principle.* Run the probe at **trigger time and keep the window short by construction**, rather than making `proven` time-dependent: a staleness bound obliges every consumer to reason about a clock, and the first consumer that forgets reintroduces exactly the inflation the evidence standard exists to stop. A short window is harder to get wrong than a window that must be checked. This is a preference and not a ruling — if a trigger-time scan proves unaffordable on the dimensions that actually matter, timestamped evidence carrying an explicit staleness bound is the honest fallback, and that call belongs on the probe's real cost profile.
+
+*And one seam Prompt 6 creates.* The nested rung and `rely` are exercised today only through the `PROVEN` fixture, which injects synthetic `EXACT` rows at the generator's input boundary. That proves the *consumer* of the evidence; it says nothing about a producer that does not exist yet. The moment a probe emits real `EXACT` rows, the untested surface becomes the producer and the handoff — so assert that a probe result reaches the gate in the shape the gate expects, rather than trusting the dataclass boundary to hold because both sides were written from the same description.
+
+*Two smaller calls from the same prompt, recorded because both deviate from the prompt text.* First, MV-D8's transitive-join detector was written as "port the left-head-of-`on` check," which presumes an implementation to port; there is none — the rule exists only in the external patterns skill, which under Prompt 5.5's own terms is a source and not an authority. It is therefore **restated in-repo** in `mv_yaml`'s module docstring and implemented from the restatement, and the check **splits by severity**: a first-level `on` whose columns reach a sibling join is an error (that is the transitivity the rule exists to catch), while one written `dim.k = source.k` instead of `source.k = dim.k` is a **warning**, because operand order is a style convention and rejecting it would fail valid YAML. Second, the comment-echo check reuses `LeakageOracle.contains_question` at `MV_COMMENT_ECHO_THRESHOLD` rather than adding a second matcher, per the standing instruction to extend `leakage.py` instead of writing a parallel scanner.
+
+*The echo comparison is `>=`, and MV-D8 was corrected to match the code rather than the reverse.* MV-D8 and this prompt's body both said "at >0.9," while `leakage.py:752` compares `score >= thresh`, so a line landing on exactly 0.90 was rejected by the firewall and permitted by the standard. Resolved toward `>=` in both documents, under the DOC FREEZE factual-error exception, for two reasons. `contains_question` is shared: its other caller is the example-SQL firewall at 0.85, so changing the operator to satisfy one new caller would alter detection behavior on a path this feature does not own — and it would move that path's boundary in the permissive direction, which is the wrong way for a firewall to drift. And the inclusive reading is the one a firewall wants anyway: at the threshold the evidence for "this echoes a benchmark question" is exactly as strong as the threshold was chosen to represent, so the tie belongs to rejection. The boundary is now executable rather than prose — `test_a_line_at_exactly_the_threshold_is_rejected` builds a line sharing nine of ten content tokens with a benchmark question (Jaccard exactly 0.90) and asserts rejection, alongside an 0.80 line that passes, so an operator flipped to `>` fails the suite.
+
+**MV-D15 — A signal that was never measured is not a signal that measured zero.** Taken during Prompt 6 execution, on the Prompt 6 signal recon (`docs/design/mv-advisor-signal-recon.md`). The recon established that of the four blend inputs only Y has a producer today: **L** has none at all (`LineageOverlap` is an input contract at `mv_scoring.py:169` that nothing outside tests constructs, and column-level overlap additionally needs a `WATCH_SYSTEM_GRANTS` addition), **D** has no cost or distinct-user source and its only available grain is wrong, and **S** silently returns a default `SemanticMatch` whose zero is byte-identical to "there was nothing to compare." Scoring all three as 0.0 would make the blend arithmetic sound and its output meaningless. So availability becomes part of the score rather than something a reader has to infer from it.
+
+> *Regeneration clause superseded by MV-D22 (recorded during Prompt 9).* MV-D15's direction that Prompt 9 *regenerate* the YAML under the backend's probe is superseded: the backend replays the persisted `yaml_text` with revalidation, it does not regenerate. The reasoning below stays as recorded; see MV-D22 for why regeneration was neither achievable nor meaningful.
+
+- **Each of L/Y/S/D records a status on `score_components`: `COMPUTED` | `UNAVAILABLE` | `EMPTY`.** `UNAVAILABLE` means no producer exists — nothing looked. `EMPTY` means a producer ran and found nothing to compare, which is a real measurement of zero and is treated as one: it scores 0.0 and **keeps its weight**. `UNAVAILABLE` does **not** score 0.0; it leaves the blend entirely.
+- **The blend renormalizes over what was actually measured.** The weighted sum divides by the summed weight of the `COMPUTED` and `EMPTY` signals, so the scale stays 0–100 whatever the mix. That sum is recorded as `evidence_coverage`, because a renormalized score without its divisor is unauditable.
+- **Coverage caps the tier.** `>= 0.80` is HIGH-eligible; `>= 0.50` ceilings at MEDIUM; `< 0.50` ceilings at LOW. When the cap is what bound the tier, `tier_capped_by_coverage: true` is recorded with the uncapped tier alongside it, so a reviewer can see both what the evidence said and what the coverage allowed.
+
+**The canonical statement of this decision, in two rows.** Anything later that contradicts these two lines contradicts MV-D15:
+
+| components | score | coverage | tier |
+|---|---|---|---|
+| L `UNAVAILABLE`, others at 1.0 | **100.00** | 0.65 | MEDIUM (capped) |
+| L `EMPTY`, others at 1.0 | **65.00** | 1.0 | MEDIUM (uncapped) |
+
+**Identical `L` input, different status, different score. Status decides.** In both rows `L = 0.0` — the number is the same byte. The first row's L never entered the blend, so the remaining three renormalize over 0.65 and the score is a full-confidence statement about a partial evidence set, which is why the *tier* rather than the score is what coverage bounds. The second row's L is a measurement: something looked, found no overlap, and 0.0 is the finding — so it keeps its 0.35 weight and drags the blend down honestly. Reading the score alone cannot distinguish them, which is the entire reason `statuses` and `evidence_coverage` are persisted next to it. Pinned by `test_an_unavailable_signal_does_not_score_zero`.
+
+*Why renormalize AND cap, when either alone looks sufficient.* They fix different defects, and the second one is the one that bites. **Uniform absence collapses the SCALE:** if every candidate is missing L, every score is computed against a 0.65 ceiling while the tier thresholds are still calibrated for 100 — HIGH becomes structurally unreachable for the entire output class. That is precisely the defect **MV-D12** rejected when an MV-field-only reading of S capped every `NEW_METRIC_VIEW` candidate at 80, and rejecting it there while accepting it here would be incoherent. Renormalization alone fixes that. But **mixed availability scrambles ORDER**, which renormalization cannot fix and actively conceals: a candidate scored on Y alone renormalizes to 90 and outranks a candidate scored on all four at 78, when the first is one signal's opinion and the second is a corroborated finding. Ranking is the advisor's actual product — a reviewer reads down the list — so a confident-looking score built from a quarter of the evidence is worse than a low one. Hence coverage is recorded **per candidate**, not per run, and the cap binds the tier rather than adjusting the number: the score stays an honest statement about what was measured, and the tier stays an honest statement about how much was measured.
+
+*What the coverage numbers were before the producers landed, and what unlocks each state.* The decision's authorizing prompt assumed coverage 0.65 with L absent — the state after a partial 6a that lands D but not L. Before Prompt 6b wired the producers, both L and D were `UNAVAILABLE`, so coverage sat at **0.50** and nothing could exceed MEDIUM. The states in ascending coverage: **0.30** (only Y, embedding endpoint unreachable, ceiling LOW), **0.50** (Y + S), **0.65** (Y + S + D), **1.0** (all four). HIGH needs 0.80 and L alone is 0.35, so HIGH becomes reachable once a genuinely computed L joins the blend. Prompt 6b makes all four producible from the system tables; whether a given workspace reaches 1.0 or degrades toward 0.30 is now a **per-workspace fact** of grants and data availability, not a fixed ceiling — and it stays legible either way because the coverage figure rides on every candidate.
+
+*Why D is `UNAVAILABLE` rather than approximated — recorded so 6a does not relitigate it.* Prompt 6 was authorized to ship "frequency-only at mapped column grain if you can do it cleanly." It cannot be done cleanly, on two independent grounds, and either alone is sufficient:
+
+- **(a) Population mismatch.** The advisor's corpus is iteration-0 *generated SQL from benchmark questions*, while `wide_schema_history`'s counts are *real query-history traffic*. These are two different populations. Attributing history counts to a benchmark-derived measure is conflation, not measurement — the benchmark asks what a curated question set covers, the history says what humans actually ran, and a measure can rank high in one and be absent from the other. D's job in the blend is to say "real users care about this," which a benchmark corpus cannot answer at any grain.
+- **(b) Double-counting.** The only per-measure recurrence that exists today is `corpus_scan`'s, and that is already **Y**. Routing it into D would spend one piece of evidence twice: the same number would raise the blend through two weights *and* raise `evidence_coverage` by 0.15, so a candidate would look better corroborated precisely because one signal was counted again. That is worse than absence, because renormalization makes it invisible — the coverage figure, the one field a reviewer uses to judge how much was measured, would be inflated on evidence already claimed.
+
+`wide_schema_history` also cannot supply the other two `DemandSignal` fields at all: its `SELECT` reads `statement_text` and `start_time` and no duration or billing column, so neither `cost_ms` nor `distinct_users` has a source (see the corrected docstring at `mv_scoring.py:200-216`, whose earlier version wrongly claimed it did). **A defensible D therefore needs its own per-measure query over `system.query.history` — cost and distinct users at measure grain — not a remap of an existing signal.** That is 6a's work, and it carries the same service-principal read constraint as L.
+
+*Both pinned worked examples are unchanged, and a test says so.* POV Part 3's two examples supply all four components directly, so they are all `COMPUTED`, coverage is 1.0, and the divisor is 1.0 — 80.0 and 58.75 are the same IEEE doubles they were, not values that happen to round back. `test_the_pinned_worked_examples_are_untouched_by_renormalization` asserts the scores, the coverage, and that neither tier is coverage-capped, so a future change to the renormalization cannot quietly move the two numbers the POV pins.
+
+*S distinguishes its two zeros; L does not have to.* `SemanticMatch` gains a `status` mirroring the `MV_ECHO_CHECK_COMPARED` / `NOT_COMPARED` pair B4 established, because the recon found a dead endpoint and an absent reference set producing identical payloads. An unconfigured or unreachable endpoint — including the `client is None` case and any `embed` failure — is `UNAVAILABLE`. A client that ran against a real reference set and found no positive cosine is `EMPTY`: that is a measurement. L needs no such split yet because it has no producer at all; when 6a adds one, a lineage read that resolves to two genuinely disjoint column sets is `EMPTY` and a read that could not run is `UNAVAILABLE`.
+
+*In-job generation always lands on rung 3, and Prompt 9 must not replay this artifact.* The job has no entitlement probe — that is a backend/OBO surface under MV-D1 — so `MvProfiling.capabilities` is empty in the advisor phase, and per MV-D13's step-down-on-`UNKNOWN` contract every multi-hop candidate renders as rung 3 (subquery-`source`). The YAML in `genie_opt_artifacts` is therefore correct-on-every-runtime and deliberately more verbose than a probed runtime might allow. **Prompt 9 must REGENERATE the YAML under the backend's probe capabilities rather than replay the run-1 artifact.** Replaying it would ship rung 3 to a workspace whose probe proved rung 2 available, permanently — the artifact records what the job could prove, not what the create path can. The artifact's `content_hash` is the candidate's dedup fingerprint (MV-D7), so the regenerated YAML can be compared against the recorded one for the same candidate rather than guessed at.
+
+**MV-D16 — Attach is not an LLM lever, and it lands after iteration-0.** Taken during Prompt 7 execution, resolving two defects in that prompt's own body. Both were authored from the gap report's description of the unified loop rather than from the loop's code, and both would have been executed as written.
+
+**(a) `mv_attach_data_source` is registered in `PATCH_TYPES` with a real applier action and is deliberately NOT in the `unified_loop` allowlist.** Prompt 7's body said to add it, describing that frozenset as the lever surface. It is not: `_ALLOWED_PATCH_TYPES` is the **LLM-proposal** surface. It is enumerated into the proposal prompt (`unified_loop.py:1321`), used to drop any LLM-returned patch type outside it (`:1393`), and used to decide whether a post-leak pivot has anywhere to go (`:2158`). `apply_patch_set` never reads it. So listing attach there would not "enable the lever" — it would hand the loop's LLM the ability to invent a UC identifier and attach it mid-loop with **no consent row and no `genie_opt_mv_created_objects` entry**, defeating MV-D1's consent chain end to end. The attach phase calls `apply_patch_set` directly and needs no allowlist entry. The type is classified `HIGH_RISK`. This is asserted two ways, because the absence of a line is not self-documenting: one test pins that the type is not in the frozenset, and one drives an LLM response proposing it and asserts the patch is dropped. That second test is the one that protects the consent chain from a future contributor who adds the type to the allowlist for what will look like a good reason.
+
+**(b) Attach and `mv_lift` run AFTER iteration-0 completes and BEFORE the first lever patch — inside `run_unified_optimization_loop`, not before the call.** Prompt 7's body said "ordered BEFORE the unified loop" and, three lines later, "iteration-0 baseline runs first (existing behavior — do not reorder it)". Those cannot both hold, because iteration-0 lives *inside* the loop (`unified_loop.py:2894-2899`). "Before the lever loop" meant before **tuning**; it was written as before the **call**, and that reading is superseded. The reason the distinction matters is not tidiness: attaching before iteration-0 makes the baseline corpus **post-attach SQL**, so the metric view contaminates the very evidence Prompt 6's advisor fingerprints when proposing the next one — a feedback loop in which each attached view biases the case for its successor. With the corrected order, baseline measures the pre-attach space, `mv_lift` measures the attach in isolation against that baseline, and the levers tune on top of whatever foundation survives the lift verdict. Prompt 7's body is corrected in place under the DOC FREEZE factual-error exception so no later prompt re-derives the wrong order; pinned by asserting the baseline eval-run id precedes the attach patch id. *Amended by MV-D114: the mv-lift eval is now one full-suite post-attach eval through the loop's `_native_eval`, and the `mv_lift` label is retired.*
+
+*Three consequences recorded so they are not relitigated.* **Detach uses `applier.rollback` against `apply_log["pre_snapshot"]`, not `integration/revert.py`.** `revert_optimization` (`integration/revert.py:55`) is a backend surface: it reads run history through the warehouse and its `_assert_no_active_space_runs` guard (`:221`) rejects mid-run **by design**. The primitive changes; detach-never-drop does not. **`mv_remove_raw_table` is dropped from the design.** `remove_table` already exists, is `HIGH_RISK` (`common/config.py:1481`), has a working render (`applier.py:3166-3170`) and config applier (`:3880-3886`), and is already outside the LLM allowlist — a twin buys nothing and creates a second path for one behavior. **The `mv_consent_id` job parameter carries a `probe_id`**, because `genie_opt_mv_consents` is keyed on `probe_id` (`ddl.py:235`) and no `consent_id` column exists; the read site says so.
+
+**MV-D17 — DECIDED (Prompt 6c): curated provenance credits extra occurrences inside Y, and the corpus 6c harvests is narrower than the five-source list implied.** Raised during the Prompt 7 review, decided during Prompt 6c execution. **Y** counted every corpus occurrence equally (`normalized_recurrence` over `FingerprintRecurrence.recurrence`), so once 6c harvests curated sources into the same corpus, 60 occurrences of generated SQL would outscore 3 occurrences of trusted-asset SQL — inverting the POV's evidence hierarchy, which calls a curated source the higher-precision seed.
+
+**(a) The provenance credit lives inside Y, and it is neutral at zero.** Chosen over a fifth blend signal and over a `tier_for` floor. The deciding reason is arithmetic, not preference: `evidence_coverage` (`mv_scoring.py`) rounds to six places and the docstring is explicit that the rounding is load-bearing — the S-unavailable case sums to `0.7999999999999999`, one ULP under `MV_COVERAGE_HIGH_MIN`. A fifth weight puts every authored decimal in that sum back in play, including the two IEEE-exact pins at `test_mv_scoring.py`. **The credit is added to the occurrence count inside the log, not multiplied onto its output:** `Y = normalized_recurrence(r + k * curated_provenance_count)`, `k = MV_CURATED_OCCURRENCE_EQUIVALENT` (default 20). The first draft multiplied the saturated base by `1 + w * curated_provenance_count`; that shape was wrong twice over — it under-credited the modal case (one human curates a measure the generator derived once: `0.115 * 2 = 0.23`, still buried) and walled at the 1.0 clamp for anything already recurring, so Y stopped discriminating among curated candidates at `r ≥ 8` for a single source. Adding inside the log is monotone throughout and clamps only at genuinely saturating effective counts. It is neutral **by construction** when `curated_provenance_count` is 0 (`k * 0 == 0` returns the identical float), so every generated-only candidate — the pinned POV worked examples included — scores precisely as before; the blend and the MV-D15 divisor are untouched.
+
+**`k` is an authored number, not a clamp accident.** `k` is how many generated occurrences one curated source is worth, and the modal question MV-D17 names — one human curated the measure once, the generator produced sixty — is answered by `k`'s value, not by the function's shape. At the default `k = 20` (with `MV_RECURRENCE_SATURATION = 75`): a single curated source with `r = 1` scores `normalized_recurrence(21) = 0.714`, worth ~21 generated derivations — decisively above a lightly-recurring generated measure and below sixty of them (`r = 60 → 0.949`); the named example of 3 curated occurrences scores `normalized_recurrence(63) = 0.960` and clears 60 generated. `k = 20` is the default and there is no legitimate opposite pole. Raising `k` toward 60 is **not** the symmetric "highest-precision seed" choice it looks like — it defeats itself. At `k = 60` the single-curated case scores `normalized_recurrence(61) = 0.953` against generated-sixty's `0.949`: that does not make curated outrank volume, it pushes both into saturation where Y stops ordering anything, reintroducing the clamp cliff through the env var. A 0.004 "win" in the saturated region is a coin flip against the other signals' noise, not a ranking. The deeper reason `k` stays low: **Y is recurrence evidence and nothing else, and authority already has its own channels.** The intuition that one curated definition should top sixty derivations conflates per-occurrence precision with authority — but when curated SQL contradicts a proposal, `trusted_asset_definitions` feeds the conflict path, and when a governed MV already defines the measure, the dedup gate blocks outright. Sixty independent re-derivations of one canonical form is genuinely strong demand evidence; a curated measure the corpus never re-derived should rank *below* it on Y while still surfacing. `k = 20` preserves that ordering; `k = 60` erases it. The earlier draft's claim that the credit "lets a curated expression the corpus rarely re-derived outrank a high-recurrence measure only the generator produced" is **withdrawn** as unconditional — it is true only above a `k` that saturates Y, i.e. no `k` orders it both correctly and non-trivially, which is the point.
+
+**Coverage note — a LOW-tier curated candidate is a signal-availability problem, not a `k` problem.** In a workspace where the producers are unavailable (L and D `UNAVAILABLE` for want of grant or reader, S empty without an embedding endpoint) `evidence_coverage` is 0.50, so the single-curated candidate lands at score 42.8 (LOW) while generated-sixty gets 57.0 (MEDIUM). That reads like curated evidence being disrespected, but the cause is the 0.50 coverage, not the occurrence-equivalent. Raising `k` to compensate would bake a workaround for missing signals into a constant that outlives them; the L and D producers (6a, wired by 6b) are the actual fix, since curated candidates sitting on established lineage pick up L credit that generated-only ones may not. Recorded explicitly because someone will read the LOW tier as a `k` problem: flipping the env var to `k = 60` collapses Y's discrimination at the top (0.953 vs 0.949) and is **not** the remedy for curated candidates ranking LOW under partial coverage.
+
+**Curated-ness is a recorded kind, not an inferred prefix.** The credit reads a new `FingerprintRecurrence.curated_provenance_count`, threaded through the bucket: `mv_fingerprint.CURATED_PROVENANCE_KIND` on `Provenance.kind`, one `_Bucket` slot, one line in `observe`, one line in `freeze`, one pass-through in `candidate_from_measure`, and `RecurrenceSignal.curated_provenance_count` that `syntactic_score` reads. It is **not** inferred from a `provenance_ids` prefix — the prefix route was available (ids survive `freeze` and `TRUSTED_ASSET_SOURCE_PREFIX` already establishes the convention) but making a string prefix structural to scoring cuts against this codebase's house style (`LineageOverlap.reference_kind`, `Provenance.kind`, the MV-D15 status vocabulary all record a kind). A `FingerprintRecurrence.to_dict()` key-set pin was added at the same time, since none existed — so the new key is a deliberate addition to persisted `evidence_json`, and `evidence["ast_curated_provenance_count"]` is the new auditable surface.
+
+**Sub-decision — breadth damping is separable and deferred.** `FingerprintRecurrence`'s own docstring argues "sixty occurrences from one query is not a recurring measure," yet `syntactic_score` uses raw recurrence and ignores `provenance_count` (which is populated but read nowhere in scoring). Damping Y by distinct-source **breadth** is a distinct fix from up-weighting curated **provenance**; MV-D17 does only the latter, because breadth-damping would move Y for the two IEEE-pinned POV examples and every existing candidate — a separate calibration owed its own change. Recorded here so the curated credit does not quietly stand in for the breadth fix.
+
+**Blocker 2 — `sql_functions` dropped, `sql_snippets` substituted.** `SqlFunction` carries only `id` + `identifier` in `serialized_space` (no body), so harvesting it needs a `DESCRIBE FUNCTION` UC read outside 6c's boundary. Dropped. Its curated-measure role is served by `instructions.sql_snippets` → `filters` / `expressions` / `measures`, each a `SqlSnippetBase` carrying `sql: list[str]` — real inline curated SQL already in the applied `serialized_space`, needing no new read. The five-source list this playbook implied missed it; this is a scope substitution, not a cut. A bodyless `sql_functions` entry (the shape the synthetic-data path appends) is skipped rather than crashing the loader, pinned by test.
+
+**Blocker 3 — `join_specs` skipped, no synthetic wrapping.** `JoinSpec.sql` is a bare predicate fragment (`a.x = b.y`) that no extractor reads without synthetic wrapping, which is forbidden — and join keys do not feed Y for measure candidates anyway (the seed surface is `scan.measures`; join keys feed the YAML ladder and source-set). Skipped. Using `JoinSpec.left/right.identifier` as curated join topology for `mv_yaml`'s ladder is a legitimate but different consumer — **deferred**, not done here.
+
+**Blocker 4 — governed metric views are a post-scan seed exclusion, not a corpus channel.** `dedup_gate` returns `VERDICT_BLOCKED` on an exact match, so a governed-MV measure entering the seed set would produce a candidate blocked by the very MV it came from. `corpus_scan` has no notion of an evidence-only entry — anything fed to it becomes a `_Bucket` and therefore a seed — so rather than add an evidence-only channel to the scan, `mv_advisor` filters seeds post-scan against the estate MV index it already holds at the assembly site. Realized as: harvest `example_question_sqls` + `sql_snippets` + `genie_opt_patches` into the corpus (curated), and drop any `scan.measures` entry whose canonical matches a governed measure before it consumes a candidate slot.
+
+**MV-D18 — A kept attach survives every loop outcome, and the champion record has to say so.** Taken during the Prompt 7 review, from tracing the four finalize trajectories rather than from reading the design. The starting question was whether champion selection could drop a metric view that passed its own lift gate. It cannot drop it from the **space** — but it could drop it from the **record**, which costs the user the same third run.
+
+*What the trace found.* `publish_and_audit` never re-deploys a config (`publish.py:16-18`, `:891` — "idempotent Delta-only `promote_best_model`; NO live-space mutation"), so the deployed `serialized_space` is whatever the optimize task left live. Each lever rollback restores `apply_log["pre_snapshot"]` (`applier.py:4628`), which is a deepcopy of the config the loop handed to `apply_patch_set` (`applier.py:4120`, called with `current_config` at `unified_loop.py:3282-3289`) — post-attach. So the view stays live in all four cases: a late champion carries it, a fully-regressing loop reverts *to* it rather than past it, a mid-loop exception leaves it untouched, and a failed lift removed it before the levers ever ran.
+
+| Case | In the deployed `serialized_space`? | `genie_opt_mv_created_objects.status` | Test |
+|---|---|---|---|
+| 1 — lift passes, loop improves, champion is a late iteration | **Yes.** Every accepted attempt built on the post-attach config | `ATTACHED`, true | `test_case_1_a_late_champion_still_carries_the_metric_view` (run twice: live read-back and unavailable) |
+| 2 — lift passes, loop regresses, finalize reverts to baseline/champion | **Yes.** Lever rollback restores the loop's own `pre_snapshot`, which is post-attach — it reverts *to* the attach, not past it. The expected defect was real but sat one layer over: the champion **row** pointed at a pre-attach config | `ATTACHED`, true only after the `observed_config_json` re-point below | `test_case_2_a_regressing_loop_keeps_a_view_that_passed_its_own_lift`, `test_case_2_the_champion_record_is_repointed_at_the_attached_config`, `test_case_2_the_submitted_baseline_config_is_left_pre_attach` |
+| 3 — lift passes, loop errors mid-way and the run reverts | **Yes.** The exception propagates past the terminal exit without touching the space | `ATTACHED`, true — and deliberately unreconciled, because reconciliation runs at the terminal exit this case never reaches and the row is already correct. Correct *because the attach completed first*; an error inside the attach phase itself is the unprotected window below | `test_case_3_a_mid_loop_failure_leaves_the_status_alone` |
+| 4 — lift fails, attach already reverted, loop then runs normally | **No**, correctly — the attach phase detached it before attempt 1 | `DETACHED` with the lift report attached; the UC object is never dropped. (An *ungradeable* lift is the separate case: it also reverts, but leaves the object `CREATED`) | `test_case_4_a_failed_lift_leaves_no_view_and_no_claim` |
+
+*The defect was one column.* Iteration 0's config columns are written **before** the attach phase (`write_iteration(..., config_snapshot=current_config)` at `unified_loop.py:2926-2937`, phase at `:3028`), and `_stamp_terminal` (`:2537-2566`) rewrites neither. When no lever attempt is accepted, that pre-attach row is also the **champion** — and `revert_optimization(target="champion")` resolves to `observed_config_json or config_json` off the `is_champion` row (`revert.py:692`, `:733`). So the button a user presses to *keep* the optimized configuration would strip a consent-backed view that had already measured positive. The same row simultaneously carried `best_config_version_id = _stable_config_id(current_config)` — the post-attach hash (`:2436`, `:2564`) — so it contradicted itself.
+
+*The fix restores an existing contract rather than inventing one.* `observed_config_json` is defined as the authoritative `serialized_space` as the API reports it after the write (`state.py:962-966`, `ddl.py:98`) — what is deployed. After a kept attach, iteration 0's value is simply **stale**, so `state.update_iteration_observed_config` re-points it and the attach phase calls that on the ATTACHED path only. `revert.py`, champion selection and the accuracy arithmetic are all untouched.
+
+*The two columns disagree on purpose. Do not "fix" it.* After a kept attach, iteration 0 carries a **post-attach `observed_config_json`** and a **pre-attach `config_json`**, and that asymmetry will read as a bug to anyone who finds it without this paragraph. It is not one, because the columns answer different questions. `observed_config_json` answers *what is deployed*, which is why revert and champion selection read it. `config_json` answers *what was measured* — and iteration 0's accuracy genuinely was measured against a space without the metric view. That is the whole point of the ordering in MV-D16(b): the baseline is deliberately pre-attach so `mv_lift` has an uncontaminated comparand. **Rewriting `config_json` to match `observed_config_json` would silently falsify the baseline that every accuracy delta in the run is measured against** — the lift report, each lever attempt's accept/reject decision, and the run's reported improvement all subtract from iteration 0. The record would become self-consistent and wrong, which is strictly worse than stale, and nothing would fail: the numbers would still add up, against a baseline that never existed. `test_case_2_the_submitted_baseline_config_is_left_pre_attach` exists to make that edit fail a test rather than pass review.
+
+*Amended by MV-D114: after a kept attach, lever accept/reject subtracts from the post-attach full-suite eval; iteration 0's recorded score and `config_json` are unchanged.*
+
+*Status truthfulness is enforced, not assumed.* `mv_attach.reconcile_attached_objects` runs at every post-attach loop exit and demotes any `ATTACHED` row whose identifier is absent from the config the run ends on, because an `ATTACHED` row pointing at a space that no longer references the view is worse than no row — Prompt 9's re-run flow and Prompt 13's UI both read it. Demotion is a status correction: it never drops the UC object, and it leaves verified rows completely untouched so it is idempotent across the loop's several exits.
+
+*Reconciliation is demote-only, and that is a property rather than a behaviour.* It writes exactly one status, `DETACHED`, and it considers only rows that already claim `ATTACHED` — a `CREATED` or `DETACHED` row is skipped **even when its identifier is present on the final config**. The asymmetry is deliberate: an identifier on `data_sources.metric_views` proves only that something put it there, not that it came through MV-D1's consent gate, so promoting on that evidence is exactly how an attach that bypassed the gate would acquire a legitimate-looking `ATTACHED` status. `ATTACHED` is written in one place only — the attach phase, after it has validated the consent row and the created object — and reconciliation is a check on that claim, never a second way to make it. Pinned by `test_reconciliation_never_promotes_a_row_the_config_happens_to_carry` (parametrized over `CREATED` and `DETACHED`, with the identifier deliberately *present*, which is the shape that would tempt a promotion), `test_reconciliation_writes_no_status_other_than_detached` (asserted over the whole `MV_CREATED_OBJECT_STATUSES` vocabulary, so a status added later cannot quietly become writable), and `test_reconciliation_ignores_a_non_attached_row_the_read_lets_through`. The filter is applied twice — on the read and again per row — so the property survives an edit to either; the per-row half is what the third test exercises, by stubbing the read to hand back a `CREATED` row.
+
+*One window is unprotected, and the reason to leave it is the property above.* Between the attach PATCH landing (`mv_attach.py:515`) and the `ATTACHED` status write (`:611-623`) sits the entire lift eval — the longest operation in the phase. An exception anywhere in there leaves the view **live in the space** with the row still saying `CREATED`. This fails in the safe direction: it **under-claims**, and the direction that would actually hurt — `ATTACHED` recorded for a view that is not there — cannot arise here, because nothing between that write and the loop's exit removes the view. `attach_patch_id` is stamped on the `CREATED` row immediately after the PATCH (`:541-551`), so a reader can distinguish "the PATCH landed, the verdict is unknown" from "never attached"; only the two Delta writes between the PATCH and that stamp are fully ambiguous. We are **not** adding an exception handler to close it, because the only thing such a handler could do is read the live config and promote `CREATED` → `ATTACHED` — which is precisely the promotion path the demote-only property forbids, and for the same reason: config presence is not consent. A conservative under-claim costs the user a re-run; a promotion path costs the consent chain its meaning. Prompt 9 and Prompt 13 must therefore treat `CREATED` as "not attached, may still be live" rather than as "not live", and Prompt 9's re-attach must be idempotent against an identifier already on `data_sources.metric_views`.
+
+*Superseded by MV-D114: the window is closed by a revert, not a promotion — the handler writes `CREATED`, and reconciliation still only demotes.*
+
+*One dependency the trace surfaced, worth knowing before Prompt 8.* The loop replaces its in-memory config from a live GET each iteration (`unified_loop.py:3382-3390`, preferring the observed read-back over its own submitted config). A late champion therefore carries the view because the attach really PATCHed the space — not because the loop remembers it. Both paths are asserted: the four cases are tested under a live read-back *and* under an unavailable one, the second proving the attach survives through the loop's own config lineage. Should a future API normalization ever drop `metric_views` from a read-back, the loop would lose it silently and reconciliation is what turns that into a truthful `DETACHED` rather than a lie.
+
+**MV-D19 — Lineage grain for L (DECIDED at Prompt 6a — (b) column grain).** Recorded when Prompts 6a and 6b were drafted, so no other prompt settles it by accident. **L carries the blend's largest weight (0.35, `MV_SCORE_WEIGHTS`) and had no producer** — the advisor constructs an empty `LineageOverlap()` and reports `UNAVAILABLE` (`mv_advisor.py:664`, `:725`); Prompt 6a lands the producer in `optimization/mv_signals.py`. The signal recon (Q2) found the grant surface splits the options: the SP's system-schema grants (`WATCH_SYSTEM_GRANTS`, `scripts/deploy_lib/uc.py:30-43`, applied by `scripts/grant_permissions.py`) already include `system.access.table_lineage` SELECT, but `system.access.column_lineage` is **not granted**. The two options that were weighed:
+
+- **(a) Table-grain L on the existing grant.** No install change and no new permission ask — but `LineageOverlap` and `lineage_overlap_score` (`mv_scoring.py:169`, `:445`) are written and documented for *column* sets, so the normalization and every docstring that says "column" would have to be restated for table grain, and the POV Part 3 arithmetic re-derived at that grain. The recon's RECOMMENDATION sanctioned this as the shippable first version.
+- **(b) Column-grain L.** Matches POV Part 3 as written, at the cost of a new grant row in `WATCH_SYSTEM_GRANTS`, an upgrade path for existing installs (re-run `grant_permissions.py`), and a documented degradation when the grant is absent: the read fails, L is `UNAVAILABLE` with the missing grant named in the recorded reason — never a silent zero.
+
+**Resolution: (b) column grain. Table grain was rejected as a correctness finding, not a cost preference** — record it this way so a future reader does not reopen it as "why didn't they just take the free grant." `lineage_overlap_score` (`mv_scoring.py:445`) is `Jaccard(candidate_columns, reference_columns)` by construction, and grain changes what that number *means*, not just its resolution. Walk the dominant candidate type, `NEW_METRIC_VIEW → REFERENCE_LINEAGE_FOOTPRINT`: at table grain the reference set is every source table the space's queries touch, and the candidate's tables are — necessarily, since the candidate was mined from the space's own SQL — a subset of that footprint. Intersection collapses to the candidate's tables and union to the footprint, so L degenerates to `|candidate_tables| / |footprint_tables|`: it stops answering "how squarely does this measure sit on established lineage" and starts scoring "how large a fraction of the estate does this candidate sprawl across" — penalizing the clean single-table measure (usually the best metric-view candidate) and rewarding sprawl. The signal is not merely coarsened; for the primary case it is **inverted**, and no other table-grain operator rescues it (coverage `|cand ∩ footprint| / |cand|` goes to ~1.0 for every candidate — no discrimination). Table grain remains meaningful only for the governed-MV reference cases (`REPLACE_RAW_TABLE` / `ADD_MEASURE`, a small candidate set vs a specific MV's small set), which are not the volume. A table-grain L would report `COMPUTED` and lift the coverage cap — potentially to HIGH — on a number that is noise-or-inverted at 0.35 weight, which is the exact failure MV-D15 exists to prevent ("a signal never measured is not a signal measured zero"): an honest `UNAVAILABLE` renormalizes the weight away and keeps the ranking trustworthy at MEDIUM, while a false `COMPUTED` poisons the top of the ranking and claims a confidence tier it did not earn. Column grain is also the **lower-churn** option inside the code: the `LineageOverlap` fields were written for columns, so (b) needs zero docstring restatement, zero POV Part 3 re-derivation, and no touch to the `LineageOverlap` construction sites in `test_mv_scoring.py` — the mv_scoring churn is entirely a cost of (a). Its only real cost is external: one `WATCH_SYSTEM_GRANTS` row for `system.access.column_lineage` SELECT plus the re-run-`grant_permissions.py` upgrade path — the same path every other system grant in that list already relies on. *Empirical caveat, folded into 6a rather than discovered at deploy — and now probed.* `system.access.column_lineage` is Public Preview with a one-year retention window (POV Caveat 8), so column-grain L will be `UNAVAILABLE` in workspaces where the grant or the data is absent — which is honest (coverage falls back to 0.65, cap MEDIUM) and still strictly better than an always-present inverted signal. The Prompt 6a probe was run against workspace `fevm-serverless-stable-6t92c3` and came back favorable on every point that shapes the read: (1) the table **carries `entity_metadata.genie_space_id`** inside its `entity_metadata` struct — the same field `table_lineage` exposes — so `_footprint_sql`'s space-scoping is correct and no source-table-only fallback is needed; (2) it is **heavily populated** — ~117M rows in the last 90 days, of which ~458K are Genie-attributed across **2,393 distinct spaces** — so L will genuinely contribute rather than being perpetually `UNAVAILABLE`; and (3) the exact `SELECT DISTINCT source_table_full_name, source_column_name … WHERE entity_metadata.genie_space_id = … AND source_table_full_name IN (…)` shape executes and returns real `(table, column)` footprint rows for a live space (column names arrive upper-case, which is why the producer lower-cases both sides before the Jaccard). The probe ran as an interactive user with the necessary grants; the one remaining deploy step is applying the new `WATCH_SYSTEM_GRANTS` row to the **app service principal** via `grant_permissions.py`, and MV-D15 still gives the graceful landing (`UNAVAILABLE`, grant named) on any workspace where that has not yet run.
+
+*Settled regardless of grain, per the recon's contradiction #3 (POV:266):* lineage evidence is **computed under the SP and filtered at presentation** per the viewing user's grants — never computed under OBO in-job, which the job's identity makes impossible anyway (MV-D1). And per MV-D15's vocabulary: a lineage read that runs and resolves to genuinely disjoint sets is `EMPTY` (a measurement); a read that could not run is `UNAVAILABLE` with a recorded reason. One-year lineage retention and Public Preview status (POV Caveat 8) are reasons, not surprises.
+
+**MV-D20 — The create path runs under OBO through the warehouse helper, never the read-only executor and never the SP fallback (OPEN — decided at Prompt 9).** Recorded when the Prompt 9 gap check found two paths that both *look* like "how the backend runs SQL" and only one is correct for a `CREATE VIEW … WITH METRICS`. MV-D1 already settled *that* creation moves to the backend under OBO at trigger time; MV-D20 settles the two mechanical questions that decision leaves open, because getting either wrong silently violates MV-D1 rather than erroring.
+
+*Which executor.* The backend's general SQL helper, `execute_sql` / `validate_sql_read_only` (`backend/sql_executor.py:32`), hard-blocks `CREATE|ALTER|GRANT|DROP|DELETE|…` and requires a statement to start with SELECT or WITH. That guard protects the `/api/space` ad-hoc SQL surface and **must not be relaxed to let the create path through** — doing so would widen a security boundary far beyond this feature. The create/`EXPLAIN`/`DESCRIBE EXTENDED`/`MEASURE()`-smoke statements instead go through `genie_space_optimizer.common.warehouse.sql_warehouse_query` (`warehouse.py:34`), which carries no read-only guard — the same path the entitlement probe already runs under OBO (`backend/services/mv_entitlement.py:194`). So the spec's "reuse the backend's OBO SQL path if one exists, else the SDK" resolves to: a path exists, it is `sql_warehouse_query` called with the OBO client, and no new executor is invented.
+
+*Under whose identity.* The trigger endpoint today resolves its client with `get_workspace_client()` (`auto_optimize.py:1472`), which **falls back to the service principal** when no OBO token reached the request. The create path must instead take the OBO client from `require_obo_workspace_client()` (`backend/services/auth.py:117`), which **hard-fails** rather than falling back. A metric view created as the SP lands ownership on the app identity — precisely the outcome MV-D1 exists to prevent — and a silent SP fallback would produce it with no error. The hard-fail is the enforcement of MV-D1's identity contract, not an ergonomic choice. Reads (list proposals, load DDL artifact) may keep the SP-tolerant `get_workspace_client()`; only writes that create or drop a UC object require the hard-fail client.
+
+*Consequences carried by Prompt 9.* Post-create verification (`DESCRIBE EXTENDED` asserting `Type: METRIC_VIEW`) and the fan-out `MEASURE()`-with-`GROUP BY` smoke test are themselves warehouse statements on this same OBO path, not on `execute_sql`. Any later edit endpoint uses `ALTER VIEW … AS $$…$$` (grants-preserving), never `CREATE OR REPLACE` — also on this path. The route tests must include a case proving a create is refused (not silently SP-run) when no OBO token is present.
+
+**MV-D21 — The backend reaches MV state through new warehouse helpers pinned to the `mv_state` schema, not through cross-package Spark imports (OPEN — decided at Prompt 9).** Recorded when the gap check found the Prompt 9 route list quietly assumes the `mv_state` accessors are callable from the backend. They are not. `mv_state.py`'s accessors (`load_mv_candidates`, `upsert_mv_created_object`, `update_mv_created_object_status`, `record_mv_candidate_decision`) are **Spark-based and run in-job**; the backend imports nothing from `genie_space_optimizer.optimization` and reads GSO-written Delta through the warehouse `wh_*` helpers in `common/warehouse.py`. Only two MV warehouse helpers exist today — `wh_upsert_mv_consent` (`warehouse.py:473`), `wh_load_mv_consent` (`:540`) — both added in Prompt 5.
+
+*What this obliges Prompt 9 to build.* **Five** new `wh_*` helpers (the count moved from four to five during execution — see below), mirroring the Spark accessors over the SQL-warehouse path the backend actually uses: `wh_load_mv_candidates` (GET `/runs/{run_id}/mv-proposals`), `wh_record_mv_candidate_decision` (POST `/mv/proposals/{id}/decision` — approve sets `approved_for_rerun`, reject writes suppression), `wh_upsert_mv_created_object` (the create-and-attach record), `wh_update_mv_created_object_status` (the status transition on drop), and `wh_load_mv_created_object` (the fifth, added at execution: the drop route needs a *read* keyed on `(run_id, suggestion_id)` to authorize against `created_by` and confirm `status = DETACHED` before it drops anything — a write-only helper set could not enforce MV-D6). This is real work the "add four routes" framing hides, and it is the reason Prompt 9's backend is larger than its route count suggests. The one route that needs **no** new helper is GET `/runs/{run_id}/mv-ddl`: the existing `_load_latest_artifact(run_id, "mv_candidate_ddl")` (`auto_optimize.py:437`) already reads the advisor's DDL artifact — note the kind is `mv_candidate_ddl` (`mv_advisor.py:1155`), not `mv_ddl`.
+
+*The drift hazard, and the pin that closes it.* Two code paths now read and write the same three `genie_opt_mv_*` Delta tables in two languages — `mv_state` (Spark, in-job) and these `wh_*` helpers (warehouse SQL, backend) — the exact "two readers of one field start disagreeing" failure the Prompt 6c harvest guarded against for trusted assets. The `wh_*` helpers must be pinned to the `mv_state` column contract (a shared column-list constant, or a test that asserts the warehouse helper's projected/written columns match `mv_state`'s), so a schema change on either side fails a test rather than a demo. That pin is part of Prompt 9's VERIFY, not a follow-on. `created_by` (the consenting user) already exists on the created-objects row (`mv_state.py:468`), so the drop route's non-owner 403 has a field to authorize against without a schema change. The pin lands as `packages/genie-space-optimizer/tests/unit/test_wh_mv_state.py`.
+
+**MV-D22 — The backend replays the stored YAML with revalidation; it does not regenerate (supersedes MV-D15's regeneration clause).** Recorded during Prompt 9. MV-D15 directed Prompt 9 to regenerate the YAML under the backend's probe rather than replay the run-1 artifact, on the premise that the OBO backend would see richer capabilities than the SP job. That premise is false: `generate()` reads capabilities off `profiling.capabilities` (`mv_yaml.py:288`, rung gated at `:668`), capabilities derive from the compute type not the identity, and the backend probes via SQL warehouse exactly as the job does — so MV-D13 pins both to the same UNKNOWN→unavailable floor, and a regeneration would produce byte-identical YAML to the job's rung-3 render. Regeneration is unachievable regardless, because `generate()`'s inputs (`MetricViewCandidate`, `MvProfiling`) are not persisted. Resolution: the advisor additionally persists the rendered `yaml_text` in the `mv_candidate_ddl` payload (`mv_advisor.py` `_write_ddl_artifact`); at trigger time the backend recovers it, re-wraps it for the consented target via `create_ddl(consented_full_name, yaml_text)` — necessary because `_proposed_object` (`mv_advisor.py:721`) derives the render-time name from source-table location, before consent exists and possibly differing from it — re-validates under the fresh probe, and hard-aborts the create (drops the suggestion) if revalidation returns a `downgrade_to` below the stored rung. The abort guard makes create-time safety independent of MV-D13 rather than silently dependent on it. Firewall unchanged: the persisted `yaml_text` is the already-echo-checked shipped body; because it is immutable between render and create, the backend accepts the render-time echo result and does not require the benchmark oracle at trigger time (`validate` reporting `NOT_COMPARED` without the oracle is not a create failure). The create-and-attach orchestration lives in the backend `mv_create.py` service (MV-D20); the engine's `trigger_optimization` reaches it through an `mv_attach_hook` callback so the dependency arrow stays backend→engine. The abort guard is pinned by `test_mv_create.py::test_revalidation_downgrade_aborts_the_create`.
+
+**MV-D23 — Whether a candidate can exist, and be created, without a run (DECIDED at Prompt 13.5 — option (a), the real sentinel advice run).** Recorded from a post-Prompt-9 review of the question the feature cannot currently answer: *can the advisor suggest a metric view for a Genie Agent that has never been optimized?* Today it cannot, and the reason is not a policy — it is four `run_id` constraints that Prompts 1 through 9 each added for good local reasons and that compose into a hard coupling nobody chose. They are recorded here because three of the four cannot be relaxed by the `ADDITIVE_COLUMN_MIGRATIONS` mechanism, so the decision has a schema cost that a later prompt must not discover mid-flight.
+
+*The four couplings, precisely.* **(1)** The corpus is gated, not merely seeded: `_advise` opens with `load = load_iteration_zero_corpus(...)` and returns `STATUS_SKIPPED` on `not load.usable` (`mv_advisor.py:922-928`), so the curated half Prompt 6c shipped is strictly additive to a gate it cannot open — and `curated_corpus_entries` additionally consumes `load.applied_config`, itself derived from the same iteration rows. A space with no eval run has no corpus even when its `example_question_sqls`, `sql_snippets.measures` and benchmark answers are full of recurring measures. **(2)** `genie_opt_mv_candidates.run_id` is `NOT NULL` (`ddl.py`, the candidates DDL) with the comment "the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)" — the comment already concedes the candidate outlives the run, but the column still requires one. **(3)** The rendered body lives in exactly one place: `_write_ddl_artifact` persists `yaml_text` into a `genie_opt_artifacts` row (`artifact_kind = 'mv_candidate_ddl'`), and that table is `run_id NOT NULL` and `PARTITIONED BY (run_id)`. So MV-D22's replay contract — the backend recovers the immutable body rather than regenerating it — has nothing to recover for a candidate proposed outside a run. This is the sharpest of the four, because it makes MV-D22 and a standalone create mutually exclusive as currently built. **(4)** The created-objects ledger is `PARTITIONED BY (run_id)` and keyed `(run_id, suggestion_id)`, and all three backend writers take `run_id: str` non-optionally (`warehouse.py`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`).
+
+*What is already fine, and should not be re-solved.* `wh_load_mv_candidates` was built during Prompt 9 accepting `target_space_id` **or** `run_id`, with a guard that refuses to scan every space. The space-scoped read therefore already exists; only the route above it (`GET /runs/{run_id}/mv-proposals`) is run-keyed. The 6a/6b signal producers read through `sql_warehouse_query` rather than Spark, so L and D need no second producer for a backend-side caller. And with L and D wired, `evidence_coverage` is no longer 0.50 — a standalone candidate is not structurally capped at MEDIUM, which was the strongest argument against this path while it held.
+
+*Three options, none chosen here.* **(a) A sentinel advice run.** Standalone advice writes a `genie_opt_runs` row distinguished by kind, and every FK, partition, helper and MV-D22 replay path works untouched. The cost is honest but real: a run row that never ran an eval, which the run-history list and every accuracy aggregate must then exclude by construction rather than by convention — and a filter that is forgotten in one place produces a run with no accuracy rather than an error. **(b) Relax `run_id` and re-key.** Truthful to the model, and the candidate row's own comment argues for it, but `ADDITIVE_COLUMN_MIGRATIONS` can only *add* columns — dropping `NOT NULL` on couplings (2) and (3) and re-partitioning (4) needs table recreates on three tables that already hold customer data on any workspace that has run this branch. **(c) Separate standalone tables.** Cleanest schema, worst outcome for the drift hazard MV-D21 just spent a pin closing: a third reader and writer of the same three concepts in a third dialect. A leaning, for 13.5 to accept or overturn with reasons: **(a)**, with the exclusion expressed as a predicate in the shared run-list query rather than as a rule contributors must remember, plus an additive `yaml_text` column on the candidate row so coupling (3) stops depending on the artifact partition at all — the one genuinely additive part of (b), worth taking whichever option wins.
+
+*What this obliges the prompts between here and 13.5.* Prompt 12's graph and Prompt 13's cards must be built against a proposal payload whose `run_id` is **presentational, not structural** — no component may key state, fetch, or identity on it — because 13.5 supplies the same `ScoredProposal` shape from a space-scoped source and a payload divergence rebuilds both. Prompt 11 must read approved proposals **by space** (see its amended body). And no prompt before 13.5 may add a fifth `run_id` coupling to the MV surface without recording it here.
+
+*DECISION (Prompt 13.5): option (a), the real sentinel advice run — with the additive `yaml_text` column, and three guardrails.* A standalone advice request writes a real `genie_opt_runs` row carrying a new additive `run_kind` discriminator (default `optimization`; standalone writes `mv_advice`), so every FK, partition, `wh_*` helper and the MV-D22 replay path works on a genuine `run_id` with no table recreate — couplings (2) and (4) are satisfied as-is. Coupling (3) is additionally severed by an additive `yaml_text` column on `genie_opt_mv_candidates`: the standalone advisor writes the rendered body onto the candidate row, and `mv_create._load_ddl_artifact` gains a candidate-row fallback, so the replay body no longer depends on the `run_id`-partitioned artifact — while the in-job path keeps writing the `mv_candidate_ddl` artifact byte-unchanged. Coupling (1) is resolved in code (iteration-0 becomes one *contributor* to the corpus, not a gate; the no-run `applied_config` comes from `fetch_space_config` at `common/genie_client.py:323`, routed through one accessor shared with the in-run reader so the two paths cannot disagree; `_patch_corpus_entries` contributes nothing rather than erroring on the no-run path). Every existing `SKIP_*` reason keeps its meaning: an eval run that produced no SQL is still a SKIP with its reason (MV-D15 vocabulary — EMPTY is a measurement, UNAVAILABLE is a read that could not run), and MV-D16(b) contamination is unweakened (nothing this path produces re-enters the corpus as recurrence evidence).
+
+*Why the orphan-`run_id` variant was rejected (considered and refused, do not relitigate as an oversight).* The alternative — write the MV rows under a synthetic `run_id` with **no** `genie_opt_runs` row — was rejected because it fails in the **silent** direction, the exact failure class this branch keeps paying to eliminate. `run_id` on all three MV tables is documented as an FK to `genie_opt_runs`; Delta does not enforce it, so a synthetic id resolving to no row turns every future candidates→runs join into either silently-dropped advice rows (inner join) or unexplained NULLs — a defect someone *discovers*, versus a sentinel row someone *reads*. The advice request also needs an audit home (who asked, when, corpus stats), and the stage rows the advisor already writes (`write_stage`, run-keyed) would otherwise orphan too. Run-history pollution is the visible, bounded cost; orphan ids are the invisible, unbounded one — and the re-read strengthens this: coupling (4) grew two run-keyed readers and a route in Prompt 13 (`wh_load_mv_created_objects` `warehouse.py:885`, `wh_load_mv_consent_by_run` `:924`, `GET /runs/{run_id}/mv-created` `auto_optimize.py:2157`), so the run-keyed surface is expanding and every expansion makes an orphan id lie to one more consumer.
+
+*Three guardrails, built into (a) and part of its VERIFY.* **(i) Advice runs are born terminal.** The sentinel row is written with a terminal status immediately — never `RUNNING` — so `wh_reconcile_active_runs` and any active-run logic can never pick one up; this closes the reconciliation half of the forgotten-filter risk *structurally* rather than by predicate. **(ii) The exclusion predicate is a pinned constant, not a convention.** The register's stated failure mode is a filter forgotten in one place, so the `run_kind = 'optimization'` exclusion lives in exactly one helper/SQL-fragment constant that every run-listing and accuracy-aggregating query goes through, plus a test asserting the run-list query sites use it — the same spirit as the MV-D21 column pin. A predicate that lives in prose is the convention the register warned about. **(iii) The debug-prompt contract is checked in the same commit.** `docs/debug-prompt.md` is test-pinned (`test_debug_prompt_contract.py` — read-only, current tables, no retired columns) and queries `genie_opt_runs`; adding `run_kind` is additive and safe, and advice runs SHOULD be visible to the debugger, **labeled** (a debugger that hides rows is worse than one that explains them), so `debug-prompt.md` is edited directly in the same commit if its queries surface the column.
+
+*Coupling (4) growth: recorded as growth, not breach.* Prompt 13's two run-keyed readers and the `GET /runs/{run_id}/mv-created` route were sanctioned by its own amended body; they read rows already keyed by `run_id` (they belong to coupling (4), not a genuinely new fifth key). The clause above required the *recording* to happen, and this is it — the run-keyed surface is now enumerated here as of 13.5.
+
+**MV-D24 — Bring-your-own metric view: a user-created view can be reported back, verified, and attached (DECIDED at Prompt 13.5 — the registration path, as the resolution shape proposed).** Recorded at the Prompt 10 mockup review, from the question the suggest-only output invites but the system cannot complete. The DDL panel hands the user a copy-ready `CREATE VIEW … WITH METRICS` and the GRANT to go with it — an explicit invitation to create the view themselves, in a SQL editor, under their own identity, in whatever schema they choose. The moment they accept that invitation, the feature goes blind. Three dead ends compose: `mv_attach` skips any identifier without a `CREATED` ledger row for the run (`mv_attach.py:478`) and any row whose `created_by` mismatches the consent's `granted_by` (`:484`); the ledger's only writer is the backend create path (`mv_create.py`), so a self-created view never acquires a row; and the drop and status routes key on that same ledger. Copied DDL is therefore a one-way exit — the app can neither attach, measure, nor acknowledge the resulting view. The contrast that makes this a defect rather than a scope choice: the **Create Agent already attaches pre-existing metric views natively** (`data_sources.metric_views[]` accepts any UC identifier the user holds), so the workbench's two surfaces currently disagree about whether a user-created metric view is a first-class object.
+
+*Resolution shape, for 13.5 to accept or overturn with reasons.* A registration path: the user reports the identifier (a [I created this myself] affordance on the proposal card, or a free-standing input on the IQ Scan panel); the backend **verifies under OBO** — `DESCRIBE EXTENDED` asserts `Type: METRIC_VIEW`, the YAML is recovered via `DESCRIBE … AS JSON` `view_text`, `mv_yaml.validate` lints it, and when the user claims it implements a specific proposal the dedup fingerprint is compared so the claim is checked rather than trusted; on success a ledger row is written with a `provenance` discriminator (`OBO_CREATED` | `USER_CREATED`, an additive column — `ADDITIVE_COLUMN_MIGRATIONS` suffices here) and `created_by` recording the verifying user; the normal attach-and-lift path then runs on the next run, which requires a **sanctioned, narrow relaxation** of the `mv_attach.py:484` identity guard for `USER_CREATED` rows — the guard's purpose is to stop the job attaching an object the consent chain never covered, and a verified registration IS that coverage.
+
+*Two invariants stated now so 13.5 does not relitigate them.* **The app never drops a `USER_CREATED` view** — stronger than detach-never-drop: we did not create it, we do not own its lifecycle, and the drop route must refuse on provenance, not merely on status. And **registration is verification, not trust**: an identifier that cannot be verified (not a metric view, not visible to the caller, YAML fails validation) is refused with the reason, never recorded provisionally. Permission guidance is already solved and must be reused, not rebuilt: `mv_entitlement.probe` + `_remediation_sql` render the exact GRANTs for the self-create path, and the frame-4 GRANT panel covers the audience grant.
+
+*DECISION (Prompt 13.5): the registration path, accepted as the resolution shape above, with the anchor corrected.* A new additive `provenance` column on `genie_opt_mv_created_objects` (`OBO_CREATED` default | `USER_CREATED`) discriminates the two create paths; `mv_create.create_and_attach_for_run` (unforked) records `OBO_CREATED`. Bring-your-own registration is a new OBO backend service + route: the caller reports an identifier, the backend verifies under OBO (`DESCRIBE EXTENDED` asserts `Type: METRIC_VIEW`; the YAML is recovered via `DESCRIBE … AS JSON` `view_text`; `mv_yaml.validate` lints it; and when the caller claims a specific proposal, the dedup fingerprint is compared so the claim is checked, not trusted), then writes a `USER_CREATED` ledger row under the space's advice run (MV-D23) with `created_by` = the verifying user. The `mv_attach` identity guard the register cited as `mv_attach.py:484` **has moved to `mv_attach.py:482`** (the `created_by != granted_by` skip returning `SKIP_CREATOR_MISMATCH`); the sanctioned narrow relaxation applies there and only for `provenance = USER_CREATED` rows — a verified registration is the consent coverage that guard exists to require. Invariant 1 lands as a provenance check placed **before** the existing status check in the drop route (`auto_optimize.py:2070-2075`): a `USER_CREATED` row is refused on provenance even when `status = DETACHED`. Invariant 2 lands as: an unverifiable identifier returns the reason and writes nothing. `mv_entitlement.probe` + `_remediation_sql` (`backend/services/mv_entitlement.py:273`, `:406`) supply the self-create GRANT guidance — no second probe is built.
+
+**MV-D25 — Schema-only (cold-start) metric view suggestion (OPEN — owner: the create-agent branch, after Prompt 16; NOT decided on this branch).** Recorded before Prompt 12, from a direct capability question. The engine cannot suggest a metric view from tables, column metadata, and data sampling alone, and this is by construction, not omission: the sole candidate producer is `candidate_from_measure` over a `FingerprintRecurrence` (`mv_advisor.py:646`) — every candidate is a measure that RECURRED in SQL somebody or something wrote. No SQL corpus, no candidates, and Delta 9's honest limit says that state presents as `EMPTY`. The blend enforces the same epistemology: Y is recurrence, S needs a candidate to compare, L and D score evidence about usage — none of the four can conjure a proposal from a schema. The reason this is a feature and not a gap on THIS branch: proposals arrive pre-trusted (MV-D8's premise), and a recurrence-backed proposal asserts "people already compute this"; a schema-derived one asserts "this looks computable" — a categorically weaker claim that must never share a confidence scale with the first. Where the capability actually lives: the create-agent branch, whose evidence route is profiling by design — `plan_builder`'s analytics section already generates measures and join_specs from table context via LLM, `assess_readiness` already grades modelability, and the EXACT-uniqueness probe planned there supplies MV-D14's missing evidence. If a cold-start mode is ever wanted on the IQ Scan surface too, the shape is: a separate producer emitting a new candidate provenance (`SCHEMA_DERIVED`), hard-capped below the recurrence tiers, suggest-only forever, never blended into the LYDS score — but that is that branch's decision to take, with its own MV-D entry.
+
+**MV-D26 — Page-candidate persistence and exposure (OPEN — decided at Prompt 17a).** The Ontology Pages track produces per-space suggestion state (archetype, evidence, draft body, decision, applied-instruction pointer) that outlives any single request. The MV-D7 pattern is the presumptive answer — a `genie_opt_page_candidates` Delta table, space-partitioned, with `wh_*` twins and the MV-D21 column pin extended — but 17a must weigh whether the draft *body* belongs in the candidate row (the MV-D23 `yaml_text` precedent, replay without a run-partitioned artifact) and must classify every column in the Prompt 14 exposure matrix from birth, since the sweep's ddl-walking pin will force it anyway. Suggestion state under a sentinel advice run (MV-D23's machinery) versus request-scoped rows is 17a's call to record.
+
+**MV-D27 — The instruction-augmentation write path (OPEN — decided at Prompt 17c).** Accepting a Page suggestion may write `text_instructions[0]` — the first workbench surface where an LLM-drafted artifact lands in live space config outside an optimization run's eval-gated loop. Constraints that are NOT open: the GSL instruction schema (`docs/docs/platform/gsl-instruction-schema.md`) is authoritative and CLAUDE.md mandates reading it before touching instruction handling; the single-text_instruction cap (`genie_creator._enforce_constraints`) and the IQ-scan length warning (~2000 chars, check 4) bound the budget; the write is OBO with diff preview and explicit consent, never auto-applied (MV-D1's invariants transpose: identity, recorded consent, downgrade-never-upgrade, and the consented TARGET here is the instruction block, nowhere else); benchmark text never lands verbatim (firewall). What 17c decides: direct OBO `update_space` versus the patch machinery, undo semantics (snapshot the prior block on the decision row), and how an augmentation marks its provenance inside the block so a later suggestion can find and supersede its own section rather than append forever.
+
+**MV-D28 — Web enrichment mechanics (OPEN — decided at Prompt 17b).** The Page standard's "Recent context" section is enriched from public sources when possible. Non-negotiable regardless of mechanics: enrichment is BEST-EFFORT — a failed or unavailable search degrades to workspace-evidence-only and still yields a complete, useful draft (the user's stated requirement, and the frame-7b honesty rule transposed); every enriched section is labeled "informational, as of DATE — not certified operational data" with sources listed (the demonstrator Pages' own convention); enrichment status reports in MV-D15 vocabulary (COMPUTED / EMPTY / UNAVAILABLE with a reason). What 17b decides: the mechanism (tool-capable serving endpoint via the workbench's model selection, versus direct egress from the Databricks App, versus skip-only in v1), and its timeout/failure contract — the suggest route must degrade, never hang, the same rule the MV suggest route's embedding path follows.
+
+**MV-D29 — The render source for a measure body is not the canonical form (DECIDED at Prompt 15.2).** Found live by Scenario D's BYO leg after Prompt 15.1 unblocked it: the served DDL is not executable for any literal-bearing measure. `expr: sum(l_extendedprice * (?n - l_discount))` fails creation with `INVALID_IDENTIFIER`. **This is not a rendering leak and must not be diagnosed as one.** Literal erasure in `mv_fingerprint` is deliberate, load-bearing, and firewall-motivated — its module docstring says so at `:25-40`: "a literal that reaches shipped metric-view metadata is a firewall violation", and, decisively, "**A generator must recover concrete predicate values from profiling, never by reading them back out of a canonical form — there is nothing left there to read.**" The defect is the consumer violating that documented contract: `candidate_from_measure` sets `measure_expr=measure.canonical_expr` (`mv_advisor.py`), i.e. it renders the identity form as the body. `FingerprintRecurrence` carries no concrete expression at all, so the generator had nothing else to reach for — a design gap, not a typo.
+
+*Two literal classes the current canonicalizer conflates, which is where the resolution lives.* **Predicate/filter literals** (`status = 'F'`, dates, thresholds) can carry benchmark values, sample values, or PII — erasure is correct and the firewall depends on it. **Structural arithmetic constants** (`1` in `1 - l_discount`, `100` in a percentage) carry no data content; they are part of the formula, and erasing them destroys the measure. Both become `?n` today.
+
+*Resolution shape for 15.2 to accept or overturn with reasons.* Add a `representative_expr` to `FingerprintRecurrence` — the verbatim source expression from one recorded occurrence — used ONLY as the render source, never as identity, never in scoring, never in dedup. `canonicalize_expr` and every MV-D10 invariant stay byte-untouched (the register forbids re-deriving them, and changing what merges would silently reshape recurrence). The firewall moves from erasure-by-construction to an actual gate: the representative expression passes `LeakageOracle` before it can reach a rendered body, and a representative that fails the scan drops the candidate rather than shipping a masked one. Rejected alternative, recorded so it is not relitigated: preserving numerics in arithmetic contexts but erasing them in predicate contexts — surgical, but it changes fingerprint identity (`* 100` and `* 1000` would stop merging, arguably correctly) and that is an MV-D10 change, out of scope for a defect fix.
+
+*Why this survived to a live workspace, which is the more useful finding.* Every offline fixture was literal-free, and nothing in the offline suite executes DDL. `mv_yaml.validate` — the MV-D8 sole gate whose whole purpose is that emitted YAML is never "invalid or silently wrong" — has no check for placeholder tokens (`?n`, `?s`) in an emitted expression, so it passed a body that cannot be created. **The POV's own worked example is the exact expression that fails**: `SUM(l_extendedprice * (1 - l_discount))` appears at `metric-view-suggestion-engine-pov.md:114` as the headline candidate and at `:176` as the sample YAML body. A defect that makes the design document's canonical example unrenderable is not an edge case.
+
+*Decision (Prompt 15.2), taking the resolution shape as stated.* `FingerprintRecurrence` and `MeasureRef` gain a `representative_expr`: a **literal-preserving** render form of one recorded occurrence — the same normalization `canonicalize_expr` runs (qualifiers stripped so it references the metric view's `source:` columns, identifiers and temporal units normalized) **minus the `_erase_literals` pass**, so `1 - l_discount` survives verbatim. It is a NEW field used ONLY as the render source: identity, scoring and dedup keep reading `canonical_expr` / `MetricViewCandidate.canonical_measure_expr` (which prefers `recurrence.canonical_expr`), and a test pins that two measures differing only in a literal still share one `fingerprint` while their `representative_expr` differs. `canonicalize_expr` output is byte-identical to before (the new form is a separate `erase_literals=False` code path). `candidate_from_measure` renders `measure_expr=representative_expr`. The firewall becomes an actual gate: before a candidate is scored or persisted, `LeakageOracle.contains_sql(representative_expr)` runs, and a representative that matches the benchmark corpus DROPS the candidate (`candidates_dropped_for_leakage` on the outcome) rather than shipping either a masked body or a leaked literal — the existing oracle, no second scanner. `mv_yaml.validate` (and `validate_registered`) reject `?n` / `?s` anywhere in an emitted `expr`, the cheap MV-D8 static guard that would have caught this at Prompt 5.5. `representative_expr` is NOT persisted as a Delta column (it flows through in-memory to the emitted `yaml_text`, which the artifact already carries), so the exposure matrix gains no row; the `yaml_text` SERVED classification now legitimately covers oracle-passed literals. The rejected alternative (context-sensitive erasure) stays rejected: it is an MV-D10 change to fingerprint identity, out of scope for a defect fix. MV-D113 narrows the render source further: `render_expr` no longer shares `canonicalize_expr`'s normalization.
+
+**MV-D30 — Proposal grain: a proposal is a metric VIEW, not a measure (DECIDED at Prompt 15.3).** Found by the first human smoke run: a real space produced a wall of LOW-confidence cards, one per recurring measure, each proposing its own single-measure view (`_proposed_object` renders `{catalog}.{schema}.{concept}_metrics` per measure, `mv_advisor.py:759` — `measure_total_booking_value_metrics`, `measure_booking_count_metrics`, …). That is the wrong product: a metric view's value is BUNDLING the measures and dimensions of one grain behind one governed object — the POV's own sample YAML carries two measures and two dimensions. One-view-per-measure also makes every candidate individually weak (each splits the evidence), which is why everything surfaced LOW. What 15.3 decides: consolidation mechanics — group measure candidates by source-table set (the natural grain key) into one view proposal carrying multiple MeasureRequests, at GENERATION time (preferred: one candidate row per view, evidence union, confidence from the strongest members) versus presentation time (cheaper, but the ledger and create path then disagree with the screen about what a suggestion is — the two-readers hazard). Constraints not open: `canonicalize_expr`/MV-D10 identity is untouched (per-measure fingerprints remain the dedup/suppression grain — a rejected measure stays rejected inside any bundle); `mv_yaml.generate` already accepts multiple measures; the surfacing floor rises — the panel shows MEDIUM+ by default with LOW behind an explicit disclosure, and a candidate with no `proposed_object` never surfaces at all (the smoke run's first card rendered a BLANK title — validate, don't render). And EVERY surfaced proposal carries its justification on the card: the measures it would govern, the evidence (recurrence, distinct sources, contributing questions), and what the user gains ("these 4 measures recur across 9 curated queries and are ungoverned today").
+
+*Decision (Prompt 15.3), taking the preferred generation-time shape.* Consolidation happens at GENERATION time, not presentation time — the ledger, the create path and the screen must agree on what one suggestion is, so the persisted grain IS the surfaced grain (the two-readers hazard is closed, not deferred to every reader). Mechanics: per-measure scoring is unchanged — each recurring measure is still individually gated, leakage-checked (MV-D29) and scored, so `canonicalize_expr`/MV-D10 identity and the dedup/suppression grain stay per-measure and a rejected or suppressed measure never resurfaces inside a bundle. AFTER scoring, the persistable proposals are grouped by their **source-table set** (the frozenset of `source_tables`, the natural grain key) into one bundle each; a bundle carries multiple `MeasureRequest`s and renders through the single existing `mv_yaml.generate` (which already accepts multiple measures) into one multi-measure YAML/DDL. The bundle's `dedup_fingerprint` becomes view-grained — `sha256(space_id | sorted member dedup_fingerprints | sorted source set)` — so `genie_opt_mv_candidates` now holds **one row per view** (the schema comment's per-measure key semantics are updated in the same change; the column and table are otherwise unchanged, no migration). The bundle's `confidence_score`/`tier` are taken from the strongest member (max confidence), `evidence` is the union (member measures with their `expr`/recurrence/distinct-source/question-id provenance, the total distinct-source count, and the contributing benchmark question ids), and the member per-measure fingerprints are retained in `evidence.measures[*].dedup_fingerprint` so suppression cross-references survive bundling. A bundle whose `proposed_object` cannot be resolved (no source refs) is a VALIDATION FAILURE dropped before persistence — it never reaches the screen as a blank card. Surfacing: MEDIUM+ by default, LOW behind an explicit "show N low-confidence" disclosure. Justification is pure assembly from the carried evidence (no LLM): the measures the view would govern, recurrence + distinct-source counts, contributing benchmark question ids, and a one-line gain statement. The `MvProposal` model/type gains an additive `measures: list[MvProposalMeasure]` (name, expr, recurrence, distinct_sources, question_ids, dedup_fingerprint) — older single-measure rows read back as a one-element bundle, so nothing pre-15.3 breaks. Rejected alternative (presentation-time grouping) stays rejected: it would leave the create path keyed on per-measure rows while the screen shows views, the exact disagreement MV-D30 names.
+
+*As implemented (Prompt 15.3) — bundle rejection fans out to per-measure suppression.* The Decision above kept per-measure identity as the suppression grain, but the persisted row is now view-grained, and that opened a resurrection hole the four-point plan did not name. The decision endpoint records against `(target_space_id, dedup_fingerprint)`, and the bundle key is `sha256(space_id | sorted member fingerprints | sorted source set)` — **membership-sensitive**. So: reject a 4-measure bundle today; next scan finds a 5th recurring measure on the same grain; the bundle key changes; there is no decision row for the new key; the rejected members resurface wearing one new measure. That is `test_re_proposing_does_not_resurrect_a_rejected_candidate`'s exact defect reborn at the view grain, and the consolidation's decisions-reader cannot catch it because nothing wrote per-measure state on the reject. The fix, implemented here: **a bundle rejection writes the bundle-row decision AND a suppression entry per member fingerprint.** Member fingerprints ride in the row's `evidence.measures[*].dedup_fingerprint` (retained by the Decision above), so the reject route fans them out. Home for the fan-out is a dedicated `genie_opt_mv_suppressions` table (`target_space_id`, `measure_fingerprint`, `suppressed_until`, `originating_suggestion_id`, `reason`, timestamps) — **not** synthetic per-measure rows in `genie_opt_mv_candidates`, which would put two grains back in one table and recreate the two-readers hazard MV-D30 just paid to remove. The consolidation's decisions-reader (`load_mv_suppressed_fingerprints` / `wh_load_mv_suppressed_fingerprints`) unions the fan-out ledger with legacy per-measure `rejected` candidate rows, so both the historical per-measure grain and the new view grain are covered by one read. New table → `_ALL_DDL` entry, `wh_*` twins (MV-D21 Spark/warehouse parity), exposure-matrix classification (all columns DELIBERATELY INTERNAL — consumed only by the advisor's consolidation), all in this commit. Semantics pinned by tests: reject bundle → members suppressed → next scan with an extra recurring measure on the same grain surfaces a bundle of only the unsuppressed members (or nothing, if none remain) — never the rejected members back. The decisions-reader is injected in **both** callers — the Spark in-job advisor and the backend IQ-Scan path — asserted by test in each, so the two surfaces cannot disagree about what "rejected" means. Approval stays bundle-grained; **per-measure partial approval is explicitly out of scope** (future work, not built here — approving a bundle approves it whole).
+
+*As implemented (Prompt 15.5) — a suggestion never persists without a servable body, and shapes render literal-preserving.* Tier 2 Scenario A caught the bundling refactor's blind spot: `advise_from_corpus` persisted every PROPOSE bundle unconditionally while gating only the DDL artifact on `rendered.ok`, so a bundle whose body failed to render surfaced as a card with no body and 404'd at `/mv-ddl` — and because Scenario C's create resolves the body via artifact-then-`yaml_text`, that bundle would have been silently dropped from every approved run. **Persistence variant chosen: variant (a) — a suggestion card surfaces ONLY when its body renders.** The bundle path now gates `persist_proposal` on `rendered.ok` (not just the artifact); a non-rendering bundle is dropped and the drop rides the run outcome loudly — `AdvisorOutcome.candidates_render_failed` (count) plus `render_failures` (an operator-facing `(suggestion_id, verdict)` list in the stage `detail_json`, ids/codes only), with the verdict and rejections logged at WARNING. The guard lives in the shared `advise_from_corpus` body, so **both** persistence writers inherit it — the Spark in-job writer (`persist_proposal` + run-partitioned artifact) and the backend warehouse writer (`yaml_text` on the candidate row) — pinned by one shared test helper asserting no render-failed id ever appears in the persisted or surfaced sets. The CONFLICT per-measure path is untouched: a CONFLICT is body-less by construction and is an adjudication record, never a suggestion card, so it is out of the contract's scope. **Root cause of the render failure**: the recurring-shape expander (`mv_yaml._shape_measures`) rendered ratio / conditional-count / pct-of-total components from `ShapeMatch.components`, which are canonical (literal-erased, `?n`/`?s`-bearing) forms — so `*_rate_numerator`-style measures emitted a canonicalizer placeholder into the metric-view body and MV-D29 validation correctly rejected the whole view. `ShapeMatch` now carries a `render_components` twin (built via `render_expr`, literal-preserving) that the expander renders from, keeping `components` as the identity form the shape correlation/fingerprint still use. Because a render form can now carry a benchmark/PII literal, the shapes are gated through the SAME `LeakageOracle` the primary measure clears — at the assembly site in `advise_from_corpus`, before any generation, since the generator's only leakage check is the BEST FOR comment echo and never inspects the measure body — and a shape with any leaking render fragment is dropped (folded into `candidates_dropped_for_leakage`). The Suggest-Surface Contract now carries the clause "no proposal surfaces without a servable DDL body — a render failure is loud in the run outcome, never a silent gate" in both rule copies.
+
+**MV-D31 — The scan is a lifecycle, not a request (DECIDED at Prompt 15.4).** Three smoke findings compose into one defect: the scan leaves the user with a bare spinner for minutes (no staged progress); navigating away destroys the result and forces a full re-scan (the panel never hydrates — it imports `suggestSpaceMv` only, though candidates are PERSISTED in `genie_opt_mv_candidates` and the space-scoped read has existed since Prompt 11); and the entry affordance is a small easy-to-miss control. The fix shape 15.4 decides: on mount the panel HYDRATES from `GET /spaces/{id}/mv-proposals` and shows "last scanned <when> — N proposals" with Re-scan as the explicit refresh (the advice run row carries the timestamp); the scan itself reports staged progress — either SSE per the create-agent precedent (`create.py:288`, `StreamingResponse` + typed events) or polling the advice run's stage rows, whichever the implementer defends — with honest stage names (reading curated SQL → scanning for recurring measures → scoring → rendering DDL); and the affordance becomes a first-class action with an explanation of what a scan reads and roughly how long it takes. Constraint not open: a scan that fails or times out reports WHERE it stopped, never a spinner that resolves to nothing (the frame-7b rule, transposed to progress).
+
+*As implemented (Prompt 15.4).* **Progress transport: SSE, not stage-row polling.** No stage table existed for the advice path, so polling would have meant inventing a poll endpoint AND a writer for an in-process call — heavier and off-precedent. SSE reuses the create-agent route (`create.py:288`) verbatim: `POST /spaces/{id}/mv/suggest/stream` with `StreamingResponse`, a 15s keepalive, and typed frames. The advisor stays synchronous and the seam is the injection pattern `advise_from_corpus` already uses for persistence/estate/signals — an optional `on_stage` callback (`MV_ADVISOR_STAGES`) defaulting to a no-op, so **the in-job Spark caller passes nothing and is byte-unchanged** (pinned by `test_mv_advisor.py`'s unmodified in-job driver + an explicit no-op test).
+
+**The OBO/SSE ContextVar trap (load-bearing).** `call_next` returns before the streaming generator runs, so the OBO ContextVar does not propagate into it. The stream re-sets the token from `request.state` inside the generator (the create-agent precedent), and the identity-bound `fetch_space_config` runs under the re-set OBO client via `_offload` (which copies the context into its worker); the advisor itself runs as the SP, unchanged. A test asserts the streamed path reads under the USER's token, not the SP's — identity, not merely that stages arrive. A missing OBO is a clean fail-fast 401 in the handler body (where the ContextVar is still valid), not a mid-stream error.
+
+**Four stages, threaded, emitted on ENTRY.** A coarse "analyze" bucket would cover the phases where nearly all the wall time goes, leaving the user on one unmoving label for ~90% of the wait — the spinner with extra steps. The four honest stages are `STAGE_READING` (curated-SQL corpus assembly, caller-emitted) → `STAGE_SCANNING` (corpus parse + estate DESCRIBE) → `STAGE_SCORING` → `STAGE_RENDERING`, each emitted on entry (not completion, which would reproduce dead air inside each boundary). **Stages are named for where the time goes, verified from the code's cost structure, not by module.** SCORING is the predicted dominant stage and is labelled with what it waits on — *"scoring candidates (embeddings + usage signals)"* — because per candidate it makes one embedding round-trip for the semantic signal S plus two warehouse signal reads (lineage + demand), an O(N) fan-out of network round-trips, whereas SCANNING's estate DESCRIBE is one batch and SCORING/RENDERING are CPU-bound. Prediction to verify against the redeploy's real `duration_seconds`: **SCORING is expected to be well over 80% of the multi-minute wall time; if the rerun confirms it, batching the per-candidate signal reads + embeddings is the named future optimization target** (recorded here for free).
+
+**Hydration source (note 2): derivation, not migration.** Each advice run now persists ONE `genie_opt_stages` row for the `mv_advisor` phase — a `STARTED` then a terminal (COMPLETE/SKIPPED/FAILED) — via a new `wh_write_stage` twin that extends the MV-D21 pin (the interactive path has no SparkSession, so it cannot call `state.write_stage`). The terminal row carries `AdvisorOutcome.detail()` in `detail_json`, which already holds `skip_reason` and `measures_found`; `wh_load_latest_advice_scan` joins the newest `mv_advice` run to that row and DERIVES the hydrated `last_scan` summary from it — no new `genie_opt_runs` column. `last_skip_reason` / `last_measures_found` = `detail_json.skip_reason` / `detail_json.measures_found`; `scanned_at` = the run's `completed_at`; `duration_seconds` = the stage's real measured wall time.
+
+**Duration (note 3): the real number or nothing.** No fabricated `~30–60s`. The panel frames the wait with the last scan's actual `duration_seconds` ("The last scan took 4m 12s") once hydrated, and otherwise says "this can take a few minutes" — honest and unfalsifiable.
+
+**Suppression disclosure — considered and DEFERRED at 15.4.** A user who rejects a bundle and later wonders why a measure never reappears still has no surface that explains it. Adding a "suppressed measures" disclosure to the hydrated panel was weighed and deferred: it would flip the `genie_opt_mv_suppressions` columns from INTERNAL to SERVED in the exposure matrix (the pre-planned move its classification note already frames), and 15.4's scope is the scan lifecycle, not the suppression ledger's user surface. Recorded so the eventual prompt cites a decision, not an omission.
+
+**MV-D32 — Confidence semantics for evidence-poor spaces, and the cold-start quality question (DECIDED — Prompt 15.7; reviewer-approved).** From the second smoke run: a real proposal governing 5 measures recurring across 18 curated queries surfaced at 34% / LOW, and the user's question — "why so low, and can we improve without queries, since tables are sometimes fresh?" — exposes that the displayed number conflates two things MV-D15 keeps separate: how strong the AVAILABLE evidence is, and how much evidence is available. On a fresh table L and D are structurally absent (no lineage, no history), so the blend is capped near Y+S's 0.50 weight share — the 34% is mostly a statement about coverage, not about the proposal being doubtful. Displaying the raw blend as "confidence" tells the user their strongest candidate is weak, which is false. Two sub-questions 15.7 decides, with the constraint that the LYDS blend arithmetic and MV-D15's availability honesty stay byte-untouched: (1) DISPLAY — whether the surfaced number becomes coverage-aware (e.g. score-of-available-signals plus an explicit "based on curated SQL only — no usage history yet" caption), so evidence-poor is presented as evidence-poor rather than as low-quality; (2) COLD-START QUALITY — whether an LLM-grounded quality judgment (schema + profiling + curated context, through the workbench's model-serving path, structurally validated like 17b's drafts) joins as a NEW, separately-labeled signal for fresh-table spaces — related to MV-D25's SCHEMA_DERIVED provenance and Prompt 18's profiling route, and bound by the same rule: a judgment-backed score never silently shares a scale with a recurrence-backed one. Industry grounding for 15.7's research: the deterministic-ontology-plus-LLM-decomposition pattern (dbt MetricFlow, Cube, AtScale) generates the semantic layer from declared schema + relationships, not from query recurrence — evidence that a schema-first route can be credible when usage history does not exist yet.
+
+> *DECISION (Prompt 15.7, reviewer-approved; see `docs/design/mv-cold-start-confidence-note.md`).* **(1) DISPLAY and (3) cross-surface enrichment ship as-implemented** — the coverage-aware evidence-basis caption (`confidenceDisplay`) and the "evidence grew beyond the initial scan" line (`evidenceGrowth`), both pure display/assembly with the LYDS blend and MV-D15 coverage byte-untouched. **(2) COLD-START QUALITY is deferred per §5**: the LLM-grounded judgment signal does NOT ship on this branch and, if it ever ships, must be a separately-labeled axis (its own SCHEMA_DERIVED provenance, never scale-shared with recurrence) — it collides with MV-D25 (owned by the create-agent branch) and is bound by the scale-sharing rule. The research note stops at its checkpoint accordingly. **Pre-planned follow-up, now built (Prompt 15.7b):** the note's §2 recorded that promoting coverage-capped-strong proposals into the default list was rejected *for now* only because `uncapped_tier`/`tier_capped_by_coverage` (computed in `mv_scoring.to_payload`) were not persisted. 15.7b persists them additively (CREATE DDL + `ADDITIVE_COLUMN_MIGRATIONS`, both `wh_*`/Spark writers, exposure-matrix SERVED rows, MV-D21 written-column pin extended) and splits surfacing on them: a proposal whose uncapped tier is MEDIUM+ but was coverage-capped joins the default list wearing a distinct **"Strong (evidence-limited)"** badge with the §2 caption, never a bare LOW and never buried behind the MV-D30 disclosure; plain LOW (uncapped LOW included) stays behind the disclosure. The Recommended-badge ranking (15.6) orders a capped-strong proposal by its *uncapped* tier, with the caption carrying the honesty. The coverage cap × MEDIUM+-default composition makes this load-bearing, not optional: without it a genuinely-strong cold-start proposal is capped to LOW and buried, reintroducing the very "strong candidate hidden" defect the caption only half-closed.
+
+**MV-D33 — The metric view is a semantic model, and the graph must draw it as one: a deduplicated relational canvas with metric views as on-demand boundaries and provenance-tagged measure boxes (DECIDED — Prompt 12e; reviewer-approved, see `docs/design/semantic-graph-v3-note.md`).** From the semantic-model smoke review of the v2 grouped layout (Prompt 12c/12d): a Databricks metric view is not a leaf — it is a `source` fact + a `joins` star/snowflake of dimension tables + its own `dimensions`/`measures` (the exact shape `mv_yaml.generate` emits and the DBR `WITH METRICS` YAML spec defines), yet the graph drew it as one opaque "N measures" card, hiding the model it exists to express. Two constraints the reviewer set are non-negotiable and eliminate whole branches: **(1) a relational model is duplicate-free** — no table, fact or dim, appears twice; a dim shared by two MVs is ONE node, killing the "each MV holds copies of its tables" shape (brainstorm v5); **(2) arrows require proof** — an edge is drawn only where a join is declared (`joins.on`/`using` in the MV YAML) or a relationship is declared in the Genie space config; no declared relationship → no arrow, so unmodeled tables float edgeless. What 12e decides, taking the v7 mockup as the visual contract: tables are the deduplicated node set; **measures are boxed by owner** on the right — one box per MV plus a Space-config box for the loose (ungoverned/curated) measures NOT in any MV — each measure provenance-tagged, unnamed measures collapsed to a count (12d/MV-D29 hygiene carried forward); **the MV is a BOUNDARY, not a node** — at rest the boundary is the measure box with subtle arrows to the tables it uses (declared joins only), and on SELECTION a second boundary wraps the tables in its definition ("tables used by Revenue MV"); reuse is membership not duplication (a shared dim lights the multiple MV boxes that use it); **unmodeled tables get a neutral edgeless region** (the governance gap made visible); and **any box is draggable** (session-only user transform, reset restores the deterministic home layout). Determinism and the diff-overlay invariant hold byte-for-byte: the render stays a pure function of `(tables, edges, mvBoxes, selection, dragOffsets, viewport)`; drag is layered on top of a deterministic home layout, never persisted, so it cannot perturb the diff. The layout-library position is REAFFIRMED (v2 §6 grounds unchanged) — the new pieces (Euler-aware member-contiguous placement so a select-time boundary encloses exactly its members; free-form drag) are pure placement rules plus a user offset, not a solver; the boundary that would flip it is unchanged. New data the reader must fetch (grounding, not invention): the MV's internal `source`/`joins`/`dimensions`/`measures` from its YAML (the source of both the join-arrow PROOF and the inset join tree), read via the existing describe path / `data_sources.metric_views`, never re-derived. This SUPERSEDES the v2 note only where it drew the MV as a leaf card; v2's legibility levers (grouping, fit, focus/search, the derived collapse threshold §9, edge ports §5, governance-roll-up-survives-grouping §8) are all carried forward unchanged.
+
+> *DECISION (Prompt 12e, reviewer-approved).* The three v3-note checkpoint questions are settled as: **(1)** shared-dim at-rest cue is on-demand boundaries + measure boxes/arrows (optional membership dots), NOT persistent hulls (the v6 overlapping-set clutter finding); **(2)** the Euler-aware contiguity pass is prototyped against 3/10/30-table fixtures before the boundary rectangle is committed, falling back to a member-hull outline if contiguity cannot be guaranteed for pathological membership overlaps; **(3)** user drag is session-only, "Reset layout" restores home, and layout is NOT persisted (keeps the model and the diff clean). Governance stays the headline (MV-D8/12b spirit): the per-box and panel-level governed/curated/ungoverned roll-up renders even when detail is collapsed.
+
+**MV-D34 — Create-at-approval: accepting a suggestion on the IQ surface may create the metric view inline, under the same four invariants as create-at-trigger (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8).** The third smoke run proved the acceptance CUJ was structurally dead: the IQ card offered only [Review in run setup] and [I created this myself] — **no Approve action exists on the surface where the user meets the suggestion** (`MvIqScanAdvisorySection.tsx:500-505`; the decision endpoint has existed since Prompt 9 and nothing on the panel calls it) — so run setup forever found zero approved proposals and "Create and attach" could never enable from this path. The two-run consent model (MV-D1) was designed for proposals *discovered by a run the user is not watching*; on the IQ surface the user is PRESENT, their OBO token is live, and every piece of the create machinery already runs interactively for BYO registration. So: **accepting a suggestion offers to create it now** — probe (`mv_entitlement.probe`, fresh, at click) → consent captured in the modal (`record_consent`) → `CREATE VIEW … WITH METRICS` under OBO through the `mv_create` seam (never a fork, never the SP) → ledger row `OBO_CREATED` with `created_by`, written under the space's advice run — **the BYO-register rails exactly** (MV-D24 built create-outside-a-run persistence and the attach-on-next-run pickup; this decision reuses those rails with `OBO_CREATED` provenance rather than inventing parallel ones). Attach and lift measurement remain the next run's job, unchanged (MV-D16's isolation intact). MV-D1's four invariants transpose verbatim: identity = `require_obo_workspace_client` (hard-fail); a recorded, fresh consent; downgrade-never-upgrade — an insufficient probe degrades the button to [Approve for later] (`approved_for_rerun`, the classic path, which REMAINS the alternative on both surfaces) with the missing GRANT shown, never a dead end; and the target is the consented schema and nowhere else. MV-D1 is NOT superseded: create-at-trigger remains the path for run-output proposals approved asynchronously; create-at-approval is the path for a user standing in front of the suggestion. Both write the same ledger; both feed the same next-run attach. *Amended by MV-D120: the confirm step records no materialization consent; a create-time failure after the view exists is a reason, not an error; `grant_sql` is returned only to the view's owner, and a `USER_CREATED` result names the owner.*
+
+**MV-D35 — Proven facts lead; the score ranks; a percent is never displayed as "confidence" (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8; supersedes MV-D32(1)'s caption-as-fix IN PART).** The reviewer's challenge, third smoke run: "if a metric view is syntactically accurate, executable, and orthogonal to existing metric views, why is our confidence low? Would you, as a user, accept a low-confidence suggestion?" The challenge is correct and the display was a category error, twice band-aided (MV-D32(1)'s caption, 15.7b's badge) instead of replaced. The facts: **quality is binary and already gated** — nothing surfaces without a rendered, validated, placeholder-free, executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup guarantees non-overlap with existing governed measures; the LYDS score measures **demand evidence**, a RANKING signal, not doubt about correctness. Displaying it as "NN% confidence / LOW" told users their strongest candidate might be broken — false, and corrosive. The replacement: (1) cards LEAD with proven facts as explicit checks — "✓ validated · ✓ executable · ✓ no overlap with existing metric views" — each check backed by the gate that proved it, never decorative; (2) evidence renders as a human sentence ("18 curated queries · usage history"); the numeric score is used ONLY for ordering plus ONE Recommended pick — or, when all surfaced proposals are mutually orthogonal (disjoint measure sets), the panel says so plainly ("all N are independent — any or all can be created") instead of forcing a ranking that does not exist; (3) the raw blend, weights, and coverage stay in `score_components` for the debugging user; (4) the COMPUTED≠SUPPORTIVE defect is fixed — `confidenceDisplay` captions "Backed by usage history and lineage" whenever L/D *ran*, even at near-zero values (`mvFormat.ts:313-315`); basis captions must reflect signal CONTRIBUTION, not signal execution. MV-D30's tier gating survives as the ordering/disclosure mechanism; what dies is the naked percent and the word "confidence" anywhere a user reads it. This applies to EVERY surface that renders a proposal — the IQ panel AND the run-output panels — through shared components, so the post-GSO surface inherits it by construction.
+
+> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D125 and up as of this note, since this branch uses MV-D109–MV-D124 and `ontology` uses nothing above MV-D109. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
+
+**MV-D98 — Supporting-measure carve-out: a sub-floor recurring measure may enrich an anchored grain bundle, never surface alone (DECIDED — authorized to unblock Plan A1; residual of MV-D30 surfaced by the first deployed human review's `control_metrics` one-measure card; qualifies POV Part 3's `suppress < 25` floor without loosening it for standalone proposals).** MV-D30 bundles the measures of one grain into one view, but only `VERDICT_PROPOSE` members (tier ≥ Low) reach a bundle: a measure that recurred yet blended under 25 collapses to `VERDICT_SUPPRESSED` (`mv_scoring.py:1425`), is dropped as non-persistable (`PERSISTABLE_VERDICTS = {PROPOSE, CONFLICT}`, `mv_scoring.py:126`) at the Pass-1 `is_persistable` gate (`mv_advisor.py:1481`), and never enrolls in `bundles` (`mv_advisor.py:1486`). So a grain whose queries repeat one strong measure and several weak-but-real ones still ships a one-measure view — the exact thin-card outcome MV-D30 exists to prevent, re-entering one grain at a time. The POV floor `High ≥ 75, Medium 50–74, Low 25–49, suppress < 25` (Part 3) was written to keep a low-value **standalone proposal** off a reviewer's screen; it was never a statement that a sub-floor measure may not corroborate a view the reviewer is already being shown. **What this decides:** a `VERDICT_SUPPRESSED` candidate that is otherwise a clean PROPOSE — leakage-gate-clean (`mv_advisor.py:1449`), not fingerprint-suppressed (`mv_advisor.py:1426`), dedup verdict PROPOSE (not BLOCKED/CONFLICT) — MAY be folded into a bundle as a `role:"supporting"` member when, and only when, that grain already has at least one **anchor whose SCORE earns MEDIUM+** — the gate keys on `uncapped_tier` (the score-earned tier), NOT the coverage-capped display tier, because the coverage cap measures how many signal producers the workspace has, not the strength of the measure, and gating on it would starve exactly the partial-signal workspaces this carve-out helps; it is capped at `MV_ADVISOR_MAX_BUNDLE_RIDERS` (default 4) and rendered as an ordinary additive `MeasureRequest` inside the single `mv_yaml.generate`. **Constraints not open:** the standalone floor is UNCHANGED — a sub-25 measure still never becomes its own card, and riders NEVER constitute a bundle alone (a grain whose anchor earns only LOW, or has no PROPOSE anchor at all, produces no rider fold); confidence and both tiers continue to come from the strongest anchor only (`mv_advisor.py:1145`), so a supporting member can never lift a view's score, its displayed tier, or its MEDIUM+/LOW-disclosed surfacing gate; the per-measure fingerprint stays the identity and suppression grain (MV-D30/MV-D10), so a rejected rider stays rejected inside any future bundle (`genie_opt_mv_suppressions`) and the bundle fingerprint simply reflects its membership; and every supporting measure still clears the MV-D29 leakage oracle on its representative expression before it can render. **Verification:** ride-along inclusion, no-anchor-no-view, the low-scoring-anchor exclusion, the rider cap, and confidence/tier-invariance are pinned in `test_mv_advisor.py` (the carve-out is entirely in `mv_advisor`; `mv_scoring`'s VERDICT_SUPPRESSED path is unchanged) in the same commit as the code; STOP before deploy.
+
+**MV-D99 — Curated measures are not penalized by empty usage: a measured-zero `L`/`D` (`EMPTY`) is dropped for a curated candidate (DECIDED — from a live space showing "No metric view suggestions" despite six curated `example_question_sqls`; refines MV-D15's `EMPTY`-counts rule for curated candidates only; realigns code with POV §"The honest limit").** The blend renormalizes over *measured* signals: `UNAVAILABLE` (the read never landed — permission failure, missing table, no reader, CMK-redacted rows) is excluded from the divisor, while `EMPTY` (the read succeeded and measured zero) is counted (`mv_scoring.blended_score`, `mv_scoring.py:765`; MV-D15). That distinction already drops an **inaccessible** query-history or column-lineage read from scoring everywhere (`demand_signal` `mv_signals.py:409-414`/`:437-441`; `lineage_signal` `mv_signals.py:286-297`/`:302-309`) — no change needed for the "we may not get access" case. But `system.query.history` and `system.access.column_lineage` are *structurally sparse* for a new or demo space, and the producers deliberately record accessible-but-empty as `EMPTY` (a real measurement — `lineage_signal` even calls out `column_lineage`'s preview/retention gaps landing here, `mv_signals.py:317-321`). For a **curated** measure — one a human hand-authored in `example_question_sqls` or `sql_snippets.measures`, credited by MV-D17's occurrence up-weight (`k=20`) — those counted zeros dilute a strong `Y` (`0.30` weight, `~0.714` for a single curated measure) below the POV `suppress < 25` floor, so it collapses to `VERDICT_SUPPRESSED` (`mv_scoring.py:1425`), never anchors a grain, and the MV-D98 bundler never fires. POV §"The honest limit" (`metric-view-suggestion-engine-pov.md:1440`) states the `EMPTY`-correct output is a space with "no curated example SQL, no snippets, no query history"; a space **with** curated SQL is exactly the case curated corpus is meant to carry, so counting empty usage against it is the divergence. **What this decides:** for a curated candidate (`measure.curated_provenance_count > 0`, `mv_fingerprint.py:300`), `advisor_statuses` folds a measured-zero `EMPTY` `L`/`D` to `UNAVAILABLE` (`mv_advisor.py:844`, passed from the Pass-1 call site `mv_advisor.py:1482`), dropping it from the divisor so the score renormalizes over the evidence actually present (`Y`, and `S` when an embedding endpoint answered). **Constraints not open:** non-curated candidates are byte-identical — MV-D15's "nobody uses it is real evidence" brake on purely-generated candidates is UNCHANGED (default `curated=False`), which also preserves the two pinned POV worked examples; `COMPUTED` (real usage measured) and `UNAVAILABLE` (read never landed) are never rewritten, so an inaccessible read stays dropped regardless of `curated`; `S` is untouched (semantic match to intent is legitimate evidence, derived in `score_candidate` from the embedding attempt, not a usage signal); and this is **uncount-only, not an anchor guarantee** — the standalone floor, MV-D98's MEDIUM+-anchor bundling gate, and the MV-D15 coverage cap (`coverage_ceiling`, `mv_scoring.py:808`) all still apply, so a curated measure whose only counted signal is `Y` (no embedding endpoint) caps at LOW and surfaces behind the LOW disclosure rather than consolidating into a bundled view. **Verification:** the curated `EMPTY→UNAVAILABLE` mapping for `L`/`D`, the `COMPUTED`/`UNAVAILABLE`/non-curated pass-throughs, and the advise-level result (a curated measure with empty usage reads reaches a persistable verdict, and forms its grain bundle when `S` is available) are pinned in `test_mv_advisor.py`; the pinned POV worked examples staying on their exact IEEE doubles is pinned in `test_mv_scoring.py`; both in the same commit as the code.
+
+**MV-D100 — A curated, fact-passing LOW surfaces by default, not behind the disclosure (DECIDED — from the first smoke run after MV-D99: two curated proposals returned but both landed under the "ranked lower by evidence" disclosure; a presentation-time refinement of the MV-D30 split, no scoring change).** MV-D99 stopped a measured-zero `L`/`D` from burying a curated candidate's *score*, but a genuinely cold space still leaves a curated proposal at a *served* LOW tier that is **not** coverage-capped-strong (uncapped LOW too — there is no demand signal to lift it, and `S` alone caps at LOW under MV-D15's `coverage_ceiling`). Under the tier-only split (MV-D30) plus the capped-strong promotion (MV-D32), that proposal sat behind the `Show N … ranked lower by evidence` disclosure (`splitProposalsByConfidence`, `frontend/src/components/auto-optimize/mvFormat.ts`) — so a measure the user themselves hand-authored greeted them hidden, the same "strong candidate buried" defect the cold-start caption only half-closed. **What this decides:** the panel promotes a **curated, fact-passing** LOW proposal into the default (primary) list. *Curated* is the engine's own `ast_curated_provenance_count > 0` (POV Part 4 evidence, `mv_scoring.py:1466`); *fact-passing* is the MV-D35 servable-body invariant already carried on the row (`checks.validated === "PASS" && checks.executable === "PASS"`, and `no_overlap` not a `FAIL`). Such a proposal is marked with a **factual "Curated" provenance chip** in the card header — deliberately NOT a strength/confidence badge (MV-D35 retired those from the card face; the "Strong (evidence-limited)" label is split-logic-only). The evidence-limited honesty is carried, unchanged, by the existing evidence-poor caption ("Based on curated SQL only — no usage history yet.", `confidenceDisplay`). **Constraints not open:** the served tier and the score are UNTOUCHED — promotion is presentation only, and `effectiveTier`/`rankProposals` still order a served-LOW curated proposal *below* every MEDIUM+ and capped-strong card (it surfaces, it does not jump the queue); FACTS STILL GATE — a curated proposal that fails `validated`/`executable` is never promoted, so a broken body can never surface by default; a **generated** (non-curated) LOW stays behind the disclosure exactly as before, so the disclosure count `low.length` naturally reflects only generated LOW with no separate counter; no auto-apply (the create flow is unchanged, MV-D1/MV-D23); and the marker renders through the SHARED `MvProposalCard`, so the IQ-scan and run-output surfaces get it by construction (Suggest-Surface Contract shared-component clause). **Verification:** the `isCuratedFactPassing` helper (curated + facts-gate, including the `no_overlap`-FAIL and no-checks negatives), the split promotion (curated-LOW → primary; generated-LOW and fact-failing-curated-LOW → disclosed), and the tier-invariant ranking are pinned in `mvFormat.test.ts`; the header "Curated" chip rendering (and its absence for a non-curated proposal), plus the MV-D35 no-percent/no-"confidence" cleanliness of the promoted card, are pinned in `MvIqScanAdvisorySection.test.tsx`; all frontend (`npm run test`), in the same commit as the code. Frontend-only — the backend/GSO pytest floor is unchanged.
+
+**MV-D109 — One space access control plane (DECIDED 2026-09-28 — PR #332 review M0/M1a).** Every route that reads or changes a Genie space's state first asks one resolver, `require_space_access(space_id, level)` in `backend/services/space_access.py`, for VIEW, EDIT or MANAGE. The resolver asks Genie under the caller's token (`require_obo_workspace_client`):
+- VIEW: `GET /api/2.0/genie/spaces/{id}` returns 200.
+- EDIT: the same read with `include_serialized_space=true` returns 200 *and* the export is present.
+- MANAGE: `GET /api/2.0/permissions/genie/{id}` returns 200. The permissions API answers only CAN MANAGE holders; M0 check V3 got 403 at CAN_EDIT and 200 at CAN_MANAGE. *Amended by MV-D118: `resolve_space_access_level` no longer asks this rung and reports EDIT to a manager; `ensure_space_access(space_id, MANAGE)` still would ask it, and no route gates on MANAGE.*
+
+The service principal never answers the question. There is no group matching, because Genie applies the caller's groups, nested ones included, when it evaluates its own reads. Denials are not cached; allows are cached for 30 s per token, so revocation takes effect within 30 s. Genie's VIEW level is `CAN_RUN`; the permissions API has no `CAN_VIEW`.
+
+**What it supersedes.** The package helpers' ACL parsing, which matched any caller to an `admins` entry and fell back to the service principal (V1 showed it live). Also the `x-forwarded-groups` read in `remove_run_from_history`: Databricks Apps does not forward that header (V2). Evidence: section "Results (run 2026-09-28)" in the M0 check record.
+
+*As implemented (M1c).* The M1c-D1 level tables land on every mounted `/api/auto-optimize` and `/api` space-, run-, and suggestion-keyed route. Auto-Optimize: `GET /health` and `GET /levers` are exempt; `GET /permissions/{space_id}`, `POST /mv/probe`, `POST /trigger`, the metric-view proposal/suggest/register/create routes, semantic-graph and join-advice reads and writes, `GET /runs/{r}/mv-ddl` and `mv-created`, proposal decision and drop (the drop's body `run_id` carries the `RunId` pattern, so a malformed id is a 422 before any read, and `_require_run_space_access` refuses one with 404 before any I/O), content-bearing run reads (`GET /runs/{r}`, iterations, loop-state, publish, debug-data, eval/question results, patches, benchmark-changes), run mutations (apply/discard/revert/revert-options/history-entry), and `GET /spaces/{s}/current-version` require EDIT; `GET /runs/{r}/status`, `GET /spaces/{s}/active-run`, and `GET /spaces/{s}/runs` require VIEW. Register stays EDIT (it records a ledger row and never attaches); create stays EDIT at the route so the create path's fresh Can Manage probe can still offer "Approve for later" (downgrade-never-upgrade). Under `/api`: `GET /spaces` is exempt (Genie filters the list once the SP fallback is gone); `GET /spaces/{s}`, history, and star require VIEW; scan and `POST /space/fetch` require EDIT; `GET /spaces/{s}/access` answers the level; a new create-agent chat pre-seeded with `body.space_id` requires EDIT, and continuation turns are not gated — a continuation is not pinned to the gated space (the model may name another space in its `update_space` tool call), so the protection is that every create-agent space read and write runs as the user (`require_obo_workspace_client`, never the SP) and Genie enforces Can Edit on the user's token, while gating every turn would 404 during Genie's post-create propagation lag; parse, settings, models, debug/auth, other create discovery, auth, admin, and watch are exempt (watch flagged out of M1). M1c-D2 keeps existence before access on run-keyed routes — 404 (no run) and 409 (run without a space) before the access decision, with a retexted 503 — because a viewer can already list a space's run ids at VIEW, run ids are uuid4, and a viewer who opens a run needs a true "Can Edit" 403 rather than a false "Run not found". M1c-D3 makes `get_genie_space` and `get_serialized_space` strict under `require_obo_workspace_client` with no SP retry; GenieWatch keeps `get_genie_space_with_sp_fallback` (flagged); `list_genie_spaces` gains `sp_fallback=` and `GET /api/spaces` passes `False`; the inline SP retry in `GET /api/spaces/{s}` is deleted. Enforcement is `backend/tests/test_route_access_table.py`: every mounted `/api` route is Gated at its level or Exempt with a reason, and the deny harness proves the gate asks Genie first — its tripwires record every touch, so a pre-gate call swallowed by `except Exception` still fails the route. Below Can Edit, `GET /api/spaces/{space_id}` serves the stored scan through `redact_for_viewer`, which drops the three quotes of space content a finding or warning can carry (the SQL-in-prose instruction excerpt, the noisy-column sample, and the row-level-security table names) and keeps their counts; the Edit check fails closed (M1c-2, M1c-D7). `GET /api/spaces/{space_id}/history` returns only score, maturity, accuracy, and time per scan in both storage modes (Lakebase and the in-memory fallback). The admin alerts route's `top_finding` can still carry the column sample; it is Exempt and tracked as a follow-up. In the UI, one access read per agent page decides every tab (M1c-D4): below Can Edit the editor surfaces never mount, so their Can Edit requests cannot fire (M1c-D5, M1c-D8). *Amended by MV-D115: the create path's fresh probe asks Can Edit on the space, not Can Manage.* *Amended by MV-D119: below Can Edit the stored scan keeps only the scorer's viewer-safe forms (`viewer_safe_text`, `iq_scan/scoring.py`): a finding or warning in no form is blanked and keeps its remediation, and a check detail in no form is cleared. The admin routes list under the caller's token, and `top_finding` is the first viewer-safe finding.*
+
+**MV-D110 — Reads that expose a space's configuration require CAN EDIT, matching Genie (DECIDED 2026-09-28 — PR #332 review M0, option A).** Genie exports `serialized_space` only to CAN EDIT and above. Routes that return content derived from that configuration — SQL expressions, measures, join conditions, instructions — therefore require EDIT: version snapshot detail and diff, metric-view proposals by space and by run, `semantic-graph`, `join-candidates`, `GET join-advice`, `mv-ddl`, and `mv-created`. Option B (VIEW) would show viewers configuration Genie withholds from them. Under A, viewers keep the version history list and tags (VIEW; no configuration content) and lose snapshot detail, diffs, and metric-view suggestions; they could not act on suggestions anyway, since approve is EDIT (MV-D109). Evidence: Get a Genie space API reference (`include_serialized_space` requires at least CAN EDIT); M0 check V3 (CAN_RUN gets 200 without export, CAN_EDIT gets the field).
+
+**MV-D111 — Run-keyed read routes come under the control plane in this PR (DECIDED 2026-09-28 — PR #332 review M0, option A).** The run-keyed reads (`GET /runs/{run_id}`, `/status`, `/revert-options`, `/iterations`, `/loop-state`, `/publish`, `/debug-data`, `/eval-results`, `/question-results`, `/patches`, `/benchmark-changes`) and the space-keyed `current-version`, `active-run`, and `runs` were ungated on `main` and expose patch text, SQL, and evaluation detail for any space whose run ID a caller knows. Option A includes them in M1: resolve `run_id` to `space_id` from `genie_opt_runs`, then content-bearing reads require EDIT (MV-D110) and status/list reads require VIEW. The MV-D109 route-table test enforces this with no allowlist. Option B (defer with a named allowlist) was rejected so the gap cannot grow silently. A denied run read is a 403, never an empty 200.
+
+**MV-D112 — Metric-view object and consent integrity (DECIDED 2026-09-29 — PR #332 review M2, option A on each).** Five decisions. (1) Create-at-approval re-attaches an existing metric view only when its definition is the proposal's: both YAML bodies are parsed and compared after removing what Unity Catalog rewrites on store (scalar quoting, dropped empty lists, block-scalar chomping, key order), so any content change — an expression, a literal, a filter, a join, the comment, a synonym — refuses, as do a definition the caller cannot see and one that cannot be read. This amends MV-D34's idempotent re-approval, which accepted any metric view at the consented name and recorded it `OBO_CREATED`. Evidence: M2 check V4 on an app-created view — its `view_text` differs from the body the app sent, byte for byte and after parsing (`version: '1.1'` returns as `1.1`, `dimensions: []` is dropped), yet is equal after normalization; the register path's measure fingerprint was rejected because `canonical_expr` erases literals. (2) The re-attached view's ledger row is `OBO_CREATED` only when its UC `owner` (the same `DESCRIBE TABLE EXTENDED … AS JSON`) is the caller; otherwise `USER_CREATED`, which the drop route refuses (MV-D24 invariant 1). (3) When the run-time hook has created a view but cannot write its ledger row, it drops that view under OBO — the same cleanup it already does for a view that fails the post-create check — and a failed drop is logged as an error naming the view. *Amended by MV-D120: after a failed ledger write the hook never drops the view; it attaches when a re-read finds the record and otherwise leaves the view for the next run, which adopts a matching view the caller owns.* (4) In `create_and_attach`, an empty `mv_approved_suggestion_ids` creates nothing: the run proceeds `suggest_only` with the stamped reason "no metric views were selected for this run", and run setup keeps Start disabled until a view is selected. (5) Run setup derives the consent target and the probe's source tables from the selected proposals only, re-probes when the selection changes, and blocks Start when the selection spans more than one schema; the backend's retargeting to the consented schema (MV-D22) is unchanged.
+
+### MV-D113 — Correct SQL for generated metric views (DECIDED 2026-09-29 — PR #332 M3)
+
+Findings 7, 8, and 10: generated bodies were not executable as written — string
+literals lost case, temporal units were folded, and identifiers with spaces or
+reserved words were unquoted. The fix splits **render** from **identity**:
+`render_expr` / `_render_source` keep author spelling (literal case, inner
+whitespace, temporal units) and backtick-quote every column; `canonicalize_expr`
+and every MV-D7 fingerprint / candidate / bundle identity stay byte-unchanged,
+proven by the baseline fixture captured at `ab2e68cf`
+(`test_mv_identity_baseline.py`). Finding 9: `FingerprintRecurrence.has_unresolved_columns`
+is now read — measures that do not resolve to one source table are dropped before
+scoring. The old `erase_literals=False` share of `canonicalize_expr`'s
+normalization is gone from the render path. `_claim_matches_view` extracts with
+`FROM {source} AS source` so quoted generated bodies still match.
+
+**Decisions (d1–d5).**
+- **d1** — render-version stamp; stamped-only replay; unstamped refused at
+  approval / skipped with a log at run time; display routes unchanged.
+- **d2** — drop only the failing measure, before scoring and before the
+  `[:limit]` slice, counted as `candidates_dropped_unresolved`, logged with
+  fingerprint + reason code only. *Amended by MV-D123: the count also counts a
+  measure refused as `unresolved_table`.*
+- **d3** — unprofiled source passes on structural checks alone (one source
+  table, `has_unresolved_columns` False).
+- **d4** — fourth empty variant keyed on `NO_SERVABLE_MEASURES` (IQ-scan
+  surface; the run-output surface returns null for that skip and has no
+  skip-keyed empty state by design).
+- **d5** — quote every view-name part in every executed CREATE / DESCRIBE /
+  SELECT / DROP and refuse at create when `_valid_uc_identifier` fails —
+  column/source identifiers are quoted, never refused. The display-only
+  `GRANT … ON VIEW` remediation text is not quoted yet; carried to M6 (C-5).
+
+Unstamped bodies persist `render_version` 0 (copied as
+`(rendered.evidence or {}).get("render_version", 0)`); the replay gate needs
+`>= MV_RENDER_VERSION`. The long-literal leakage fixture stayed above the
+Jaccard threshold even when quoted, so the gate pin uses a short `'X'` CASE
+instead. Fidelity frame `m3-a` matched reference 7b in both themes.
+
+**Dry run (2026-09-29, owner-approved, warehouse `41cfe645e10807a4`, schema
+`serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold`).** Both
+unprofiled (bare quoted columns) and profiled (`source.`-qualified) bodies
+created as one 4-measure bundle with source
+`` `cat`.`sch`.`m3_dry_run_orders` ``; `DESCRIBE EXTENDED` reported
+`METRIC_VIEW` and queryable True; `MEASURE` values: `'Paid'` sum = 10.00 (the
+`'paid'` row excluded — literal case preserved), `SUM(\`Order Amount\`)` = 22.00
+(spaced column), `AVG(DATEDIFF(DAY, created, shipped))` = 3.333,
+`COUNT(DISTINCT DATE_TRUNC('MONTH', ts))` = 2; M2's `_existing_view_matches`
+returned `(True, True, None)` — UC's storage rewrite keeps quoted bodies
+matchable, so plan risk 1 (UC rewrite breaking definition match) did not
+materialise. All objects dropped.
+
+**M6 carry-overs.** Pre-M3 app-created views vs re-scanned quoted bodies
+(textual mismatch → drop-and-re-approve; MV-D112 compare not loosened);
+display text now shows quoted author-case exprs (Semantic Blueprint /
+proposal cards); cross-table name-collision split (finding 11); bundle
+`dedup_fingerprint` vs per-measure `_claim_matches_view` (pre-existing);
+displayed (never executed) `GRANT … ON VIEW {name}` remediation text stays
+unquoted. *Status: the bundle claim and the GRANT text are resolved by MV-D117
+(C-3, C-5), and the cross-table split by MV-D116. The pre-M3 textual mismatch
+stays by design.*
+
+**Fix wave (final review).** The in-job candidate writer now puts `yaml_text`
+in the same MERGE as the stamped evidence, `None` included, so an older body
+never survives under a newer stamp (`mv_state.upsert_mv_candidate`,
+`mv_scoring.persist_proposal`, the in-job lambda in `mv_advisor.py:1114`).
+A column-free aggregate (`COUNT(*)`) is not "unservable": `_unservable_reason`
+returns None for a measure with no tables and no columns, so it flows on and
+is dropped later for having no grain, as before M3; the `NO_SERVABLE_MEASURES`
+copy is unchanged because it is now true for every measure that reaches it.
+`generate` turns `quote_fqn`'s error on an unqualified source into a failed
+render. The playbook's rules fence closes at its opening indent again, and
+`test_rules_parity.py` pins that.
+
+**Carried to M6 (final review).**
+- C-1 — pre-M3 app-created views are refused on re-approve (`mv_create.py:146`,
+  `:187-188`); at run time the skip is only a log line. *Resolved by MV-D117: a
+  run that creates nothing lists its skip reasons as counts in `downgrade_reason`.*
+- C-2 — `/runs/{run_id}/mv-ddl` (`auto_optimize.py:3874`, via `:525` / `:551`)
+  still serves unstamped bodies; label or refuse them. *Resolved by MV-D117:
+  refused with 409, and flagged `stale_body` on both surfaces.*
+- C-3 — claim matching falls back to the quoted `source:` string
+  (`mv_create.py:747`); normalize with `split_fqn`, with C-4. *Resolved by
+  MV-D117: a row count matches by its table, a bundle by every anchor.*
+- C-4 — attribute `COUNT(*)` to its statement's single FROM table for the
+  bundle key only, never the MV-D7 fingerprint (`_bundle_grain`,
+  `mv_advisor.py:841`). *Resolved by MV-D117, which, by owner ruling, changes the
+  MV-D7 key for column-free aggregates rather than the bundle key only.*
+- C-5 — quote the displayed GRANT text (`auto_optimize.py:1655`, built by
+  `_mv_optimizer_grant_sql` at `:1634`). *Resolved by MV-D117.*
+- C-6 — fold identifier quoting symmetrically in `leakage._strip_sql`
+  (`leakage.py:69`) rather than one-sided in `_leakage_view`
+  (`mv_advisor.py:1675`). *Resolved by MV-D117; `_leakage_view` is gone.*
+- C-7 — struct field access (`o.payload.amount`) renders as the leaf column;
+  predates M3. *Resolved by MV-D117 for measures.*
+- C-8 — prove the join and subquery rungs in Unity Catalog before enabling
+  them; unreachable today because `profiling_for` (`mv_advisor.py:933`)
+  supplies no join hops or attributes. *Resolved by MV-D117 as a structural pin
+  and a create-time refusal; the live UC proof stays a residual.*
+
+### MV-D114 — Attach and lift integrity in the job (DECIDED 2026-09-29 — PR #332 M4)
+
+Findings 12, 13 and 14: the in-job attach could leave the space and the record
+disagreeing, measured the view on the wrong questions, and credited the view's
+gain to the first lever.
+
+- **Finding 12 — exceptions after deploy were not rolled back.** Everything
+  after the attach PATCH in `_attach_and_measure` (the attach patch rows, the
+  `CREATED` stamp, the lift eval, the verdict, the `ATTACHED` write) was
+  unguarded, so an exception reached `run_mv_attach_phase`'s outer handler,
+  which returned the pre-attach config while the space still carried the view.
+  Separately, `_detach` logged a failed `applier.rollback` and then recorded the
+  object `DETACHED` or `CREATED` as if the revert had happened, because
+  `rollback` returns `restored_config` on error too.
+- **Finding 13 — wrong key, no live filter, zero graded kept.**
+  `_affected_question_ids` read only `evidence["benchmark_questions"]`, which a
+  bundle inherits from its anchor proposal; the member union lives under
+  `benchmark_question_ids`. Recorded IDs were not checked against the run's live
+  benchmark questions (curated and query-history provenance IDs are not
+  benchmark IDs), and an IQ-scan view carries no benchmark ID at all. When
+  nothing was graded, `lift_report` returned `delta_affected == 0` with no
+  regressions and `is_regression` kept the view.
+- **Finding 14 — the view's gain was credited to lever 1.** After a kept attach
+  only `current_config` moved in `run_unified_optimization_loop`; the pre-attach
+  `best_accuracy` and `best_eval` still fed the `TARGET_REACHED` check, the
+  proposer's failure input and the lever accept gate, so the first accepted
+  lever's delta included the view's.
+
+**Decisions (d1–d8, owner answered, the recommended option on all eight).**
+- **d1** — What "live" means: The question IDs present in this run's
+  iteration-0 baseline eval rows (`row["question_id"]`). No extra API call. It
+  is exactly the set `lift_report` can grade, because a question is graded only
+  when present in both runs.
+- **d2** — Affected subset for curated, IQ-scan, bring-your-own and stale
+  candidates: Recorded IDs ∩ live, **plus** baseline rows whose **generated or
+  expected** SQL contains one of the view's member measures. Matching uses
+  `extract_measures` and `mv_candidate_fingerprint`, the identity the advisor
+  uses at `mv_advisor.py:1521-1523`. If the subset is still empty:
+  `SKIP_NO_AFFECTED_QUESTIONS`, nothing attached.
+- **d3** — Eval shape: One full-suite post-attach eval through the loop's
+  `_native_eval` (`OfficialBenchmarkRunner.run`, transient retry). The verdict
+  is scored on the affected subset of its rows; on keep it becomes the new
+  baseline. It replaces the `run_subset` lift eval. **This supersedes MV-D16's
+  "there is no second full eval"** (gap report §3 item 10; the §2.6
+  `mv_baseline` row). The phase runs once per run, with all views in one patch
+  set, so "per kept attach" and "once per run" are the same thing.
+- **d4** — Verdict rule: Unchanged (`delta_affected < 0`, or `== 0` with
+  regressed questions), with regressed questions **restricted to the affected
+  subset**. This preserves today's semantics: today's subset eval cannot see
+  anything else, so `regressed ⊆ subset` already. `delta_suite` is recorded but
+  doesn't gate the verdict. *Amended by MV-D118 (net_suite): a net loss on the
+  whole suite also detaches.*
+- **d5** — Zero graded, or an unusable eval: Snapshot-revert. Status `SKIPPED`
+  with the new reason `LIFT_NOT_GRADED` (zero graded affected rows), or the
+  existing `LIFT_EVAL_UNUSABLE` (the eval failed). The object stays `CREATED`
+  (unmeasured, re-attachable next run), and the lift report is stored when one
+  exists.
+- **d6** — An exception after deploy, or a failed revert: A `finally` reverts
+  through `applier.rollback`, retrying once. Outcome `FAILED` with the error.
+  Detail gains `rollback_status` (`reverted` / `failed`) and `rollback_error`.
+  Objects are written back to `CREATED`. If both attempts fail: carry the
+  **pre-attach** config (the next lever's full-config PATCH drops the view);
+  write the object `CREATED`, never `DETACHED`; stage status `FAILED` with
+  `ROLLBACK_FAILED: …`; and end-of-run reconcile reports any `CREATED` row that
+  has an `attach_patch_id` and whose view is still on the live space config
+  (best-effort read at loop exit, falling back to the in-memory config) (report
+  only, never promote). The same reporting applies to reverts after a
+  regression, a zero-graded eval or an unusable eval. *Clarified by the final
+  review (I-1): the in-memory config after a failed revert is the pre-attach
+  one, so "still on the config" means the live space config; the demote-only
+  reconcile keeps the in-memory config (MV-D18).* *Clarified by the live run
+  (L2): Genie moves an attached view from `data_sources.metric_views` to
+  `data_sources.tables` on write and exports it there, so "on the config" means
+  on either shelf. `attached_identifiers` reads both, which the live-read report
+  and a restarted loop's reconcile both depend on.* *Amended by MV-D118: a PATCH
+  that raised is read back and reverted if the view is live
+  (`PATCH_UNCONFIRMED`); the error and `rollback_error` carry exception types
+  only.*
+- **d7** — Persisting the baseline reset: Reset `best_accuracy` and `best_eval`
+  in memory (`best_iteration` stays 0) and call
+  `update_run_status(best_iteration=0, best_accuracy=post)`. The post-attach eval's ID and
+  accuracy go on the `MV_ATTACH` stage row (`lift_eval_run_id`,
+  `post_attach_accuracy`). On the created-object row they go into the existing
+  `post_attach_eval_run_id` and `lift_report_json`, whose `post_accuracy_suite`
+  is now whole-suite. **No DDL column.** Iteration 0's row keeps its pre-attach
+  score and `config_json`, so MV-D18 is unchanged. *Clarified by the live run
+  (L1): publish re-derives the champion from the iteration rows, so the stamp
+  alone did not survive it. `publish_and_audit` reads the run's latest
+  `MV_ATTACH` stage row (`kept_attach_baseline_reset`) and, when its verdict
+  is `ATTACHED`, `select_champion_row` scores iteration 0 at
+  `post_attach_accuracy` for the choice and the stamp. The row itself is not
+  rewritten. The reset applies only to the iteration-0 row whose `eval_run_id`
+  is the stage row's `baseline_eval_run_id`, so a restarted task's own baseline
+  row (its phase skipped, or never ran because the baseline failed) keeps its
+  score.* *Amended by MV-D118: the kept attach is its own scored step on the
+  restart path, the residual count, the audit trajectory and the run headline;
+  the baseline stays pre-attach.*
+- **d8** — Live run: Optional final gate (Task 6): ask with AskQuestion, naming
+  the space and warehouse. Never run it automatically.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten).
+- **MV-D16(b) and MV-D3.** The "mv-lift eval" step is now the full-suite
+  post-attach eval; the `mv_lift` label is retired.
+- **MV-D18's "One window is unprotected" paragraph.** Its premise was that the
+  only thing an exception handler could do is read the live config and promote
+  `CREATED` → `ATTACHED`. MV-D114's handler reverts instead, so the window is
+  closed without a promotion path. Demote-only still holds: the handler writes
+  `CREATED`, and reconcile still only demotes.
+- **MV-D18's baseline paragraph.** "Each lever attempt's accept/reject decision
+  … subtract[s] from iteration 0" is no longer true after a kept attach. Levers
+  now subtract from the post-attach eval. The run's reported improvement and
+  iteration 0's recorded score are unchanged.
+
+**The seam.** `run_subset` stays on the `EvalRunner` seam with its tests; no
+production path calls it any more. Removal is carried to M6. *`run_subset` was
+deleted by MV-D118.*
+
+**Live run.** Owner-approved live run (Task 6) on 2026-09-29, Test_Bakehouse
+space against the bakehouse schema. It first found MV-D115 (below). After that
+fix, the run completed end to end: OBO create at trigger, attach kept and
+verified by reconcile, patch recorded, job `SUCCESS`, `TARGET_REACHED`. It also
+found two defects, both fixed in this commit:
+- **L1.** The loop stamped the kept attach's 90.0 on the run, and publish then
+  overwrote it with iteration 0's stored 86.67 (d7 clarification above).
+- **L2.** Genie exported the attached view under `tables`, where
+  `attached_identifiers` did not look (d6 clarification above). The live-read
+  report and a restarted loop's reconcile would have missed a view that was
+  live.
+
+Both fixes were replayed read-only against the first run's stored rows and the
+space's live export: the fixed publish scores iteration 0 at 90.0 (the stage
+row's `baseline_eval_run_id` matches iteration 0's `eval_run_id`), and the fixed
+read finds the view, which the export lists only under `tables`. A second run
+after the fixes (same trigger) downgraded to `suggest_only` because the view
+already existed, skipped the phase (`NOT_REQUESTED`), and completed with
+`TARGET_REACHED`, publish stamping the stored 90.0. That run proves no
+regression on the no-reset path; it does not exercise either fix.
+
+**M4 carry-overs (to M6 unless noted).**
+- Fingerprint parity: a statement's `MeasureRef.source_tables` equals the
+  advisor bucket's table set only for single-table measures. M3's servable
+  gate guarantees that for every proposed measure, so the measure match holds
+  for surfaced candidates; a multi-table measure would silently not match
+  (finding 11's territory).
+- Cost: a run with `mv_attach_views` spends one full-suite eval instead of a
+  subset, once per run and only when an attach was requested (accepted in d3).
+- A view that no benchmark question exercises is never kept: zero matched
+  questions skips before attaching (d2), zero graded reverts (d5). By design,
+  and the user doc says so.
+- `run_subset` is unused in production (above). *(taken by MV-D118)*
+- The run-level stamp versus iteration 0's row: after a kept attach with no
+  accepted lever, the run's `best_accuracy` (post-attach) differs from
+  iteration 0's `overall_accuracy` (pre-attach) — the MV-D18 asymmetry extended
+  by d7. Publish now scores iteration 0 at the post-attach accuracy (L1). What
+  remains reads the stored score: `_best_persisted_iteration` on the restart
+  path; the run-detail headline, which `compute_run_scores`
+  (`common/accuracy.py:200`, called at `backend/routers/auto_optimize.py:4617`
+  and `:4795`) builds from iteration 0; the champion's
+  `_residual_failure_count` (`publish.py:592`), which counts pre-attach
+  failures; and the audit context (`as_audit_context`, `publish.py:633`), whose
+  `baseline_accuracy` and trajectory read the stored rows while
+  `champion_accuracy` carries the reset. *(taken by MV-D118)*
+- The applier's `metric_views` add (`applier.py:3926-3954`) checks only
+  `metric_views`, so re-attaching a view Genie has moved to `tables` would list
+  it on both shelves (L2's writer side). *(taken by MV-D118)*
+- L2's reader side can over-report: a view already on `tables` before the run
+  (attached at approval), whose attach was reverted on a path that keeps the
+  row `CREATED` with its `attach_patch_id` (`LIFT_EVAL_UNUSABLE`,
+  `LIFT_NOT_GRADED`), is named by the unmeasured report although the revert
+  succeeded. Report only; M6 to skip identifiers on the pre-attach config.
+  *(taken by MV-D118)*
+- Restarts: a restarted optimize task re-runs the baseline and the phase; after
+  a kept first attempt the row is `ATTACHED`, so the phase skips with
+  `NO_CREATED_OBJECT` and the reset does not repeat. Pre-existing, recorded, not
+  changed.
+- `_adapt_wide_schema_for_failures` still plans from the pre-attach failures
+  and is not re-run after a kept attach. It credits nothing (d7), but its plan
+  can be slightly stale until the first accepted lever. *(taken by MV-D118)*
+- `mv_fingerprint.parse_statement`'s DEBUG log could quote SQL once the affected
+  subset fed it expected SQL. Resolved in the final-review fix wave (I-2): both
+  parse skips log the exception type only, pinned by a sentinel-literal test.
+  A follow-up extended this to the canonicalize and render failure logs
+  (`canonicalize_sql_ast`, `canonicalize_expr`, `render_expr`), so every
+  `mv_fingerprint` failure log now carries the exception type only.
+- `rollback_error` can carry the applier's compensation API exception text; its
+  own fixed strings carry no SQL. *(taken by MV-D118)*
+- d4 design risk — regressions outside the affected subset are adopted into the
+  new baseline but never gate the verdict; M6 to consider `delta_suite` in the
+  attach diagnostic and a threshold guard. The live run realized it: one
+  question outside the affected subset regressed and was adopted.
+  *(taken by MV-D118)*
+- Final-review minors (M6):
+  - m-2: the post-deploy exception outcome drops the measured lift fields,
+    while the `CREATED` row keeps them. *(taken by MV-D118)*
+  - m-3: an ambiguous PATCH failure (applied server-side, raised locally) is not
+    reverted; best-effort `_revert` on `patch_error`. *(taken by MV-D118)*
+  - m-4: the fingerprint match misses unqualified and bare-expression SQL
+    (conservative: a smaller subset, never a wrong verdict). *(taken by MV-D118)*
+  - m-5: soften the "pre-deploy failures only" comment in `run_mv_attach_phase`.
+    *(taken by MV-D118)*
+  - m-6: pin a bring-your-own `USER_CREATED` view with no candidate row.
+    *(taken by MV-D118)*
+- Carry-ins: M3's C-1 to C-8 and M2's open items do not touch the attach and
+  lift path and stay for M6. *(C-1 to C-8 taken by MV-D117)*
+
+### MV-D115 — Attaching a metric view requires Can Edit (DECIDED 2026-09-29 — PR #332 M4, owner)
+
+**Problem.** M4's live run (Task 6) found create-at-approval and
+create-and-attach blocked for every user. The metric-view probe's space row
+asked `user_can_manage_space`, which since MV-D109 is proved by
+`GET /api/2.0/permissions/genie/{id}` under the caller's token. The token
+Databricks Apps forwards carries only the app's user scopes, and the
+permissions API refuses it (`space_access_scope_missing` in the app log), so a
+user holding `CAN_MANAGE` got `CAN MANAGE on Genie Agent … DENIED` and the probe
+answered INSUFFICIENT. Before MV-D109 the same check read the ACL with a
+service-principal fallback, so the regression landed with M1a.
+
+**Decision.** The probe's space row asks CAN EDIT (`user_can_edit_space`: the
+space read with its configuration export, which Genie serves to CAN EDIT and
+above). Attaching a view rewrites `data_sources.metric_views`, which is a space
+edit, and Genie's set-up guide (section "Required permissions") requires "at
+least CAN EDIT" to create or edit a Genie space. That matches the standing rule:
+a mutation needs Can Edit or Can Manage. The Prompt 5 claim that the rewrite is
+manage-level was wrong.
+
+**What it relaxes.** Since Prompt 5 the probe required CAN MANAGE on the space,
+stricter than every other space mutation. A CAN EDIT holder can now consent to
+create-and-attach and approve a create; nothing below CAN EDIT can.
+
+**What stays.**
+- The route gate (`require_space_access(space_id, EDIT)`) on create-at-approval
+  and `/trigger`.
+- The downgrade on a DENIED space row (Approve for later; no GRANT SQL, since
+  no SQL grant closes a Genie permission gap).
+- The service principal's own `CAN_MANAGE` check (`sp_can_manage_space`), which
+  the job's attach runs under.
+- The MANAGE level in the resolver and `user_can_manage_space`, now with no
+  gate that uses them. *Amended by MV-D118: the resolver no longer asks MANAGE;
+  the level and `user_can_manage_space` remain, with no caller that asks.*
+
+**Tests.** `backend/tests/test_mv_entitlement.py`:
+- the space row asks Can Edit and never calls `user_can_manage_space`;
+- a permissions API refused for scope, with the export present, still grants the
+  row;
+- a missing Can Edit is INSUFFICIENT with no GRANT SQL;
+- the caller's own client reaches the check.
+
+**Carry-overs (M6).**
+- MANAGE cannot be proved with the app's user token, so any future MANAGE gate
+  would deny everyone. Prove it another way first, or don't gate on it.
+  *(taken by MV-D118)*
+- `/access` now reports Can Edit to a manager by design (MV-D118).
+
+### MV-D116 — A measure's identity includes its tables (DECIDED 2026-09-30 — PR #332 M6a, owner)
+
+**Problem (review finding 11).** The corpus scan grouped measures by canonical
+expression with table qualifiers stripped, so the same aggregate over two tables
+(`SUM(amount)` on `orders` and on `refunds`) became one row whose tables were the
+union. `mv_state.mv_candidate_fingerprint` already hashed a table set; it was
+handed the union. Since MV-D113 (M3) the finding-9 gate refuses that row before
+scoring — `_unservable_reason` returns `"not_single_table"` (`mv_advisor.py:1312`),
+called at `:1431`, ahead of the `MV_ADVISOR_MAX_CANDIDATES` cap at `:1449` — so it
+took no candidate slot and the measure was hidden entirely: the `9d972e46`
+baseline holds no bundle over orders and refunds. Only before M3 could the merged
+row surface, as one proposal keyed over both tables, so a rejection under the
+merged key can date only from then. Four comparisons shared the
+blindness: the governed-seed exclusion and `dedup_gate`'s governed match compared
+expressions only; the trusted-asset conflict route compared aggregate and columns
+only; and demand counted history traffic by expression only.
+
+**Decision.**
+1. The corpus scan splits a measure whose occurrences name two or more distinct
+   sets of table names, compared on the unqualified lowercase name. One table
+   spelled two ways stays one row. An occurrence with no resolved table joins the
+   measure's only named row; when there are several it forms its own table-less
+   row, which the MV-D113 finding-9 gate refuses to serve. *Amended by MV-D123:
+   the split compares the full names the space resolves, and an unresolved
+   occurrence forms its own row, refused as `unresolved_table`.*
+2. The governed match (seed exclusion and `dedup_gate`) needs the expression to
+   match and the tables to overlap. A governed view over a query source — as its
+   `source:` or as any join's (`_definition_tables`, `mv_scoring.py:873`) — or a
+   measure with no resolved table, matches as before. *Amended by MV-D123: an
+   unresolved table, a governed query source included, matches nothing; a
+   table-less measure still matches on its expression (`governs_measure`).*
+3. The trusted-asset conflict route also needs the tables to overlap (overlap,
+   not equality: a candidate over `lineitem` joined to `orders` still conflicts
+   with an asset over `lineitem` alone).
+4. Demand counts only traffic over the candidate's table names. *Amended by
+   MV-D123: over its resolved full names, per history row, with a table-less
+   row counted only toward a sole row.*
+5. Migration (owner: dual read). Suppression storage and both readers are
+   unchanged. For a split measure the advisor also rebuilds the key the merged
+   row had — the MV-D7 key over the union of the split rows' tables — and a
+   suppression under either key hides the measure, so a rejection recorded before
+   the split keeps both halves hidden. Such a rejection can date only from before
+   M3 (see **Problem**), which bounds how much the dual read matters.
+   *Retired by MV-D123: the dual read is now v1-to-v2, over each occurrence's
+   frozen v1 key.*
+
+**Unchanged.** The MV-D7 and MV-D30 key formulas, `suggestion_id_for`, the
+candidate and suppression tables. A measure seen over one table name keeps every
+per-candidate key: `test_mv_table_identity_baseline.py` pins the scan, candidate
+fingerprints and bundle keys against a baseline captured at `9d972e46`; the
+MV-D113 baseline at `ab2e68cf` is untouched. What the split can move is which
+candidates survive the cap. The split halves are newly servable, so they compete
+for the `MV_ADVISOR_MAX_CANDIDATES` slots (`mv_advisor.py:1449`) like any other
+measure: near the cap they can displace lower-ranked measures and so change the
+membership, and therefore the key, of a bundle on another grain. The old bundle
+row then stays listed (the unretired-bundle residual below). Survival under the
+cap has always been a function of the whole corpus, and any corpus growth
+displaces the lowest-ranked measures the same way.
+`test_split_halves_at_the_cap_move_membership_never_keys` pins that every measure
+surviving the cap with and without the split keeps its MV-D7 key, and that only
+membership moves.
+
+**What users see.** Since M3 a measure that ran over two tables was hidden
+entirely; it now surfaces as one proposal per table, each in its own table's
+view. A bundle on one of those tables changes key because its membership
+changed, and near the cap a bundle on another grain can lose its lowest-ranked
+measures and change key too (see **Unchanged**). No UI code, copy or surface
+state changed.
+
+**Residuals (not fixed here).**
+- The same table name in two catalogs still reads as one table. *Closed by
+  MV-D123: two catalogs are two tables.*
+- The merged key is rebuilt from today's corpus, so it matches only while today's
+  union equals the union at rejection time — the drift the key already had.
+  *Closed by MV-D123: the merged key is retired.*
+- A bundle whose membership changed is never retired, for this change or any
+  other: its old row stays listed in `genie_opt_mv_candidates` beside the new
+  one — a bundle the cap reshaped, or a merged proposal persisted before M3 and
+  still pending. *Closed by MV-D122 for listing: the older undecided row of a
+  view is dropped at read time; the row itself stays in the table.*
+- `COUNT(*)` names no column, so it resolves no table and never splits.
+  Attributing it to its statement's table is item C-4 of MV-D113's "Carried to
+  M6 (final review)" list. Resolved by MV-D117.
+- A history row that resolves no table counts toward the demand of both halves:
+  `same_tables` treats an unknown side as matching (`mv_fingerprint.py:792`).
+  *Closed by MV-D123: such a row counts only toward a calculation's sole row.*
+- On the per-measure CONFLICT path the two halves can propose the same object
+  name (`_proposed_object`, `mv_advisor.py:827`) — the existing name-collision
+  class. *Closed by MV-D122.*
+- Once C-8 makes multi-table measures servable, a measure whose own table set
+  equals the old union shares the merged key, so the dual read hides it too. For
+  M6b to weigh. Not applicable while MV-D117 keeps multi-table measures unservable.
+  *Closed by MV-D123: with the merged key retired, no join measure shares it.*
+- The semantic graph still merges curated measures by expression. *Closed by
+  MV-D123: a concept is its calculation and its resolved tables.*
+- `_partial_alternatives`, and dimension, filter and join-key buckets, are unchanged.
+- *`joins:` given as a number raised `TypeError` in `_definition_tables`
+  (recorded in the tracking issue only). Closed by MV-D122.*
+
+### MV-D117 — The M3 carry-overs: stale bodies, row counts, struct paths, the firewall's quoting, and the unproven rungs (DECIDED 2026-09-30 — PR #332 M6b, owner)
+
+**Problem (MV-D113, "Carried to M6 (final review)", C-1 to C-8).**
+- Every proposal persisted before M3 has an unstamped body that the create paths
+  refuse. The proposals routes still called it validated and executable, the
+  re-run gate still counted it approved, and `/mv-ddl` still served it (C-2).
+- A run that built nothing said only that (C-1).
+- `COUNT(*)` named no table, so it never joined a view (C-4).
+- `o.payload.amount` lost its struct path (C-7).
+- The leakage probe folded backticks on its side only (C-6).
+- The GRANT text was unquoted (C-5).
+- A claim could not match a row count or a bundle (C-3).
+- The nested and subquery-source rungs are unproven in Unity Catalog, and
+  unreachable only by accident (C-8).
+
+**Decision.**
+1. A proposal whose body predates `MV_RENDER_VERSION` is stale:
+   - `stale_body` is set on the proposal;
+   - its facts row omits validated and executable;
+   - the re-run gate excludes it, and `/mv-ddl` refuses it with 409;
+   - a claim on it is refused, and the refusal reads "this proposal was rendered
+     by an earlier version of the advisor; re-scan the Agent for a current
+     suggestion";
+   - the shared accept flow shows "Found by an earlier version of the advisor,
+     so it can't be created as is. Re-scan the Agent for a current suggestion."
+     in place of its create and claim actions. The wording promises a current
+     suggestion, not that this card refreshes: a re-scan refreshes a row in place
+     only when its MV-D30 bundle key is unchanged;
+   - it is dropped from the space's proposal list, the re-run gate and both scan
+     reloads (`/mv/suggest` and its stream) when a current row in the same result
+     names the same view. Names compare case-insensitively without backticks
+     (`_norm_fqn`, `auto_optimize.py:2878`), through one helper,
+     `_drop_stale_with_current_sibling` (`auto_optimize.py:2210`). An approved
+     stale row is dropped too; its persisted decision stays in the table.
+     *Extended by MV-D118 to the run-keyed proposal list and the semantic graph;*
+   - it ranks last and is never Recommended, in the IQ panel's lower-ranked
+     disclosure as well as the default list;
+   - that disclosure's header says "validated and executable" of the current
+     proposals only and counts the stale ones: "… — the current one is still
+     validated and executable; 1 found by an earlier version of the advisor needs
+     a re-scan." Its wording is unchanged when none is stale;
+   - the shared independence callout counts only current proposals. With fewer
+     than two current proposals there is no callout. When a stale proposal is
+     present it reads "The N current proposals are independent — any or all can
+     be created."; otherwise its wording is unchanged.
+
+   Attached and created terminals are unchanged.
+2. When a run creates nothing, the consent's `downgrade_reason` lists the skip
+   reasons as counts in a fixed order, never a name or SQL. Partial success
+   stamps no reason, as before. An approved id that matches no loaded candidate
+   counts first, as "no longer available".
+3. A column-free aggregate in a single-table statement takes that table as its
+   source. It splits per table (MV-D116) and joins that table's view. The
+   MV-D7 key changes for column-free aggregates only. A corpus whose only
+   recurring measure is `COUNT(*)` over one table now yields one LOW proposal,
+   anchored by that row count.
+4. `alias.col.field`, where `alias` is a relation and `col` is not, is field
+   `field` of struct column `col`. It is rewritten to `source.col.field`, the
+   metric view's own head, so the canonical form (`sum(col.field)`) and the
+   render agree. A table-qualified column and a two-part name read as before.
+   Only measures read a `source.`-headed three-part path as a struct.
+   Corpus dimensions, filters, grain and shapes clear schema and catalog
+   qualifiers only, so their identity is unchanged — including for a schema
+   literally named `source`. `source.`-headed text canonicalized on its own
+   (a governed view's dimensions, a curated snippet measure) reads the struct
+   path.
+5. The firewall folds identifier quoting inside the oracle, on both sides;
+   `mv_advisor._leakage_view` is gone. Every probe compared with the SQL
+   shingles folds, a text field's included; every probe compared with the
+   question shingles stays raw, as the corpus questions do.
+6. The GRANT text quotes the view name.
+7. A claim matches a row count by its table, and a bundle when every anchor
+   member is implemented.
+8. The create paths refuse a body whose join strategy is not `direct`, and a
+   structural pin fails if a production caller starts passing join hops or
+   attributes. The rungs stay unreachable until a live UC proof.
+   *Amended by MV-D124: every rung is proven live, and the create paths now
+   refuse only a strategy outside `MV_PROVEN_JOIN_STRATEGIES`; the pin stays.*
+
+**Surface contract amended.** A proposal whose body predates the current
+renderer surfaces only as a labelled re-scan notice — never with DDL,
+validated/executable facts, or a create or claim action.
+
+**Unchanged.** The MV-D7 and MV-D30 key formulas, `suggestion_id_for`, every
+table, route and job parameter. `test_mv_count_struct_identity_baseline.py` pins
+that only row counts and struct-field measures move, against a baseline captured
+at `43b01544`; the MV-D113 and MV-D116 baselines are untouched.
+
+**Residuals (not fixed here).**
+- The live UC proof of the join rungs — its own milestone, with a workspace and
+  profile approval. *Closed by MV-D124.*
+- Struct access through a two-part name, or on a subquery alias, stays unresolved.
+- A governed view referencing `source.<join>.<col>` (non-standard) reads as a struct.
+- Struct paths in dimensions, filters and shapes keep today's reading: a ratio
+  over a struct measure renders its component without the path.
+- The Model tab's proposal ghost nodes do not mark stale proposals. *Closed by
+  MV-D122.*
+- The stale IQ-scan card still offers "View in graph" (navigation only).
+  *Closed by MV-D122.*
+- The stale run-output card still shows its config preview and "Lift not
+  measured", and the run-output summary still counts a stale proposal. *Closed
+  by MV-D122, which reverses the M6b ruling that kept the preview and the label
+  (owner).*
+- The stale notice is one text line where the button row was 32px — an accepted
+  density deviation from the approved frames.
+- A partial create-time skip is still log-only.
+- The unreachable-rung pin inspects keyword arguments only; a positional join hop
+  or attribute would slip past it. *Closed by MV-D122.*
+- `quote_fqn` raises on an empty name part, so a corrupt stored `proposed_object`
+  would fail the GRANT assembly with a 500. *Closed by MV-D122 for the GRANT: no
+  GRANT is offered.*
+- The struct render's live acceptance is unproven; the first live run is the proof.
+- A stale row with no current row of the same view name stays, flagged, until
+  the user acts. *Kept by owner ruling (MV-D122).*
+- A governed dimension `source.payload.region` now canonicalizes to
+  `payload.region` (before: `region`) while the corpus dimension stays `region`.
+  A curated snippet measure fed straight to `canonicalize_expr`
+  (`auto_optimize.py:3511`) stays `sum(fee)` while the corpus reads
+  `sum(payload.fee)`. *Kept by MV-D123 (Ruling 13): the snippet's struct path
+  stays a residual, and the snippet forms its own row.*
+- A derived-table `COUNT(*)` (`FROM (SELECT DISTINCT … FROM orders) sub`) is
+  attributed to the inner table. *Closed by MV-D123: it names no table and is
+  refused as `unresolved_table`.*
+- Pre-existing: in `FROM orders o JOIN payload p`, `o.payload.fee` resolves to
+  column `fee` of table `payload`, because `_relation_map` registers an aliased
+  table's name too. *Closed by MV-D123: an aliased table registers only its
+  alias.*
+- `/mv-ddl` refuses a stale artifact without trying a current candidate-row
+  fallback. Both are run-keyed, so this is rare. *(taken by MV-D118)*
+- Pre-existing: `canonicalize_sql` folds a backticked alias (`AS \`x\``) to
+  `_alias` but leaves a bare alias, so the two fingerprints differ. The shingles
+  still match them. *Kept by owner ruling (MV-D123, as R7): this fingerprint is
+  never persisted.*
+
+### MV-D118 — The M4 and M5 carry-overs: the suite loss, the unconfirmed PATCH, the kept attach's score, the matcher, and the MANAGE ask (DECIDED 2026-09-30 — PR #332 M6c, owner)
+
+**Problem (MV-D114 "M4 carry-overs", MV-D115 "Carry-overs (M6)"; plan items A1–A15, B1, B2).**
+- A regression outside the affected subset was adopted into the new baseline
+  and never gated the verdict; the live run realized it (MV-D114's d4 risk, A8).
+- An ambiguous PATCH, applied by Genie but raised locally, was not reverted (m-3, A10).
+- After a kept attach, the readers of stored scores read iteration 0's
+  pre-attach row: the restart lookup, the run headline, the champion's residual
+  failure count and the audit trajectory (A5).
+- The applier's add checked only `metric_views`, so a view Genie had moved to
+  `tables` would be listed on both shelves, and the unmeasured report named a
+  view that was on the space before the run (A6, A7).
+- The measure match missed unqualified and bare-expression SQL, and read one
+  spelling of each row key (m-4, A11, A14).
+- The wide-schema plan still came from the pre-attach failures (A2).
+- `run_subset` had no production caller (A1).
+- `rollback_error` and the failure outcomes could carry exception text; a
+  post-deploy failure dropped the measured fields; a comment overclaimed; one
+  guard was redundant; a bring-your-own view with no candidate was unpinned
+  (A3, A9, A12, A13, A15; m-2, m-5, m-6).
+- The resolver still asked MANAGE, which the app's user token cannot prove (B1),
+  so `/access` depended on a check that could never pass.
+- The gap report carried stale quotes (B2).
+
+**Decisions (owner rulings, one each).**
+- **d4 = net_suite.** `is_regression` (`mv_attach.py:346`) also detaches on a
+  net loss across the whole suite (`delta_suite < 0`), because a kept view
+  becomes the loop's baseline and every later comparison would adopt the loss.
+- **scores = step.** The baseline stays pre-attach everywhere, and a kept
+  attach is its own scored step. The reset is `BaselineReset`
+  (`champion.py:73`), read from the latest kept `MV_ATTACH` stage row by
+  `baseline_reset_from_stage_rows` (`champion.py:110`). The restart lookup
+  (`_best_persisted_iteration`, `unified_loop.py:2580`) and `compute_run_scores`
+  (`common/accuracy.py:200`, called at `backend/routers/auto_optimize.py:4617`
+  and `:4795`) score iteration 0 at the reset. The champion's residual count
+  reads the stage row's `post_attach_remaining_failures`
+  (`_residual_failure_count`, `publish.py:592`). The audit trajectory gains a
+  `metric_view_attach` step (`publish.py:275`, `build_improvement_trajectory`
+  at `:285`). The run headline shows the attach as the improvement over the
+  baseline (`holdsBaseline`, `frontend/src/lib/score-display.ts:100`). No DDL.
+- **patch = read_then_revert.** A PATCH that raised with no validation error
+  (`_patch_outcome_unknown`, `mv_attach.py:893`) is read back from the live
+  space and reverted when the view landed (`_settle_unconfirmed_patch`, `:910`).
+- **matcher = widen.** After the exact fingerprint, `_measure_matches`
+  (`mv_attach.py:391`) tries each table set the candidate recorded, when
+  `same_tables` holds between the statement's tables and that set. *Amended by
+  MV-D123: the fallback keys the calculation over resolved tables, and
+  `same_tables` is deleted.*
+- **manage = stop_asking.** `resolve_space_access_level`
+  (`backend/services/space_access.py:176`) reports EDIT after an EDIT allow and
+  never asks MANAGE. The enum, `_RANK` and `ensure_space_access` (`:109`) stay.
+- **wide_schema = rerun.** A kept attach re-runs
+  `_adapt_wide_schema_for_failures` on the post-attach eval
+  (`unified_loop.py:3251-3260`).
+- **Scope extras.** The gap-report quotes (`gap_quotes`). The three MV-D117
+  one-liners (`mvd117_oneliners`): the stale-sibling filter on the run-keyed
+  list (`auto_optimize.py:2312`) and the semantic graph (`:3567`); the `/mv-ddl`
+  fallback to a current candidate row when the artifact is stale (`:3874`,
+  `_load_candidate_ddl_fallback` at `:551`); and "This measure recurs" for one
+  measure (`mvFormat.ts:175`). A create whose body names a table the consent
+  does not cover is refused (`consent_tables`: `_uncovered_tables`,
+  `backend/services/mv_create.py:161`, called at `:513` and `:1235`). The drop
+  route refuses a recorded name that is not a plain Unity Catalog name
+  (`drop_name`, `auto_optimize.py:4104`). The consent probe keeps only its
+  latest answer (`probe_token`, `mvProbeSeq`, `OptimizationConfig.tsx:122`).
+
+**Rulings (planning and execution).**
+1. One skip code, `PATCH_UNCONFIRMED`. A failed revert is `FAILED` with
+   `rollback_status=failed`. When the live read shows the view absent, the
+   outcome is `ATTACH_NOT_APPLIED` with the exception type as `error`.
+2. An unreadable live space counts as landed, and the view is reverted.
+3. A failed revert of an unconfirmed PATCH is stamped `CREATED` with its
+   `attach_patch_id`. No patch audit row is written. *Amended by MV-D121: the
+   failed revert also writes the patch audit row, so `attach_patch_id`
+   resolves.*
+4. The apply log gains `patch_error_type`; the phase never reads `patch_error`.
+5. The net-suite guard is strict `< 0` on `LiftReport`'s fraction deltas.
+6. The matcher fallback tries the full table set and each single table, gated
+   on `same_tables`. A bare expression with no resolved table matches by design.
+   *Amended by MV-D123 (Ruling 38): a table-less statement selects only when
+   exactly one space table keys a member.*
+7. `pre_attached` is the config the phase receives, intersected with the
+   requested identifiers, persisted on every `MV_ATTACH` stage row. The
+   unmeasured report reads the earliest row carrying it, with an in-memory
+   fallback.
+8. The reset parser lives in `champion.py`, which stays pure;
+   `compute_run_scores` takes the reset duck-typed; `champion.py` keeps its own
+   `"ATTACHED"` literal (`_KEPT_VERDICT`, `:95`), pinned equal to
+   `mv_attach.VERDICT_ATTACHED`.
+9. The headline treats a `metric_view` scope alone as an iteration-0
+   improvement. An `enrichment` win at iteration 0 keeps "Baseline retained".
+   *Superseded by MV-D121: only a full-scope iteration 0 holds the baseline; an
+   `enrichment` win there is a gain.*
+10. The hot status poll reads stage rows from Lakebase only and, without
+    Lakebase, falls back to the stored rows; `get_run` uses the Delta fallback.
+    *Superseded by MV-D121: Lakebase stage reads are off, so the poll reads the
+    attach stage from Delta once a baseline exists.*
+11. The audit trajectory gains the step; the run-detail iteration chart does not.
+    *Superseded by MV-D121: the chart's data plots the attach after the
+    baseline; the chart has no live mount (see MV-D121).*
+12. A create whose body tables are unknown is refused like an uncovered one. At
+    approval that is `created=False, degraded=False`, with no remediation SQL.
+13. The drop route answers 409 for an unsafe recorded name.
+14. `_holds`' MANAGE branch is deleted and `lower_codes` is a required
+    frozenset. The MANAGE enum, `_RANK` and `ensure_space_access(space_id,
+    MANAGE)` stay.
+15. The M6b per-task deferred minors are out of scope and carry forward.
+
+Made during execution:
+- The wash with a regression outside the subset now detaches, so its test
+  flipped to `DETACHED` (net_suite).
+- The unconfirmed-PATCH predicate is `not apply_log.get("validation_errors")`.
+  The real applier logs `[]` on a raised PATCH, so a key-presence test would
+  never fire; a real-applier test pins it.
+- When a reset applies, the champion flag moves from the iteration-0 entry to
+  the inserted `metric_view_attach` trajectory step.
+- The run-list endpoints (`compute_run_scores_by_run_id`) do not apply the reset.
+  *Corrected by MV-D121: the lists show the stored `best_accuracy`, which the
+  loop and publish stamp at the post-attach score (`promote_best_model`); the
+  unused helper is deleted.*
+- `_joins_are_mappings` (`mv_create.py:186`) treats a `joins` that is not a
+  list of mappings as unknown tables, so the create is refused.
+
+Made at final review:
+- A mixed request records status and measures only the views this run applied;
+  the pre-attached row is untouched. `_attach_and_measure` (`mv_attach.py:649`)
+  drops the `pre_attached` identifiers before the affected subset, and every
+  status write, the outcome's `suggestion_ids` and `_detach`'s `detached`
+  (`:1163`) cover the rest. Otherwise a pre-attached view's row was stamped
+  `ATTACHED` with a lift it never had, or `DETACHED` while it stayed on the
+  space, which unlocks Drop. When every requested view is pre-attached the
+  applier no-ops each add and the existing `ATTACH_NOT_APPLIED` skip fires.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D114 d4, d6 and d7, and its "The seam"
+paragraph; the M4 carry-over bullets MV-D118 takes; MV-D115 "What stays" and its
+two carry-overs; MV-D109's MANAGE rung.
+
+**Unchanged.** No new task, job parameter, route, table or column. The MV-D7
+and MV-D30 key formulas; the three identity baselines re-ran green. Demote-only
+holds: nothing new writes `ATTACHED`, and the unconfirmed-PATCH path writes only
+`CREATED`. The eval seam stays single and loses a method.
+
+**Tests** (+57 GSO, +16 backend, +13 vitest).
+- The exception type only in the rollback compensation error, the post-deploy,
+  pre-deploy and revert outcomes, and the measured fields kept after the
+  measurement (+5 GSO).
+- A net suite loss detaches, an even suite keeps a subset gain, the diagnostic
+  carries `delta_suite`, and the renamed wash test (+3 GSO).
+- Unqualified SQL over the candidate's table selects, the same expression over
+  another table does not, no fallback without candidate tables, and each
+  expected-SQL, generated-SQL and recorded-id key alone (+9 GSO).
+- Either shelf blocks a second add, `pre_attached` on the stage row, its
+  restart survival and loop hand-off, the unmeasured report skipping it, and a
+  bring-your-own view with no candidate (+10 GSO).
+- A landed unconfirmed PATCH is reverted on either shelf, an unlanded one is
+  not, an unreadable space counts as landed, a failed revert is reported, a
+  validation failure is not unconfirmed, the real applier's raised PATCH is read
+  back, and the loop hands the phase a live reader (+8 GSO).
+- The reset parser and `apply_baseline_reset`, the remaining-failures count,
+  the restart lookup, the trajectory step with its champion flag, and the
+  residual count and audit context (+18 GSO).
+- The wide-schema re-plan after a kept attach, and none after a detach (+2 GSO).
+- The status and run-detail headline, the attach stage read while the Jobs API
+  answers, the run-scores contract, and the score display and m6c-a to m6c-c
+  frames (+4 backend, +3 GSO, +8 vitest).
+- `run` serializes across threads and the seam has no subset method (−1 GSO:
+  three `run_subset` tests removed).
+- The uncovered-table refusal at run hook and approval, name matching, the
+  named skip, and an unreadable body (+7 backend).
+- The drop's plain-name refusal, and the highest level proved without asking
+  MANAGE (net 0 backend).
+- The run-keyed list and the semantic graph drop a stale sibling, and the
+  `/mv-ddl` fallback serves, refuses and stays unread for a current artifact
+  (+5 backend); the singular sentence and two m6c-d frames (+3 vitest).
+- The probe keeps its latest answer across a toggle (+2 vitest).
+- Final-review fix wave (+6 GSO, +1 vitest): a mixed kept attach and a mixed
+  detach write only the applied view's row and name only it, and the affected
+  subset drops the pre-attached view's own questions; an even suite keeps a wash
+  whose only regression is outside the subset; a bare expression with no FROM
+  selects through the fallback; `run` forwards its ids and labels the result
+  with its scope; and m6c-d renders its SQL block.
+
+**Residuals (not fixed here).**
+- The applier's `logger.exception` tracebacks on PATCH and rollback failures,
+  and the pre-existing `exc_info=True` in `mv_attach` `_update_object`,
+  `_write_attach_patch_rows` and `_record`. *Closed by MV-D121.*
+- An iteration-0 `enrichment` win still reads "Baseline retained" (Ruling 9).
+  *Closed by MV-D121.*
+- The run-detail iteration chart has no attach step (Ruling 11). *Superseded by
+  MV-D121: the chart's data plots the attach after the baseline; the chart has
+  no live mount (see MV-D121).*
+- The hot poll without Lakebase reads the stored rows (Ruling 10). *Closed by
+  MV-D121.*
+- No patch audit row on an unconfirmed PATCH (Ruling 3). *Closed by MV-D121.*
+- Run lists show optimized equal to baseline for a run whose only gain is a
+  kept attach. *Corrected by MV-D121: the lists show the stored
+  `best_accuracy`, which the loop and publish stamp at the post-attach score
+  (`promote_best_model`); the unused helper is deleted.*
+- The matcher fallback does not reach legacy bundle rows (before
+  `source_tables`) or CONFLICT per-measure rows, and same-leaf tables in two
+  catalogs match under `same_tables`. *Reach to legacy and CONFLICT rows moved
+  to M7e-2 with the two-catalog half.* *Closed by MV-D123: the matcher resolves
+  each statement's tables through the space, so it reaches every member key,
+  and two catalogs are two tables.*
+- An unpinned `/mv-ddl` (no `suggestion_id`) may pair a stale artifact with
+  another candidate's current row. Pre-existing; cards always pin. *Closed by
+  MV-D121.*
+- The consent-probe key omits `spaceId` (pre-existing).
+- The applier's `remove` stays case-sensitive. *Closed by MV-D121.*
+- `metric_view_attach` has no frontend mode label (no surface renders the
+  trajectory). *Closed by MV-D121: the label exists, and still no mounted
+  surface renders the trajectory.*
+- The M6b per-task deferred minors (Ruling 15). *Closed by MV-D122 (the
+  co-membership pin, the baselines' import order, the rung pin's gaps, the
+  GRANT on a refused name and the summary's double count), the rest having
+  closed earlier.*
+
+### MV-D119 — The M1 follow-ups: allowlist redaction, admin summaries under the caller's token, parallel detail reads, the post-create retry, the deep-link no-access state, and timezone-aware times (DECIDED 2026-09-30 — PR #332 M7b, owner)
+
+**Problem (the M7b line of the PR #332 tracking issue: the M1 follow-ups).**
+- Viewer redaction was a denylist of three patterns over the stored text. A new
+  scorer string that quoted space content would reach a caller below Can Edit by
+  default, and `checks[].detail` was not redacted at all.
+- The admin dashboard, leaderboard and alerts listed agents OBO-first:
+  `list_genie_spaces()` defaults to `sp_fallback=True`
+  (`backend/services/genie_client.py:320-329`), which runs
+  `call_with_sp_fallback` (`:232-257`). That uses the caller's client when a
+  user token is set (`get_workspace_client`, `backend/services/auth.py:117-127`),
+  the SP when none is, and retries as the SP on an OAuth scope error. The routes
+  turned a listing failure into zero agents, and called the listing
+  synchronously inside async routes. An alert's `top_finding` was the stored
+  first finding verbatim, so it could carry the noisy-column sample.
+- `GET /api/spaces/{space_id}` ran its reads one after another after the View
+  check, and its Genie GET blocked the event loop.
+- Right after a create, Genie's propagation lag could 404 the access read: the
+  creator saw "You can't open this agent" and the auto-scan never ran.
+- A deep link to an agent the caller can't open rendered the generic red error
+  box, whatever the cause.
+- `lakebase.py` wrote naive UTC times through the deprecated
+  `datetime.utcnow()`.
+
+**Decisions (owner rulings, one each).**
+- **utcnow = aware.** `lakebase.py` writes timezone-aware UTC times:
+  `from datetime import UTC, datetime` (`backend/services/lakebase.py:14`) and
+  `datetime.now(UTC)` at `:435`, `:665`, `:784`, `:862` and `:1010`.
+- **admin alerts = scrub and list as the caller.** `top_finding` is scrubbed
+  for every caller, because a summary never quotes space content: it is the
+  first viewer-safe finding (`backend/routers/admin.py:129-130`). The three
+  routes list under the caller's token through `_list_visible_spaces`
+  (`:19`), which runs `list_genie_spaces(sp_fallback=False)` in a thread. With
+  a user token the routes already listed the caller's agents; what changes is
+  that a scope error or a missing token no longer answers as the SP.
+- **stacking = this branch.** M7 is stacked on this branch before the push.
+
+**Rulings (planning and execution).**
+1. The allowlist is a registry of forms matched over the stored text, not
+   stored codes. Stored scans carry text only, so one matcher serves scans from
+   every scorer version. These forms are the tracking issue's "template codes".
+2. The registry sits at the end of the scorer, beside the templates it mirrors:
+   `VIEWER_SAFE_FORMS` (33 forms, `iq_scan/scoring.py:695`) and
+   `viewer_safe_text` (`:744`). A two-way test fails when either side drifts.
+   The gap report's generated layout is unchanged.
+3. A finding or warning with no viewer-safe form is blanked in place (`""`),
+   not dropped (`_viewer_texts`, `backend/services/scanner.py:36`), so
+   `findings[i]` still pairs with `next_steps[i]` and its remediation renders;
+   the UI hides a falsy message (`frontend/src/pages/IQScoreTab.tsx:265`,
+   `:291`). Next steps and check labels pass through unchanged: every scorer
+   version wrote them only as literals, pinned by an AST test on the current
+   scorer.
+4. Check details go through the same forms. A detail in no form becomes `None`
+   (`scanner.py:51`), which the UI hides.
+5. The pre-rename wording (before `ae8c4367`, 2026-08-20) is not allowlisted.
+   A viewer of a space not re-scanned since then sees remediations without
+   their finding text, and checks without details, until an editor re-scans.
+   Nothing leaks.
+6. The three quoting templates (the SQL-in-prose excerpt, the noisy-column
+   sample and the row-level-security table names) keep their count-only
+   rewrite (`_QUOTING_FORMS`, `scoring.py:735`), tried only when the text is
+   not already a safe form. "6/20 visible columns look internal/noisy (30%)"
+   therefore keeps its percentage.
+7. An admin listing failure is a 503 with fixed text (`LISTING_UNAVAILABLE`,
+   `admin.py:16`), not an empty dashboard. Zero agents would be a false answer,
+   and the page already shows an error state.
+8. The admin numbers cover the caller's agents, and the overview card says so:
+   "Total Agents" becomes "Agents you can see"
+   (`frontend/src/pages/AdminDashboard.tsx:131`). *Amended during execution:*
+   the page subtitle becomes the scope-neutral "Genie Agent health &
+   observability" (`:277`) instead of keeping "Org-wide …". On the default
+   Overview tab the old subtitle claimed a scope its numbers no longer have; the
+   neutral wording is true of the caller-scoped overview and of the GenieWatch
+   sub-tabs, each of which names its own scope. Cost and Resources read the
+   system tables workspace-wide as the SP
+   (`frontend/src/watch/pages/CostExplorer.tsx:71`, `ResourceRollup.tsx:20`).
+   Feedback reads them as the SP but keeps only the agents GenieWatch lists
+   (`backend/watch/routers/feedback.py:73-75`, `:100-101`), although its
+   subtitle says workspace-wide (`Feedback.tsx:141`). The Agents sub-tab lists
+   OBO-first (`backend/watch/routers/spaces.py:123`) and reads "N agents
+   visible to you" (`SpacesList.tsx:106`).
+9. The admin routes stay Exempt in the route table, with the reason "admin
+   aggregate over the caller's own listing (MV-D119)"
+   (`backend/tests/test_route_access_table.py:107-109`). They read no single
+   space's configuration, and their listing is the caller's own.
+10. The post-create retry is one retry, after `NOT_FOUND_RETRY_MS` (5 s,
+    `frontend/src/lib/space-access.ts:16`), only on a 404 (`notFound`, `:36`),
+    and only when `autoScan` is set (`retryNotFound`,
+    `frontend/src/pages/SpaceDetail.tsx:80`; the wait is
+    `frontend/src/hooks/useSpaceAccess.ts:14-17`). A 403 is never retried: it
+    is Genie's answer about an agent that exists. The page reads "Checking your
+    access…" while it waits.
+11. A deep-link 403 or 404 renders `SpaceNoAccessState` with the server's
+    reason and `RETURN_TO_AGENTS` (`SpaceDetailLoadError`,
+    `frontend/src/components/space-access/SpaceAccessChrome.tsx:31`). `App.tsx`
+    keeps the error's status (`:55`, `:120`) and renders the component
+    (`:236`). Any other failure keeps the red box. The deep-link page doesn't
+    know the agent's name, so it has no header.
+12. The detail route gathers the Edit check, the Genie GET, the stored score and
+    the star after the View check, which stays first and alone
+    (`backend/routers/spaces.py:131`, `:134-140`). The two thread-side calls run
+    under `asyncio.to_thread`, which copies the OBO `ContextVar`.
+13. Times use `datetime.now(UTC)`, matching `iq_scan/scoring.py:14`. No reader
+    or migration is needed: the Lakebase columns are `TIMESTAMPTZ`, and the
+    memory store is process-local. The one naive value that reached the API,
+    the `updated_at` that `save_join_advice` returns (`lakebase.py:784`), is
+    aware now.
+14. Frames: m7b-a (viewer score with blanked text), m7b-b (deep-link no access)
+    and m7b-c (deep-link load failure). The admin card label has no frame:
+    `AdminDashboard` fetches in effects, which the SSR emitter doesn't run. A
+    vitest pins the label.
+15. Out of scope: GenieWatch's listings and space reads
+    (`backend/watch/routers/*.py`), which list OBO-first and keep the SP scope
+    fallback, and the post-create lookup in `genie_creator.py` (`:494`). Both
+    stay flagged in `authentication.md`.
+
+Made during execution:
+- Text with no viewer-safe form is blanked in place, although the tracking
+  issue's M7b line said "drop unknown strings". That line was a planning
+  summary, not an owner ruling, and blanking keeps the pairing (Ruling 3).
+- The three pre-existing admin 500 handlers log only the exception type
+  (`admin.py:74`, `:108`, `:139`), as the firewall requires of every admin log
+  line. An unexpected admin 500 now carries no traceback.
+- "Return to Agents" is centred under the no-access card (`text-center` on the
+  403/404 wrapper, `SpaceAccessChrome.tsx:37`, not flex, so the card keeps its
+  full width). The red box keeps its left-aligned link inside the box.
+- The forms' counts and percentages match ASCII digits only (`[0-9]`,
+  `iq_scan/scoring.py:687-688`), because the scorer emits no other digits
+  (final-review fix wave).
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D109's M1c "As implemented" paragraph (viewer
+redaction and the admin `top_finding`); the MV-D36–MV-D97 numbering note (the
+next free number on both lines).
+
+**Unchanged.** No new route, table, column, model field, job task or job
+parameter. `backend/models.py` and its TypeScript mirrors are unchanged
+(`AlertItem.top_finding` keeps its type); the frontend-only
+`SpaceAccessAnswer` gains an optional `notFound`. Can Edit still gates the
+unredacted scan, the View check still runs first on the detail route, and every
+mounted route stays Gated or Exempt.
+
+**Tests** (+6 GSO, +22 backend, +23 vitest).
+- Every string `calculate_score` emits across the scenarios has a viewer-safe
+  form, every form is emitted by some scenario, quoted space content never
+  survives, the quoting strings keep their counts, text outside the forms has
+  none, and next steps and check labels are literals in the scorer (+6 GSO).
+- A finding or a warning with no form is blank in place and keeps its
+  remediation, check details are viewer-safe with their labels kept, and an
+  older scorer's wording is blank (+4 backend).
+- Each admin route lists under the caller's token, off the event loop (the fix
+  wave's in-thread check in the fake listing); a listing failure is a 503
+  and a summary failure a 500, neither with exception text, on all three
+  routes; `top_finding` is the count-only form and skips text with no form; a
+  space the caller can't list is not counted (+12 backend).
+- The detail route's reads run concurrently after the View check (+1 backend).
+- A scan, an optimization run, join advice and the watch writes are stamped in
+  UTC, and `lakebase.py` never calls `utcnow` (+5 backend).
+- Only a 404 is marked not found. With `retryNotFound`, a 404 waits and takes
+  the second answer, a second 404 is no access with no third request, a 403 is
+  no access at once, and unmounting or switching space during the wait sends no
+  retry; without it, a 404 is no access at once. A just-created agent that 404s
+  retries once and then auto-scans; without `autoScan` the 404 is the no-access
+  state at once (+9 vitest).
+- A 403 or 404 deep link is the no-access state and Return goes back, a failed
+  load shows its message, the admin card names its scope, and the page subtitle
+  claims no org-wide scope (+6 vitest).
+- The m7b-a to m7b-c frames and their registration order, and Return centred
+  beneath the no-access card on a 403 and a 404 (+6 vitest).
+- The final-review fix wave: `App` renders a 403 deep link as the no-access
+  state and a 500 as its message (+2 vitest, `frontend/src/App.test.tsx`);
+  digits in another script match no form (cases added to an existing GSO
+  test); and the m7b-a frame pins the surviving finding beside issue 2 (an
+  assertion replaced).
+
+**Residuals (not fixed here).**
+- Pre-rename scans read thinner for viewers until re-scanned (Ruling 5).
+- GenieWatch and `genie_creator.py` keep the SP scope fallback on their
+  listings (Ruling 15).
+- `GET /api/watch/spaces` falls back to the Lakebase watch cache when its live
+  listing fails or comes back empty (`backend/watch/routers/spaces.py:122-126`,
+  `:138-139`). That cache holds whatever the last listing wrote
+  (`watch_upsert_space`, `:136-137`), so a caller can see agents that another
+  user's listing or an SP listing put there. Pre-existing; GenieWatch is out of
+  M1.
+- The post-create retry is one fixed wait (Ruling 10).
+- `IQScoreTab`'s summary counts warning-severity checks ("N warning",
+  `frontend/src/pages/IQScoreTab.tsx:70`, `:126`), while "Opportunities (N)"
+  counts `warnings` (`:78`, `:81`, `:282`). The scorer appends warnings that no
+  check backs (the row-level-security warning, `iq_scan/scoring.py:586-588`,
+  and the synonyms advisory, `:417`), so a scan can read "1 warning" over
+  "Opportunities (2)". Pre-existing; blanking in place does not cause it.
+- `backend/routers/spaces.py` keeps seven pre-existing f-string exception logs
+  (`:58`, `:67`, `:124`, `:147`, `:174`, `:203`, `:226`).
+- `frontend/src/pages/SpaceList.tsx:2` (a header comment) and
+  `backend/models.py:68` (a docstring) still say "Org-wide".
+- An unexpected admin 500 logs no traceback (made during execution).
+- The M7b per-task deferred minors carry forward.
+
+### MV-D120 — The M2 follow-ups: an unsettled create or ledger write, the debounced permission check, the owner on attach-at-approval, and the prefill and m2-d pins (DECIDED 2026-09-30 — PR #332 M7c, owner)
+
+**Problem (the M7c line of the PR #332 tracking issue: the M2 follow-ups, and
+two defects found while planning).**
+- A statement that outlives its wait is reported as a failure.
+  `sql_warehouse_execute` submits with `wait_timeout="50s"` and never polls
+  (`packages/genie-space-optimizer/src/genie_space_optimizer/common/warehouse.py:68`,
+  `:80`), so a statement still running at 50 s raises (`:87`) though it may
+  still commit. The CREATE (under OBO) and the ledger MERGE
+  (`wh_upsert_mv_created_object`, SP, `:1292`) both go through it.
+- The run-time hook refused any object at the consented name. A CREATE that
+  committed after its wait was never attached or recorded, blocked its own name
+  on every later run, and was invisible to the drop route.
+- After a failed ledger write, the hook dropped the view without re-reading
+  the ledger. A MERGE that committed after its wait therefore left a `CREATED`
+  row for a dropped view.
+- At approval, a failed CREATE raised to the route, and so did a failure in the
+  advice-run or ledger writes after the view existed (and was perhaps attached).
+- The run-setup permission check probed on every selection change, and every
+  `/mv/probe` call records a consent row (`probe_id=uuid.uuid4().hex`,
+  `backend/services/mv_entitlement.py:437`).
+- Attach-at-approval computed the view's UC owner and threw it away. The route
+  returned `grant_sql` for every created result, and the created terminal fell
+  back to the proposal's `/mv-ddl` grant, so a caller who doesn't own the view
+  was offered a GRANT only its owner can run.
+- No test pinned `AutoOptimizeTab`'s two prefill-consume call sites or the m2-d
+  panel's "Verified under OBO by …" line.
+- Found while planning (1): the accept flow's confirm re-probe sent
+  `materialize_consented: true`. Every create-at-approval recorded a
+  materialization consent the user never gave, against "Materialization is a
+  separate consent (mv_materialize); never bundled". Nothing read the flag to
+  materialize, so the harm was a false consent record, not an action. The
+  comment cited MV-D16, which is the attach-ordering decision.
+- Found while planning (2): `POST /spaces/{id}/mv/create` mapped any
+  `RuntimeError` from the service to a 401 carrying its text.
+  `sql_warehouse_execute` raises `RuntimeError` for a failed or timed-out
+  statement, so a warehouse timeout reached the user as "unauthorized" and its
+  message crossed the firewall.
+
+**Decisions (owner rulings).**
+- **Consent write = debounce, record at check time** (2026-09-30). The probe
+  waits for the selection to settle, and each probe still records its consent
+  row when it runs.
+- **Run-hook adoption = owned only** (plan approval, 2026-09-30). The hook
+  adopts an existing matching view only when the caller owns it, and refuses
+  any other as before (Ruling 2).
+- **Non-owner GRANT = name the owner, show no SQL** (plan approval). The
+  result names the owner and asks them to grant (Ruling 8).
+- **Bundled materialize consent = fix it in M7c** (plan approval, Ruling 12).
+- **After a failed ledger write = never drop** (final review, 2026-10-01). The
+  run keeps the view whatever the re-read says (Ruling 21).
+
+**Rulings (planning).**
+1. No settle-and-poll helper. A poll-to-terminal wrapper would be a second
+   execution path beside `sql_warehouse_execute`, and it still couldn't close
+   the window in which a cancelled statement commits anyway. Instead, every
+   create path treats a view at the consented name that matches the proposal
+   and is the caller's as its own, so a late commit is adopted by the next run
+   or the next click. `common/warehouse.py` is unchanged. Cost if wrong: a
+   CREATE that commits late in a run is picked up one run later.
+2. The run-time hook adopts an existing object only when it is a metric view,
+   its definition is the proposal's (MV-D112) and its UC owner is the caller
+   (`backend/services/mv_create.py:561-576`). It is recorded `CREATED` /
+   `OBO_CREATED` and attached like a fresh create (`:615-623`, `:673-681`).
+   Anything else is still the `exists` skip. The hook doesn't take approval's
+   `USER_CREATED` branch: attaching someone else's view is a choice the user
+   makes on the card, not one a run makes for them. Cost if wrong: a caller's
+   own hand-made view with the identical definition is recorded `OBO_CREATED`,
+   which has been approval's rule since MV-D112.
+3. After a failed CREATE, both paths look the view up with
+   `_adopt_existing_view` (`mv_create.py:922`), which returns an
+   `ExistingView` (`:903`) carrying the owner from `_existing_view_matches`
+   (`:853`, `:898`). *As built (final-review fix wave):* when the object is
+   not a confirmed metric view, the helper asks `_object_exists` (`:931`), and
+   `ExistingView.exists` is `False` only when that finds nothing either
+   (`:932-937`). A failed lookup also reads as not found, so `exists=False`
+   never proves the name is free.
+   - Run hook (`:580-616`): an owned match goes on to the ledger write. A view
+     that exists but is someone else's, or isn't this proposal, is the
+     `exists` skip (`:603-609`), as before the CREATE (`:564-575`). Anything
+     else is the `error` skip, with the note that the next run adopts the view
+     if the create commits (`:610-616`). The lookup is guarded, so one that
+     raises reads as not found, logged by exception type only (`:590-600`).
+   - Approval (`:1410-1443`): a match takes the existing-view branch with
+     `already_existed=True`, because this call never saw its CREATE succeed.
+     A view that exists but is refused returns that refusal's reason
+     (`:1431-1435`). A view that wasn't found returns "The create of {name}
+     didn't complete and the view wasn't found. If the warehouse was slow,
+     approving again will attach it; if this repeats, approve it for the next
+     run instead." (`:1436-1442`). The lookup is guarded the same way
+     (`:1420-1430`).
+   - An adopted view skips the post-create confirm and cleanup, which only a
+     fresh create runs (`:617`, `:1444`): the helper has already confirmed it.
+4. The cleanup drop runs only on a proven absence (superseded by Ruling 21:
+   no drop at all). *As built (Task 2, fix round 1; Rulings 16 and 17):*
+   `wh_load_mv_created_object` swallows every error and returns `None`
+   (`common/warehouse.py:1449-1454`), so it can't tell "absent" from
+   "unreadable" and would fail open. The re-read is therefore the strict
+   `_ledger_row_exists` (`mv_create.py:273-291`): a `SELECT 1` through
+   `sql_warehouse_query` on the SP client with no `try`, quoting with
+   `_wh_literal` as `backend/routers/auto_optimize.py:5594` does. After a fresh
+   create's failed ledger write (`mv_create.py:638-673`):
+   - the row is present: the MERGE committed, so the view is kept and attached
+     as recorded;
+   - the row is absent, or the re-read raises: the view is kept, not attached,
+     and counted `unrecorded_kept` ("could not be recorded; left in place for
+     the next run to adopt", `:366`), which Ruling 2 makes safe (`:654-673`).
+
+   An adopted view, whether already at the name or found after a failed CREATE,
+   goes to `unrecorded_kept` without a re-read (`:642-649`), because this run's
+   CREATE is not known to have made it. No DROP follows a failed ledger write on
+   any path; the only DROPs left are the post-create confirm cleanups
+   (`:617-627`, `:1444-1455`). Cost if wrong: a fresh view whose record failed
+   waits for a later run to adopt it (Ruling 21).
+5. At approval, a failure after the view exists is a reason, not a raise
+   (`mv_create.py:1473-1510`). If ensuring the tables, the advice run or the
+   ledger write fails, the view is kept, and stays attached if the PATCH
+   landed. The call returns `created=False, degraded=False` and the reason
+   "{name} was created[ and attached] but couldn't be recorded. Approve again
+   to record it." *As built (final-review fix wave):* a view this call found
+   rather than created reads "was found[ and attached]" (`:1503-1505`).
+   Approving again records it through the existing-view path.
+   The terminal success state isn't shown, because the record is the user's
+   evidence and it doesn't exist yet. Cost if wrong: one extra click.
+6. The route's only 401 is the up-front OBO check
+   (`backend/routers/auto_optimize.py:2748-2751`). Any failure from the service
+   is a 500 with the fixed text "Create failed; please retry or approve for the
+   next run.", logged by exception type only (`:2763-2771`). After Rulings 3
+   and 5, an exception that reaches the route comes from before any write, so
+   the text is true.
+7. `owner` is the view's UC owner when the existing-view path ran, else `None`
+   (`mv_create.py:1461`; `MvCreateAtApprovalResponse.owner`,
+   `backend/models.py:546`; its mirror, `frontend/src/types/index.ts:1066`). A
+   fresh create belongs to the caller. `grant_sql` is returned only when
+   `provenance == "OBO_CREATED"` (`auto_optimize.py:2780-2786`), which under
+   MV-D112 means the caller owns the view.
+8. A caller who doesn't own the view is offered no GRANT from either source.
+   For `USER_CREATED`, `MvCreatedTerminal` (`MvAcceptFlow.tsx:132`) says "Owned
+   by {owner}, so only they can change it or grant the optimizer access to it."
+   ("another user" when the owner is unknown, `:165`), asks the owner to grant
+   SELECT (`:174`), and renders no SQL block and no "Show detail" fallback
+   (`:201`). The flow also passes it no grant (`:403`). Cost if wrong: a
+   non-owner has no copy-ready SQL to forward, which they couldn't run anyway.
+9. Out of scope: `MvCreateAttachPanel` (`MvCreateAttachPanel.tsx:168-170`) and
+   the list's "already attached" terminal (`MvAcceptFlow.tsx:428`) keep showing
+   `/mv-ddl`'s grant (`auto_optimize.py:3931`). Their rows carry no owner, and a
+   registered (`USER_CREATED`) view is usually the caller's own, so hiding the
+   grant there would hide it from owners. *Narrowed during execution:* the
+   proposal card's "Show detail" is owner-gated (Ruling 19).
+10. The debounce is 400 ms (`MV_PROBE_DEBOUNCE_MS`,
+    `frontend/src/components/auto-optimize/OptimizationConfig.tsx:68`, matching
+    `SEARCH_DEBOUNCE_MS` at `frontend/src/components/TableBrowserDrawer.tsx:6`).
+    The selection reads as loading at once (`OptimizationConfig.tsx:211`), so
+    Start is blocked from the first change, and the probe runs after the delay
+    (`:212-236`). `mvProbeSeq` still guards the answer. The accept flow's probes
+    are click-driven and stay immediate (`MvAcceptFlow.tsx:296`, `:318`).
+    *As built (final-review fix wave):* the probe key carries the space id
+    (`OptimizationConfig.tsx:137`), so a space change before the delay probes
+    the new space, not the old one.
+11. The timer lives in a ref (`OptimizationConfig.tsx:126`) and is cleared by
+    the cancel rule (Ruling 18) and on unmount (`:239-243`), never in the probe
+    effect's cleanup. That effect re-runs on the very render that schedules the
+    timer, so a cleanup-cleared timer would cancel itself and no probe would
+    ever fire. *As built (final-review fix wave):* unmount also nulls the timer
+    ref and the in-flight key, so a remount (StrictMode's in development)
+    starts clean.
+12. `materialize_consented` is dropped from the confirm re-probe, not set to
+    `false` (`MvAcceptFlow.tsx:311-323`). The request type keeps the optional
+    field (`types/index.ts:947`), and the backend default is `false`
+    (`auto_optimize.py:267`). The comment now says the re-probe records the
+    consent the create re-verifies (MV-D34). Rows recorded before M7c keep
+    their `true`.
+13. `MvCreatedTerminal` is extracted (`MvAcceptFlow.tsx:115`, `:132`) so a
+    frame can render the created terminal, which the flow reaches only by
+    clicking. `MvAcceptFlow` renders it with the same values as before, and
+    every `OBO_CREATED` render is byte-identical to the old markup. *As built:*
+    the props are `attached`, `alreadyExisted`, `provenance`, `owner`,
+    `grantSql`, `catalogUrl` and `onStartRun`. There is no `fullName` prop: the
+    markup never showed the name (`catalogUrl` links it), and rendering it
+    would have broken the byte-identical `OBO_CREATED` markup, so Task 7
+    removed it as unused.
+14. Frames: m7c-a (created and attached, `OBO_CREATED`, the GRANT shown — the
+    control) and m7c-b (an existing view someone else owns, attached,
+    `USER_CREATED`, the owner named and no GRANT)
+    (`mockups/MvAttachOwnerM7cFrames.tsx:62`, `:82`; registered at
+    `mockups/frames.tsx:191-192`). The reference is 15.10's attached terminal.
+    The created terminal had no approved frame before; m7c-a is its first. The
+    frames render the card collapsed: 15.10 is expanded, and an expanded
+    static frame would show the card detail's GRANT, which only a click-driven
+    create can hide (Ruling 19).
+
+**Rulings made during execution** (each with its cost if wrong):
+15. Task 1 keeps the owner on an `existing: ExistingView | None` local, not a
+    bare `owner` local, because an unread local trips ruff F841 until Task 3
+    reads it. Cost if wrong: none; Task 3 reads `existing.owner`.
+16. The strict ledger existence check lives in `mv_create.py`, not in the GSO
+    package, so M7c leaves `packages/` untouched (Ruling 4). Cost if wrong: a
+    second reader of the ledger table beside `wh_load_mv_created_object`.
+17. An adopted view is never dropped after a failed ledger write; it goes to
+    `unrecorded_kept`, because this run's CREATE is not known to have made it
+    (Ruling 4). Cost if wrong: an unrecorded adopted view lingers until the
+    next run adopts it.
+18. The debounce cancels a pending timer whenever its key is no longer wanted
+    — a new key, a key that becomes `null` (nothing ticked, or a selection
+    across two schemas), or the section turning off — and clears the loading
+    state with it (`OptimizationConfig.tsx:197-205`). The brief reset the timer
+    only when the section turned off, which left "Checking…" stuck after
+    turning it back on and still probed a selection the user had left. A probe
+    already sent has no pending timer, so turning the section off and on keeps
+    its answer, as before. Cost if wrong: none observed; the sent-probe test
+    passes unchanged.
+19. The proposal card's "Show detail" omits the GRANT once its own accept flow
+    returns `USER_CREATED`. `MvProposalCard` provides
+    `MvCardCreateResultContext` (`mvCardContext.ts:9`) around its actions slot
+    (`MvProposalCard.tsx:429-431`). The flow reports the provenance only from a
+    create result it got back (`MvAcceptFlow.tsx:341`), and the detail renders
+    `ddl.grant_sql && !ownedElsewhere` (`MvProposalCard.tsx:408`). The state
+    starts `false` (`:272`), so the detail is unchanged until the user's own
+    create says someone else owns the view. Because the context sits on the
+    shared card, it covers both the IQ scan (`ScanProposalCard`) and the
+    run-output (`MvSuggestOnlyPanel`) surfaces with no wiring at either call
+    site. The owner chose "hide", and Ruling 9 had excluded only the panel and
+    the list terminal. Cost if wrong: one more piece of plumbing between the
+    flow and the card, and a reviewer may read it as scope creep.
+20. The card-detail gate ran as its own task (7b) before this record, not in
+    the fix wave, so the docs describe the final behaviour. Cost if wrong: none
+    beyond the ordering.
+21. After a failed ledger write, the run never drops the view (owner ruling at
+    the final review). A MERGE that outlived its wait is invisible to a
+    `SELECT` until it commits, so an absent row doesn't prove the write
+    failed, and a drop after it could leave a `CREATED` row for a view that is
+    gone. The fresh create re-reads with `_ledger_row_exists`: a present row
+    attaches the view, and an absent row or a failed re-read keeps it
+    unattached as `unrecorded_kept` (`mv_create.py:654-673`). The `unrecorded`
+    outcome, its DROP and its skip label are gone (`_SKIP_ORDER`, `:355-368`).
+    The next run adopts a matching view the caller owns (Ruling 2). Cost if
+    wrong: an unrecorded view stays in the consented schema until a later run
+    adopts it, or indefinitely if none runs; it is the caller's own object,
+    visible in Unity Catalog.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D112 point (3) (the run-time hook's drop of an
+unrecorded view); MV-D34 (create-at-approval); the MV-D36–MV-D97 numbering
+note (the next free number on both lines).
+
+**Unchanged.** No new route, table, column, job task or job parameter. One
+model field, `MvCreateAtApprovalResponse.owner`, and its TypeScript mirror. No
+GSO file changed: `common/warehouse.py` and `sql_warehouse_execute` are as they
+were. CREATE, DESCRIBE and DROP stay on `require_obo_workspace_client`, and every
+ledger read and write stays on the SP client. Consent is re-verified fresh, a
+mismatch downgrades and never upgrades, only the consented schema is
+targeted, and adoption never makes a view `OBO_CREATED` unless its UC owner is
+the caller.
+
+**Tests** (+32 backend, +0 GSO, +30 vitest).
+- The owner from the definition match, case-insensitive; no owner is not the
+  caller's; `_adopt_existing_view` refuses a non-metric view and passes a match
+  through (+6 backend).
+- The run hook: an owned matching view at the name is adopted with no CREATE,
+  and someone else's is refused; a failed CREATE whose view exists is recorded
+  and attached, one with no view and one whose lookup raises is an `error`
+  skip; a ledger write that landed is kept, a proven absence drops the fresh
+  view, an unreadable ledger keeps it; an adopted view, pre-existing or found
+  after a failed CREATE, is never dropped; `unrecorded_kept` in the skip-order
+  pins; and the existing drop test now asserts CREATE, re-read, DROP in order
+  (+11 backend). The final-review fix wave flips the two drop pins (below).
+- Approval: a failed CREATE whose view exists is attached, owned and someone
+  else's; a failed CREATE with no view, a different one or a raising lookup is
+  a reason; a ledger failure after the create, for each of the three writes and
+  attached or not, is a reason that keeps the view; a fresh create has no
+  owner; a warehouse `RuntimeError` is a 500, not a 401, with no exception
+  text; and `grant_sql` only for the owner (+15 backend).
+- The accept flow: neither probe sends `materialize_consented`; a
+  `USER_CREATED` result names the owner and shows no GRANT, not even the
+  card's; and `MvCreatedTerminal`'s copy for each provenance and attach outcome
+  (+11 vitest).
+- The debounce: one probe after the delay, three quick toggles probe once,
+  unmounting, turning the section off or unticking every view before the delay
+  sends nothing, and Start stays disabled until the answer lands (+6 vitest).
+  The selection tests moved to fake timers with no assertion weakened, and the
+  denied-permission test gained a call count.
+- Starting a run or opening one from history consumes the prefill, and
+  rendering alone does not (+3 vitest); the m2-d frame's "Verified under OBO
+  by" line (an assertion added).
+- The m7c-a and m7c-b frames and their registration order (+4 vitest).
+- The card detail's GRANT on both surfaces: hidden after a `USER_CREATED`
+  create, shown after an `OBO_CREATED` one and before any create (+6 vitest).
+
+**Tests at the final-review fix wave** (+9 backend, +0 GSO, +8 vitest).
+- The run hook: a proven-absent ledger row keeps the fresh view unattached
+  and drops nothing, and the unrecorded create is kept with CREATE, re-read,
+  CREATE in order and no DROP, both with CREATE on the OBO client and the
+  ledger on the SP (flipped); a view found after a failed CREATE that is
+  someone else's or isn't this proposal is the `exists` skip (+2); the lookup
+  that raises logs its exception type only; the confirm-cleanup DROP failure
+  is logged (retargeted); the `unrecorded` skip label is gone (−1).
+- `_ledger_row_exists`: a present row and an empty result on the SP, a read
+  failure that raises, and both ids quoted through `_wh_literal` (+4).
+- Approval: a failed CREATE whose view isn't found, absent or with a lookup
+  that raises, returns the not-found reason, and one whose view exists but is
+  refused returns its reason (three cases became four, +1); a ledger failure
+  after finding the view says "found", attached or not (+2);
+  `_adopt_existing_view` reports an object it can't find with `exists=False`,
+  and a non-metric view it does find with `exists=True` (+1).
+- The debounce: a space change before the delay probes the new space only,
+  and an older probe's answer that lands while a newer timer is pending is
+  discarded (+2 vitest). Both suites restore real timers in a `finally`.
+- The card detail's GRANT stays after a degraded or refused create, and a
+  sibling card's survives the other card's `USER_CREATED` create, on both
+  surfaces (+6 vitest). The prefill's zero-calls test asserts the active-run
+  read ran.
+
+**Residuals (not fixed here).**
+- A view whose ledger write failed, a fresh create or an adopted one, stays
+  unrecorded until a later run adopts it (Rulings 17 and 21). Until then it is
+  not attached by the run and is invisible to the drop route and
+  `/mv-created`.
+- Each failed approval record leaves an orphan advice-run row: the advice run
+  is written before the ledger row (`mv_create.py:1484-1497`), and approving
+  again writes another.
+- A view kept after a failed approval record stays on the Agent's config, if
+  the PATCH landed, with no ledger row, so the drop route and `/mv-created`
+  don't see it until the user approves again (Ruling 5).
+- An adopted view's row is `OBO_CREATED`, so `MvCreateAttachPanel`'s "the app
+  created this view, so the app can drop it" (`MvCreateAttachPanel.tsx:113-114`)
+  overstates what the app did. The
+  caller owns it, and MV-D118's `pre_attached` keeps the run from detaching it.
+- A CREATE that commits late in a run is adopted one run later (Ruling 1).
+- `MvCreateAttachPanel` and the list's "already attached" terminal still show
+  `/mv-ddl`'s grant to any caller (Ruling 9; the card detail is gated, Ruling
+  19).
+- Consent rows recorded at approval before M7c say
+  `materialize_consented = true` (Ruling 12).
+- The outer per-suggestion `except` in the hook still logs a traceback
+  (`mv_create.py:685-689`, M7d). So do `_confirm_metric_view` (`:309`, `:318`)
+  and `_describe_metric_view` (`:777`), which `_adopt_existing_view` now
+  reaches on every existing-name path and every failed-CREATE lookup (M7d).
+  *Closed by MV-D121.*
+
+### MV-D121 — The MV-D118 follow-ups: the attach on the live headline, an enrichment gain, the failed revert's audit row, `remove` on either shelf, the metric-view log firewall, the probe and register 401s, the unpinned `/mv-ddl`, and dotted quoted names (DECIDED 2026-10-01 — PR #332 M7d, owner)
+
+**Problem (the M7d line of the PR #332 tracking issue: MV-D118's residuals, the
+M6c deferred minors, and three defects found while planning).**
+- The live headline never saw a kept attach. When the Jobs API answered, the
+  status poll scored from `gso_lakebase.load_gso_stages`, which always returns
+  `[]` (`_SYNCED_TABLES_ENABLED = False`, `backend/services/gso_lakebase.py:24`).
+  A running run showed "—" and a finished one "Baseline retained", while
+  `get_run` read Delta and showed the gain. The router test stubbed the
+  Lakebase read, so it never saw this.
+- An iteration-0 `enrichment` win read "Baseline retained" beside a higher
+  Optimized number, by MV-D118 Ruling 9.
+- The run-list residual was misdescribed. The lists show the stored
+  `genie_opt_runs.best_accuracy`, which the loop and publish already stamp at
+  the post-attach score (`promote_best_model`,
+  `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/models.py:40`).
+  `compute_run_scores_by_run_id` had no caller, and its docstring claimed the
+  list endpoints used it.
+- The run-detail chart had no attach step: the attach writes no iteration row.
+- A failed revert of an unconfirmed PATCH stamped an `attach_patch_id` that no
+  `genie_opt_patches` row backed. Its log named every requested view, including
+  views on the space before the run. A raised PATCH with an empty message read
+  as never sent, because the predicate tested `patch_error`, which is
+  `str(exc)`.
+- The applier's `remove` was case-sensitive and checked `metric_views` only,
+  while the add treats a view on either shelf, in any case, as attached.
+- The metric-view path logged tracebacks (`exc_info=True`,
+  `logger.exception`) across `mv_attach`, `mv_advisor`, `mv_scoring`,
+  `mv_state`, the applier's `apply_patch_set` and `rollback`, `mv_create`,
+  `mv_suggest`, `mv_entitlement` and the metric-view routes.
+- An unpinned `/mv-ddl` whose artifact was stale fell back to the run's
+  best-ranked candidate of any proposal.
+- `_norm_table` stripped backticks and `_valid_uc_identifier` split on every
+  dot, so `` `finance.sales`.orders `` (two parts) read as the covered
+  three-part `finance.sales.orders`.
+- Found while planning (1): `/mv/probe` had no up-front OBO check, and its
+  `except RuntimeError` turned every `RuntimeError` raised inside
+  `mv_entitlement.probe` into a 401 carrying its text. `/mv/register`'s second
+  `except RuntimeError` did the same for the warehouse.
+- Found while planning (2): the advisor phase's outcome `error` carried
+  `f"{type(exc).__name__}: {exc}"` into its stage row.
+- Found while planning (3): the probe's privilege-read failure put `str(exc)`
+  in the row detail the user sees, and `MvProbeError` embedded the exception.
+
+**Decisions (owner rulings at planning, 2026-10-01).**
+- **Hot poll = delta_narrow.** The poll reads only the attach stage row from
+  Delta (one small query) (Ruling 2).
+- **Enrichment headline = show_gain.** An iteration-0 enrichment win counts
+  like a metric-view win (Ruling 4; supersedes MV-D118 Ruling 9).
+- **Audit row = write.** An unconfirmed PATCH whose revert failed writes the
+  patch audit row (Ruling 7; amends MV-D118 Ruling 3).
+- **Firewall scope = mv_wide.** The attach path, the applier's PATCH and
+  rollback, `mv_create` and every metric-view route (Ruling 11).
+- **Chart = add_step.** The run detail returns the attach's accuracy and the
+  chart's data carries a "Metric view" point after the baseline (Ruling 5). As
+  executed, the chart has no live mount (Ruling 22), so no user sees it.
+
+**Rulings (planning).**
+1. No batched run-list read. `compute_run_scores_by_run_id` and its `__all__`
+   entry are deleted, and a backend pin shows `/spaces/{id}/runs` returns the
+   stored `best_accuracy` as it is
+   (`test_the_run_list_shows_the_stored_champion_accuracy`,
+   `backend/tests/test_auto_optimize_router.py:1906`). Cost if wrong: a future
+   list endpoint that wants derived scores re-adds a grouped helper, and it
+   must take the reset.
+2. When the Jobs API answered and Lakebase returned no stages, the poll reads
+   `SELECT stage, detail_json … WHERE run_id = '…' AND stage = 'MV_ATTACH'`,
+   and only when iteration rows exist (`backend/routers/auto_optimize.py:4854-4862`).
+   The literal is `_MV_ATTACH_STAGE = MV_ATTACH_PHASE_NAME.upper()` (`:4344`;
+   `common/config.py:2509`). There is no cache: a cached "no attach" would hide
+   one that lands mid-run. Cost if wrong: one small warehouse statement per
+   open tab per 5-second poll.
+3. `RunScores.attach_accuracy` is the attach's score whenever the reset applies
+   to this run's baseline, won or not — the same condition that admits it as a
+   candidate (`packages/genie-space-optimizer/src/genie_space_optimizer/common/accuracy.py:326-332`;
+   field at `:174`). `get_run` returns it as `metricViewAttachAccuracy`
+   (`auto_optimize.py:4778`; mirror `frontend/src/types/index.ts:528`); the
+   status poll does not.
+4. Only a full-scope iteration 0 holds the baseline: `holdsBaseline` is
+   `bestIteration === 0 && (bestEvalScope ?? "full") === "full"`
+   (`frontend/src/lib/score-display.ts:97-100`). A missing scope still holds,
+   for older payloads. Cost if wrong: a re-entered Optimize task's later
+   iteration-0 row is credited as a gain, which the backend already reports as
+   `optimized`.
+5. The chart's attach point sits after the baseline, labelled "Metric view",
+   keyed `"0-mv"` on a categorical x-axis, with the tooltip lever "Metric view
+   attach", and is never drawn without a baseline point
+   (`frontend/src/components/auto-optimize/IterationChart.tsx:19`, `:73-84`,
+   `:102`). Supersedes MV-D118 Ruling 11 in the chart's data only (Ruling 22).
+6. `ResponsiveContainer` gets `initialDimension={{ width: 480, height: 280 }}`
+   (`IterationChart.tsx:133`), for a server-side render with no layout.
+7. The failed-revert branch writes the patch audit row with
+   `_write_attach_patch_rows` before the `CREATED` stamps
+   (`packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_attach.py:968-970`;
+   defined at `:1297`). A reverted PATCH writes no row.
+8. `_patch_outcome_unknown` keys on `patch_error_type`
+   (`mv_attach.py:895-909`), and the applier's validation-fail return carries
+   `"patch_error_type": ""` (`optimization/applier.py:4509`). The
+   `validation_errors` guard stays. A raised PATCH with an empty message is read
+   back.
+9. The settle log names only the views this run's PATCH carried
+   (`applied_views`, `mv_attach.py:938-940`, logged at `:963-967`).
+10. `remove` mirrors `add`: it matches case-insensitively on `metric_views`,
+    then `tables`, and removes the first match (`applier.py:3948-3959`). Cost if
+    wrong: none; a view and a table can't share a name in one schema.
+11. Firewall scope. In: every `optimization/mv_*.py` and
+    `backend/services/mv_*.py`; the applier's `apply_patch_set` and `rollback`;
+    the metric-view routes in `auto_optimize.py`, the helpers they call and the
+    semantic graph's metric-view reads. Out, as residuals: `_delta_query` and the
+    other router handlers; the applier's other lever sites; `apply_log["patch_error"]`;
+    `mv_yaml`'s parse and rejection messages. Cost if wrong: an operator loses a
+    traceback on these paths; the message and the exception type remain.
+12. Source pins enforce the scope:
+    `packages/genie-space-optimizer/tests/unit/test_mv_log_firewall.py` and
+    `backend/tests/test_mv_log_firewall.py` parse the in-scope code with `ast` and
+    fail on an `exc_info` that is not the constant `False`, a `logger.exception`,
+    or a logging argument that carries a name bound by an enclosing
+    `except … as name` (directly, in an f-string, or through `%`/`.format`).
+    `type(name).__name__` is allowed. Each carries seeded-violation self-tests.
+13. `/mv/probe` and `/mv/register` have one 401 each, the up-front OBO check
+    (`auto_optimize.py:1684-1687`, `:2699-2702`). Any other failure is a 500
+    with the fixed detail, logged by type only (`:1701-1703`, `:2716-2721`).
+    `MvProbeError` stays a 422, and its text is ours (Ruling 16).
+14. An unpinned `/mv-ddl` falls back only to the stale artifact's own proposal:
+    `fallback_id = suggestion_id or (payload or {}).get("suggestion_id")`, and
+    with no artifact at all the best-ranked row stays
+    (`auto_optimize.py:3943-3956`). Cost if wrong: an unpinned caller whose
+    stale artifact has no id gets a 409 instead of another proposal's body.
+15. Names split backtick-aware. `_uc_name_parts` (`backend/services/mv_create.py:225-240`)
+    uses `mv_yaml._split_name` and unquotes each part, returning three parts only
+    when there are exactly three, none empty and none containing `.`.
+    `_norm_table` returns `None` for any other name (`:243-245`), and
+    `_uncovered_tables` counts `None` as uncovered (`:188-193`).
+    `_valid_uc_identifier` also applies `_UC_IDENT_PART` to each part
+    (`:790-798`); `_norm_table` does not, so a backticked hyphenated name a
+    consent covers stays covered.
+16. The probe's read failure is type-only: `_read_failure_detail` returns
+    `could not read privileges on {full_name} ({type(exc).__name__})`
+    (`backend/services/mv_entitlement.py:188-195`), with the not-found branch
+    kept, and `MvProbeError` reads `could not resolve the signed-in user
+    ({type(exc).__name__})` (`:361`). Cost if wrong: a row loses the SDK's
+    free-text hint; the typed errors still say what happened.
+17. Frames: m7d-a, the run headline for a finished run whose iteration-0
+    enrichment won, showing the gain and no "Baseline retained"
+    (`frontend/src/components/auto-optimize/mockups/MvM7dFidelityFrames.tsx:33`;
+    registered at `mockups/frames.tsx:196`). Its reference is m6c-a, and m6c-c
+    stays the control. m7d-b was not built (Ruling 22).
+
+**Rulings made during execution** (each with its cost if wrong):
+18. Two copies of the AST checker, one in the GSO tests and one in the backend
+    tests, each docstring naming its twin: backend tests can't import GSO's test
+    modules, and test helpers don't belong in the shipped package. Cost if
+    wrong: the two checkers can drift; a reviewer flags the duplication.
+19. A task whose code changes a counted file's line count regenerates the gap
+    report's generated block (`scripts/gap_report_counts.py --write`) in the
+    same task, so every task commit keeps the suite green; prose anchors wait
+    for the record. Cost if wrong: none; the block is mechanical.
+20. The applier site Ruling 11 listed as out of scope (`applier.py:4309` at
+    `c77347dd`) is inside `apply_patch_set`, so the function-level scope wins
+    and it logs the type (now `applier.py:4278-4283`). Cost if wrong: none.
+21. `_uncovered_tables` compares the body's `source` names as written
+    (`_source_names`, `mv_create.py:209-222`), not `_definition_tables`' reading,
+    because sqlglot strips the backticks there and left
+    `` `finance.sales`.orders `` covered. The walk runs only once
+    `_definition_tables` has read tables, so query sources are unchanged, and it
+    fails closed. Cost if wrong: a hand-written alias or ANSI-quoted source the
+    renderer never emits is refused at create.
+22. The score chart has no live mount. `IterationChart`'s only parent,
+    `PipelineDetailsModal` (`PipelineDetailsModal.tsx:300`), is rendered nowhere
+    in `frontend/src` since `ae8c4367` (#315), and `RunDetailView` renders no
+    chart. Ruling 5's code stays (correct, tested, ready if remounted); m7d-b is
+    not built, and no chart is mounted, because the owner approved a step on an
+    existing chart, not a new surface. The live surface that shows a kept
+    attach is the headline. The attempt ladder and ledger are built from
+    iteration rows (`_build_attempt`, `auto_optimize.py:5926`), which the attach
+    doesn't write, and no mounted surface renders the publish trajectory, so
+    "Metric view attach" (`cockpit.ts:61`) appears on no live surface. Cost if
+    wrong: the owner expected the chart step in the deployed app, and a
+    follow-up mounts the chart on `RunDetailView` with a graph error boundary.
+    *Amended before the squash: the owner accepted the headline as the only
+    live surface for M7d; the unmounted chart stays a residual.*
+23. `METRIC_VIEW_SCOPE` (`score-display.ts:98`) has no importer after Ruling 4,
+    against the plan's note that frames and tests import it. It is kept, and
+    the final review decides whether to drop it. Cost if wrong: one dead export.
+    *Amended at the final-review fix wave: it was removed, and nothing named it.*
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D118 Rulings 3, 9, 10 and 11; MV-D118's
+"Made during execution" run-list bullet; MV-D118's residuals for the
+tracebacks, the enrichment headline, the chart, the hot poll, the audit row,
+the run lists, the unpinned `/mv-ddl`, the case-sensitive `remove` and the
+mode label; MV-D120's residual for the hook's outer `except`; the MV-D36–MV-D97
+numbering note (the next free number on both lines).
+
+**Unchanged.** No new route, table, column, job task or job parameter. One
+response field (`get_run`'s `metricViewAttachAccuracy`) and its TypeScript
+mirror; one dataclass field (`RunScores.attach_accuracy`). No create, drop or
+consent path is added, and the four create invariants hold. Demote-only holds:
+nothing new writes `ATTACHED`, and the failed-revert path still stamps
+`CREATED`.
+
+**Tests** (+41 backend, +36 GSO, +14 vitest).
+- The run-scores contract: the attach score when a lever wins, tied with the
+  baseline, absent for another baseline and without a reset, with an empty
+  reset `eval_run_id`, and tied with enrichment; the run list's stored
+  champion accuracy (+6 GSO, +1 backend).
+- The status poll reads the attach stage from Delta when Lakebase is off, not
+  before a baseline, and once when the Jobs API is down; the run detail
+  returns the attach score, with a no-attach control (+5 backend).
+- The headline's full-scope-only rule and the enrichment gain, and the
+  "Metric view attach" label (+5 vitest); the chart's attach point after the
+  baseline (+5 vitest); the m7d-a frame (+3 vitest).
+- The failed revert writes the audit row; the settle log names applied views
+  only; a raised PATCH with an empty message is read back, and one with no
+  error type is not unconfirmed; the validation return's empty error type;
+  `remove` in any case, from `tables`, and absent (+7 GSO).
+- The GSO firewall pin: the glob control, each module and both applier
+  functions, the seeded self-tests, the type-only control and the
+  named-function check; a failed patch, rollback and advisor phase log the type
+  only (+23 GSO).
+- The backend firewall pin, with the same shape over the services and the
+  metric-view routes; the hook's outer `except` and the probe's user error log
+  the type only; the privileges row rewritten (+16 backend).
+- The route source pin; the lift-row pin; register and probe 500s; the probe's
+  up-front OBO check (+5 backend).
+- The unpinned `/mv-ddl` falls back to its own proposal only (+4 backend).
+- The backtick-aware split: the drop's backticked positive control, three
+  not-three-parts cases, a quoted consent securable, four
+  `_valid_uc_identifier` cases and register's dotted part; the hook test now
+  asserts its CREATE ran, and the re-plan tests check the re-plan's result
+  (+10 backend, +0 GSO); a stale probe that rejects after the latest answer
+  (+1 vitest).
+
+**Final-review fix wave.** It closed the review's two Important findings
+(`mv_signals` logged a read failure's exception text; the backend route pin
+skipped `/mv/create` and `/mv-ddl`) and its minors M1–M5: the five converted
+blind `except`s carry `# noqa: BLE001`, `METRIC_VIEW_SCOPE` is removed, the
+dotted quoted names are pinned, the two checkers carry a drift guard, and the
+docs-site paragraph is rewrapped. No access-level check, route, model, table,
+job parameter or job task changed.
+
+**Tests at the final-review fix wave** (+7 backend, +2 GSO, +0 vitest).
+- A failed lineage or demand read logs the reason code and the exception type
+  only, with no `exc_info`, and its `SignalResult` reason still records the
+  text (+2 GSO).
+- The route pin lists `create_space_mv_at_approval`, `get_mv_ddl` and the two
+  `/mv-ddl` loaders, and a tripwire fails when a router path containing `/mv`,
+  `mv-` or `semantic-graph` has an endpoint the pin doesn't list (+1 backend).
+- The backend checker's body is `ast`-equal to its GSO twin, docstrings
+  aside (+1 backend).
+- `` `a.b`.c.d `` and `` `finance.sales.orders` `` are not three parts and not a
+  valid identifier, with a quoted three-part control (+5 backend).
+
+**Residuals (not fixed here).**
+- `_delta_query` (`auto_optimize.py:310`) and the other router handlers still
+  log exception text and tracebacks.
+- The applier's other lever sites still log tracebacks (`applier.py:1298`,
+  `:3501`, `:3569`, `:4084`).
+- `apply_log["patch_error"]` still carries exception text into a lever's
+  reflection (`unified_loop.py:2367`, `:3530`), and `apply_patch_set` still
+  puts `str(_render_err)` in `drop_detail` and the decision `error`
+  (`applier.py:4288`, `:4295`).
+- `mv_yaml`'s parse and rejection messages echo the body (`mv_yaml.py:1363`,
+  `:1401`, `:1650`, `:1737`, `:1859`).
+- `mv_signals._classify_read_failure` puts the exception's first line in a
+  reason string (`mv_signals.py:208`).
+  *Amended at the final-review fix wave: the `SignalResult` reason still carries it, but no log does.*
+- The `wh_*mv*` readers still log `exc_info=True` at DEBUG on the metric-view routes' read path (`common/warehouse.py:838`, `:936`, `:992`, `:1167`, `:1179`, `:1450`, `:1487`, `:1527`). *Closed by MV-D122.*
+- The hot poll multiplies `_delta_query`'s traceback log: a stage read that keeps failing logs one traceback per open tab per 5 s (Ruling 2).
+- `mv_create.py:595-598` logs `"; ".join(report.errors)`, which can carry `mv_yaml`'s parse text.
+- The AST checker does not see laundered text (`msg = str(exc)`), receivers
+  other than `logging`, `log` and `*logger`, `stack_info`, or exception text in
+  a `raise` or `return`.
+- One stage read per open tab per poll (Ruling 2).
+- An unpinned `/mv-ddl` whose stale artifact has no id is a 409 (Ruling 14),
+  and a literal `{}` artifact is a 404, not a 409.
+- `mv_entitlement._split_table` (`mv_entitlement.py:95`) still splits on every
+  dot. *Closed by MV-D122.*
+- `IterationChart` has no mount; mounting it on `RunDetailView` needs a graph
+  error boundary (Ruling 22). Until then no live surface shows the attach as a
+  step.
+
+### MV-D122 — The identity-neutral residuals: a non-list `joins:`, same-name CONFLICT proposals, the reshaped bundle beside its successor, the stale-proposal display gaps, the probe's backtick-aware split, and the M6b deferred minors (DECIDED 2026-10-01 — PR #332 M7e-1, owner)
+
+**Problem (the M7e-1 line of the PR #332 tracking issue: the MV-D116, MV-D117
+and MV-D121 residuals that move no persisted measure identity, and the M6b
+deferred minors still open).**
+- A governed view whose `joins:` was a number or a boolean raised `TypeError` in
+  `_definition_tables`, which failed the in-job advisor phase, 500'd
+  `/mv/suggest` and emptied the semantic graph's governed chips.
+- Two CONFLICT proposals in one schema with one concept persisted under one
+  view name (`_proposed_object`,
+  `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_advisor.py:828`):
+  the second create was refused, the Model tab drew one ghost for both, and the
+  summary repeated a React key.
+- A re-scan that changed a bundle's membership moved its MV-D30 key, so the old
+  row stayed current, undecided and listed beside its successor.
+- A stale proposal (MV-D117) still drew a Model-tab ghost, offered "View in
+  graph", and on the run output showed its config preview and "Lift not
+  measured". The shared summary counted it, and counted a measure two proposals
+  share twice.
+- The probe's `_split_table` split on every dot, so `` `a.b`.c `` probed the
+  securable `a.b.c` (MV-D121 residual).
+- The M6b deferred minors: the row-count bundle pin asserted only `COUNT(*)`;
+  `ruff` flagged I001 in the three identity-baseline tests; the unreachable-rung
+  pin read keyword arguments only; and `quote_fqn` raised on a corrupt stored
+  name, which 500'd the GRANT assembly.
+- Found while planning (1): `joins:` given as a number was recorded in the
+  tracking issue's M6a line but missing from MV-D116's residuals.
+- Found while planning (2): the pre-M3 merged bundle the tracking issue called
+  "an old merged proposal still pending" was already hidden: its body is stale
+  and its name equals its per-table successor's, so MV-D117's stale-sibling drop
+  removes it. What stayed open was the current-versus-current pair.
+- Moved to M7e-2 (Ruling 1): the matcher's reach to legacy and CONFLICT rows.
+
+**Decisions (owner rulings at planning, 2026-10-01).**
+- **CONFLICT names = by table on collision.** A table name is added only when
+  two names collide in one scan; every other name stays as it is.
+- **Reshaped bundles = hide the older one at read time.** Among undecided rows
+  naming one view, only the newest is listed. Approved or created rows always
+  stay. No new warehouse write.
+- **Stale gaps = close them.** The Model-tab ghost, "View in graph", the
+  run-output preview and Lift label (reversing the M6b ruling that kept them),
+  and the summary count. A stale row with no current sibling stays flagged until
+  the user acts.
+
+**Rulings (planning).**
+1. The matcher's reach to legacy and CONFLICT rows moves to M7e-2, whose table
+   resolver closes both halves of the MV-D118 matcher residual together. Cost if
+   wrong: if M7e-2 never lands, a created CONFLICT view's attach subset keeps
+   missing unqualified SQL.
+2. A `joins` value that is not a list or tuple adds no table, at the top level
+   and nested (`joins_of`, `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_scoring.py:882-884`,
+   read at `:890` and `:901`). Cost if wrong: a malformed governed view looks
+   single-table to the governed match and hides a matching proposal over its
+   `source:` table.
+3. The CONFLICT rename is order-independent (`_conflict_view_names`,
+   `mv_advisor.py:900-952`). When two or more CONFLICT proposals in one scan
+   share a base name, compared case-insensitively without backticks
+   (`_norm_view_name`, `:850`), every one becomes
+   `{catalog}.{schema}.{concept}_{table_leaf}_metrics`, the leaf sanitized by
+   `_plain_name` (`:734`); one still taken gets `_2`, `_3`, … in
+   `dedup_fingerprint` order. A name that does not collide stays. The names are
+   set before render, persist and the DDL artifact (`:1737-1770`). Cost if
+   wrong: when one half leaves the corpus, the other returns to its base name on
+   the next scan (a row that is not kept only, by Ruling 4).
+4. A kept row keeps its stored name. *Amended at the final review (Ruling
+   28): a created row is kept too, a kept row keeps its stored spelling, and a
+   failed read persists no CONFLICT proposal.* `advise_from_corpus` takes
+   `read_kept_names` (`mv_advisor.py:1466`), which returns
+   `{dedup_fingerprint: stored proposed_object}` for rows whose `decision` is
+   set or whose `suggestion_id` the created-objects ledger holds
+   (`kept_view_names`, `:858-897`). A kept proposal persists under exactly that
+   name, and no other proposal takes it. The in-job phase injects it from
+   `load_mv_candidates(..., strict=True)` and `created_suggestion_ids`
+   (`:1257-1263`); the IQ scan from `wh_load_mv_candidates(..., strict=True)`
+   and `wh_created_suggestion_ids` (`backend/services/mv_suggest.py:281-291`);
+   `None` opts out. A failed read of either table logs the type only and
+   persists no CONFLICT proposal this scan (`:1741-1752`, Ruling 29). Cost if
+   wrong: one more candidates read, and at most one small ledger read, per scan
+   that has a CONFLICT.
+5. Bundles are not renamed: they cannot collide, and the bundle pass already
+   de-duplicates display names.
+6. The reshaped bundle is dropped at read time by
+   `_drop_older_undecided_sibling` (`backend/routers/auto_optimize.py:2277-2325`):
+   among current, undecided rows with a `proposed_object`, grouped by
+   `_norm_fqn`, the greatest `updated_at` stays, ties going to the greater
+   `dedup_fingerprint`. `_live_proposal_rows` (`:2328-2337`) runs the stale drop
+   (`_drop_stale_with_current_sibling`, `:2233`) and then this one, at all five
+   list sites: the run list (`:2385`), the space list (`:2449`), the suggest
+   reload (`:2586`), the stream (`:2762`) and the semantic graph (`:3730`). The
+   re-run gate reads approved rows only and is unchanged. Cost if wrong: an
+   in-job scan and an IQ scan that bundle one view differently alternate which
+   row shows.
+7. Every created view keeps its row listed. *Amended during execution (Ruling
+   20): create-at-approval and the claim record no decision, so a row is also
+   kept when the created-objects ledger holds its `suggestion_id`.*
+8. A stale card loses the preview, the Lift label, "View in graph" and the
+   ghost, and keeps its re-scan notice: `withOverlay` skips it
+   (`frontend/src/components/model/SemanticModelTab.tsx:57`), the IQ card's
+   graph link checks `isStaleBody`
+   (`frontend/src/components/auto-optimize/MvIqScanAdvisorySection.tsx:697`),
+   and the run-output card passes no `liftLabel` and renders no
+   `MvSpaceConfigDiff` (`frontend/src/components/auto-optimize/MvSuggestOnlyPanel.tsx:92`,
+   `:101`, `:114`). Reverses the M6b ruling. Cost if wrong: a user loses the
+   hint of which identifiers the stale proposal would have added.
+9. The summary lists current proposals only, counts distinct member identities
+   through `measureIdentitySet` (`frontend/src/components/auto-optimize/mvFormat.ts:415`),
+   ends "· N found by an earlier version of the advisor need(s) a re-scan" when
+   a stale proposal is present (`staleRescanSentence`, `mvFormat.ts:240`), shows
+   that sentence alone with no current proposal, and keys items by
+   `suggestion_id` (`frontend/src/components/auto-optimize/MvProposalsSummary.tsx:31-64`).
+   The run-output header "N proposed" stays the card count. Cost if wrong: a
+   wording change.
+10. `_split_table` uses `mv_yaml._split_name` with `_uc_name_parts`' unquoting
+    and keeps the three-part and `_IDENTIFIER_RE` checks
+    (`backend/services/mv_entitlement.py:95-115`), so `` `a.b`.c `` is a 422
+    `MvProbeError`. It is not shared with `mv_create`, which imports
+    `mv_entitlement`.
+11. A name `quote_fqn` refuses yields no GRANT: `_mv_optimizer_grant_sql`
+    returns `None` and logs the type only (`auto_optimize.py:1643`, `:1659-1666`).
+    *Amended at the final review (Ruling 32): the check runs before the no-SP
+    branch, so neither branch offers text.* Cost if wrong: none; the row is
+    corrupt.
+12. The governed `source.`-headed dimension is recorded as latent: nothing
+    compares a governed dimension's canonical form (VERIFY grep of every
+    `.canonical_expr` reader).
+13. Frames, both themes, in
+    `frontend/src/components/auto-optimize/mockups/MvM7e1FidelityFrames.tsx`:
+    m7e1-a, the IQ list after a reshape (`:142`; reference m6b-a); m7e1-b, the
+    run output with a stale and a current proposal (`:168`; reference m6b-b);
+    m7e1-c, the Model tab with only the current ghost (`:202`; reference
+    `ModelTabProposalOverlayFrame`). Registered at `mockups/frames.tsx:200-203`.
+
+**Rulings made during execution** (each with its cost if wrong):
+14. The plan's references to a "Task 8" were corrected to Task 7 before
+    dispatch. Cost if wrong: none.
+15. The tests use the live base name `measure_amount_metrics` (the concept kind
+    of an aggregate is "measure"), not the plan's `sum_amount_metrics`. Cost if
+    wrong: none.
+16. Two leaves in two schemas cannot collide (a view lives in its own table's
+    schema), so the ordinal is pinned with two leaves in one schema that
+    sanitize alike. Cost if wrong: none.
+17. A proposal keeps a reserved name whenever the reserved map assigns that name
+    to its own `dedup_fingerprint`, not only its base name, so a decided
+    table-named row is not renamed back when its partner leaves. *Amended at
+    the final review (Ruling 28): the map is now keyed by fingerprint and the
+    stored spelling is kept.* Cost if wrong: none found.
+18. Superseded legacy rows count in `read_kept_names` (named
+    `read_decided_names` until the final review)
+    (`include_superseded=True`), because a CONFLICT upsert can land on a
+    superseded per-measure row's key. Cost if wrong: a superseded kept row's
+    name stays reserved.
+19. `wh_load_mv_candidates` logged a read failure with `exc_info=True`, now on
+    the new reader's path; carried into Task 6 (Ruling 26). Cost if wrong: small
+    scope growth.
+20. Ruling 7 amended: create-at-approval (`backend/services/mv_create.py:1307`,
+    ledger write `:1542`) and the claim (`register_user_created_view`, `:1074`,
+    ledger write `:1169`) record no decision; only the run hook's rows are
+    decided (`approved_for_rerun=True`, `:530`). A row is therefore kept, and
+    hides nothing, when its decision is set or the created-objects ledger holds
+    its `suggestion_id` (any provenance). If that read fails, no undecided row
+    is dropped at that site. No decision is written on the user's behalf. Cost
+    if wrong: a failed read shows the reshaped pair as before.
+21. No helper parsed both a `datetime` and an ISO string, reading naive values
+    as UTC, so `_proposal_instant` (`auto_optimize.py:2258-2274`) is new. Cost
+    if wrong: none.
+22. One narrow read is added, lifting "no new loader" for it:
+    `wh_created_suggestion_ids`
+    (`packages/genie-space-optimizer/src/genie_space_optimizer/common/warehouse.py:1518-1554`)
+    runs `SELECT DISTINCT suggestion_id … WHERE suggestion_id IN (…)` as the SP,
+    validates every id against `sug_[0-9a-f]{12}` (`:1515`) before any SQL,
+    quotes through `_wh_literal`, and raises on failure. `_created_lookup`
+    (`auto_optimize.py:2340`) calls it lazily, only for rows in a view group of
+    two or more undecided rows, so a list with no reshaped pair costs no read.
+    The ledger is run-keyed with no space column, and the existing plural loader
+    turns a failure into `[]`. Cost if wrong: one small read when a reshape
+    exists.
+23. `lowDisclosureHeader` (`mvFormat.ts:246`) builds its stale clause with
+    `staleRescanSentence`, byte-identical output, so the sentence lives in one
+    place. Cost if wrong: a one-line revert.
+24. The IQ surface summarizes `primary`, or `low` when `primary` is empty
+    (`MvIqScanAdvisorySection.tsx:475`), as before; recorded as a residual, not
+    changed. Cost if wrong: the re-scan count under-reports on the IQ surface.
+25. The Model-tab ghost and "View in graph" gaps are latent in the deployed app:
+    `SemanticBlueprint` folds the graph with `proposals: []`
+    (`frontend/src/components/model/SemanticBlueprint.tsx:1026`), and no live
+    surface passes `onLocateInGraph` (`SemanticModelTab.tsx:665-669`). Ruling
+    8's gates hold the contract for when those paths are mounted; they are
+    closed latent, not live fixes. m7e1-a's one-card assertion is a layout pin,
+    because the drop is server-side; the frame, the test and the m7e1-c entry
+    say so and name the backend guards
+    (`test_the_older_undecided_row_of_a_view_leaves_the_list`,
+    `test_the_newest_undecided_drop_applies_at_every_list_site`). Cost if
+    wrong: none.
+26. The warehouse carry-in is widened: every metric-view and join-advice reader
+    in `common/warehouse.py` that logged with `exc_info=True` logs
+    `type(exc).__name__` only, return values unchanged —
+    `wh_load_mv_consent` (`:815`), `wh_load_mv_candidates` (`:894`),
+    `wh_supersede_legacy_mv_candidates` (`:958`),
+    `wh_load_mv_suppressed_fingerprints` (`:1139`), `wh_load_mv_created_object`
+    (`:1438`), `wh_load_mv_created_objects` (`:1475`),
+    `wh_load_mv_consent_by_run` (`:1557`) and `wh_read_join_advice` (`:1655`) —
+    and the GSO log-firewall pin gains a named-function check over them
+    (`_WAREHOUSE_MV_FUNCTIONS`,
+    `packages/genie-space-optimizer/tests/unit/test_mv_log_firewall.py:27`) with
+    a seeded self-test. `wh_ensure_optimization_tables` and
+    `wh_read_operator_guidance` are neither and keep theirs. Cost if wrong:
+    eight one-line log edits and one pin.
+27. The rung pin lives in
+    `packages/genie-space-optimizer/tests/unit/test_mv_rungs_unreachable.py`
+    (`_may_supply_hops_or_attributes`, `:37`), not under `backend/tests`, and
+    is extended in place. `/mv/create` cannot reach the GRANT helper with a
+    corrupt name (`_valid_uc_identifier`, `mv_create.py:790`, refuses first), so
+    only `/mv-ddl` (`auto_optimize.py:4095`) is pinned. Cost if wrong: none.
+
+**Rulings made at the final review** (findings F1–F11; each with its cost if
+wrong):
+28. A row is kept when its decision is set or the created-objects ledger holds
+    its `suggestion_id` (F1, the Ruling 20 rule applied to naming), and a kept
+    proposal persists under exactly its stored `proposed_object`, spelling
+    included; every other proposal avoids the union of kept names (F2).
+    `kept_view_names` (`mv_advisor.py:858-897`) asks the ledger once, for the
+    undecided rows' valid ids only. The Spark twin
+    `created_suggestion_ids`
+    (`packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_state.py:843`)
+    validates each id against `sug_[0-9a-f]{12}` before any SQL, quotes like
+    its neighbours, raises on failure and runs no query for no ids. Cost if
+    wrong: a ledger read per scan that has a CONFLICT and an undecided row.
+29. Either read failing persists no CONFLICT proposal this scan — no upsert,
+    no DDL artifact — and records each one in the existing `render_failures`
+    outcome field as `(suggestion_id, CONFLICT_NAMES_UNREAD)` (`:163`), which
+    reaches the stage row's `detail_json` only and no response. It is not
+    counted in `candidates_render_failed`. Bundles are unaffected. Both
+    candidates reads gain a `strict` keyword (`mv_state.py:378`,
+    `warehouse.py:940`) that re-raises; the default is unchanged. Replaces
+    Ruling 4's reserve-nothing fallback. Cost if wrong: a CONFLICT proposal
+    shows one scan late.
+30. An undecided row whose `suggestion_id` cell is missing is not kept (no
+    create can record it); one whose id is a string the ledger cannot be asked
+    about is kept, never guessed "not created". Cost if wrong: a corrupt row's
+    name stays reserved.
+31. The run list builds one service-principal client inside its `try`
+    (`auto_optimize.py:2367-2390`): a failure to build it returns `[]`, as
+    before, and the lookup reuses it (F6). Cost if wrong: none.
+32. `_mv_optimizer_grant_sql` checks `quote_fqn` before the no-SP branch, and
+    the no-SP comment names the quoted view (F8). Cost if wrong: none.
+33. One shared case list runs against `_split_table` and `_uc_name_parts`
+    (`backend/tests/test_mv_name_split_parity.py`); the entitlement module's
+    five name cases moved there (F9). Cost if wrong: none.
+34. The rung pin flags a starred positional argument (F10,
+    `test_mv_rungs_unreachable.py:37`). Cost if wrong: none.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D116's residuals for the CONFLICT same-name halves
+and the unretired bundle, and a new MV-D116 residual for `joins:` as a number;
+MV-D117's residuals for the ghost, "View in graph", the run-output preview,
+Lift label and summary (which also records the reversed M6b ruling; the playbook
+records that ruling only as this residual), the no-sibling stale row, the rung
+pin and `quote_fqn`; MV-D118's matcher residual and its M6b deferred minors;
+MV-D121's residuals for `_split_table` and the `wh_*mv*` readers; the
+MV-D36–MV-D97 numbering note (the next free number on both lines).
+
+**Unchanged.** No persisted key, table, column, route, response field, job task
+or job parameter. The MV-D7 and MV-D30 key formulas and `suggestion_id_for` are
+untouched, and the three identity baselines pass with their JSON unchanged. No
+access-level check changes, no create, drop or consent path is added, and the
+four create invariants hold. A kept row — decided, or held by the
+created-objects ledger — is never hidden or renamed, and a read that cannot say
+which rows are kept renames nothing (Rulings 28–29).
+
+**Tests** (+40 backend, +63 GSO, +19 vitest at execution; +14 backend, +25 GSO
+at the final review).
+- Task 1: a scalar `joins` (`3`, `3.5`, `True`, `None`) at the top level and
+  nested adds no table, and a governed view with a numeric `joins` no longer
+  fails the scan (+9 GSO; `test_mv_scoring.py`, `test_mv_advisor.py`).
+- Task 2: colliding CONFLICT proposals named by table whatever the scan order,
+  with a non-colliding control; a decided name kept by its own row, never taken
+  by another proposal, held alone, kept when its partner leaves, advancing the
+  ordinal and compared without case or backticks; a failed decided-names read
+  that still renames and logs the type only; leaves that sanitize alike taking
+  an ordinal; an undecided or NULL cell reserving no name; the in-job reader
+  injected (+13 GSO, `test_mv_advisor.py`); the IQ-scan reader injected
+  (+1 backend, `test_mv_suggest.py`).
+- Task 3: the older undecided row leaves the list; approved, rejected, created
+  and claimed rows stay and hide nothing; the newest across timestamp types,
+  with the fingerprint tie-break in both input orders; names compared without
+  case or backticks; every list site, the suggest and stream reloads and the
+  semantic graph; the re-run gate unchanged; the ledger asked once and only
+  about contested rows; a failed ledger read drops nothing, still drops a stale
+  sibling and logs the type only; no default lookup; the timestamp parser
+  (+32 backend; `test_mv_create.py`, `test_mv_suggest.py`,
+  `test_semantic_graph.py`, `test_mv_log_firewall.py`); the ledger read's
+  quoting, refused ids, empty input, raising read and empty answer (+10 GSO,
+  `test_wh_mv_state.py`).
+- Task 4: no ghost, no "View in graph", and no preview or Lift label on a stale
+  card; the summary's current-only count, shared measure counted once, re-scan
+  clause, stale-only sentence and `suggestion_id` keys (+11 vitest).
+- Task 5: the m7e1-a to m7e1-c frames, their registration, and the m6b-b and
+  m6b-d pins (+8 vitest).
+- Task 6: `_split_table`'s three refused and two accepted names, and no GRANT
+  for a refused stored name in the helper and on `/mv-ddl` (+7 backend;
+  `test_mv_entitlement.py`, `test_mv_create.py`); the rung pin's positional and
+  `**kwargs` flags with two pass controls (+6 GSO); the warehouse functions'
+  named-function pin, seeded self-tests, list parity and type-only behaviour
+  pins (+25 GSO); the row-count bundle pin asserts its `` SUM(`l_quantity`) ``
+  member (no count change); and the three baselines' import order (I001).
+- Final review: the Task 2 tests read kept names by fingerprint; a kept row
+  keeps its stored spelling; two kept rows sharing a name both keep it; a
+  created undecided row keeps its name and one the ledger does not hold is
+  renamed; a failed candidates or ledger read persists no CONFLICT proposal and
+  records `CONFLICT_NAMES_UNREAD`, in the advisor, the in-job phase and the IQ
+  scan, and leaves the bundles alone; `kept_view_names`' decided, created,
+  missing-id and malformed-id rows, its single ledger ask and its raising
+  lookup; both injections' strict reads (+11 GSO `test_mv_advisor.py`, +2
+  backend `test_mv_suggest.py`); `created_suggestion_ids`' quoting, six refused
+  ids, empty input, raising read and empty answer, and both strict candidates
+  reads (+11 GSO `test_mv_state.py`, +1 GSO `test_wh_mv_state.py`); the rung
+  pin's two starred cases (+2 GSO); the no-SP GRANT branch's refused name in
+  the helper and on `/mv-ddl` and its quoted name, and the run list's single
+  client and client failure (+5 backend `test_mv_create.py`); the shared
+  name-split case list, six cases against both functions, replacing five
+  `test_mv_entitlement.py` cases (+7 backend net).
+
+**Residuals (not fixed here).**
+- A CONFLICT name can equal a bundle name when a concept equals a table leaf
+  (Ruling 5).
+- A rejected row's name is reserved as an approved one is, and a row whose
+  string `suggestion_id` is malformed is kept unasked (Ruling 30).
+- The reshaped-row drop groups by name only, so two current undecided rows of
+  different shapes that share a name list only the newer (final-review F7; not
+  changed).
+- In-job and IQ scans that bundle one view differently alternate which row is
+  listed (Ruling 6).
+- The reshaped row stays in `genie_opt_mv_candidates`; it is only not listed.
+- A created-then-dropped view keeps its older row listed: the ledger read
+  ignores provenance and lifecycle (Ruling 20).
+- The governed `source.`-headed dimension is latent: no consumer compares it
+  (Ruling 12). The curated-snippet half moves persisted keys and is M7e-2's.
+  *Kept by MV-D123 (Ruling 13): the snippet's struct path stays a residual.*
+- The matcher's reach to legacy and CONFLICT rows (Ruling 1, moved to M7e-2).
+  *Closed by MV-D123.*
+- The IQ surface summarizes `primary` or `low`, so a stale `low` row is not
+  counted while `primary` has entries (Ruling 24).
+- The Model-tab ghost and "View in graph" closures are latent: neither path is
+  mounted in the deployed app (Ruling 25).
+- The warehouse firewall pin covers only the eight converted functions, not the
+  other metric-view writers or `wh_created_suggestion_ids`; and
+  `wh_ensure_optimization_tables` and `wh_read_operator_guidance` still log
+  `exc_info=True` (Ruling 26).
+- Deferred test and code minors from the task reviews:
+  - Task 1: the nested scalar-`joins` test has no sibling join with a source;
+    the advisor test asserts only `STATUS_COMPLETE`; `joins_of` is a nested
+    function.
+  - Task 2: the held-name pick is alphabetical if one fingerprint held two names
+    (unreachable); a held proposal with no `proposed_object` could gain a
+    reserved name; the table-named form uses the first table's leaf only; no
+    test pins a reserved entry equal to its own base name under other case or
+    backticks.
+  - Task 3: one malformed id fails the whole lookup open; the re-run gate test's
+    no-lookup assertion is trivially true.
+  - Task 4: the per-item measure count and the de-duplicated total can disagree
+    for a name-only measure; no summary test pins the stale-only singular.
+  - Task 5: m7e1-c does not assert the "would govern" link; the m7e1 fixtures
+    duplicate the m6b ones; the ghost pin depends on `<title>`/`<rect>`
+    adjacency; one frame comment line exceeds the wrap width.
+  - Task 6: ruff's I001 fix leaves the `mv_advisor` import in its own trailing
+    block. *The starred rung case, the shared name-split case list and the
+    no-SP GRANT echo were closed at the final review (Rulings 32–34).*
+  - Final review: `quote_fqn` quotes a newline rather than refusing it, so the
+    no-SP comment could break its `--` line for such a stored name; and
+    `_UC_IDENT_PART` (`backend/services/mv_create.py:766`) ends in `$` under
+    `re.match`, so `_valid_uc_identifier` accepts a trailing newline. Neither
+    is reachable from a generated name.
+
+### MV-D123 — Identity v2: a measure is its calculation and its fully qualified tables (DECIDED 2026-10-01 — PR #332 M7e-2, owner)
+
+**Problem (the M7e-2 line of the PR #332 tracking issue: the identity residuals
+of MV-D116, MV-D117 and MV-D118, and the matcher item MV-D122 Ruling 1 moved
+here).** The MV-D7 and MV-D30 keys hashed the table names an occurrence
+*spelled*, and the corpus scan grouped occurrences by table leaf.
+- R1. One table name in two catalogs was one bucket over both names, which
+  `not_single_table` refused; and a new spelling of a table anywhere in the
+  corpus moved that table's keys.
+- R2. MV-D116's merged key was rebuilt from today's union of split rows, so it
+  drifted with the corpus.
+- R3. The semantic graph keyed a concept on its expression alone
+  (`_concept_key`, `backend/routers/auto_optimize.py:3111`), so curated and
+  corpus measures merged across tables.
+- R4. A `COUNT(*)` over a derived table was credited to the inner table.
+- R5. A history row that resolved no table counted toward the demand of both
+  halves of a split measure, because `same_tables` treated an empty side as
+  matching.
+- R6. `_relation_map` registered an aliased table's own name as well as its
+  alias, so in `FROM orders o JOIN payload p`, `o.payload.fee` read as column
+  `fee` of table `payload`.
+- R9. Under C-8, a join measure whose own tables equal the old union would share
+  the merged key.
+- The matcher (MV-D118, moved from M7e-1): its fallback never reached legacy
+  bundle rows or CONFLICT rows, and same-leaf tables in two catalogs matched
+  under `same_tables`.
+- Found while researching (1): since M3 every approvable proposal has been keyed
+  on its calculation and one three-part table. `_unservable_reason` refuses
+  anything else (`packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_advisor.py:1445`),
+  `_bundle_grain` (`:958`) drops a bundle without a three-part name, and
+  `_table_fqn` (`optimization/mv_fingerprint.py:804`) lowercases and unquotes.
+  With the formulas unchanged, a key moves only where v1 was wrong, and no
+  approved or created row's key moves.
+- Found while researching (2): R7, the firewall's bare-alias fold
+  (`optimization/leakage.py:83`), is a runtime SQL fingerprint and never
+  persisted. R8, the by-concept agreement skip (`optimization/mv_scoring.py:1212`),
+  is unreachable, because its only producer sets an empty concept (`:1041`).
+- Found while researching (3): a curated snippet has no `FROM`, so the pure
+  extractor cannot tell a struct field (`payload.fee`) from `table.column`
+  without the space's tables.
+
+**Decisions (owner rulings at planning, 2026-10-01).**
+- **Formula = inputs only.** MV-D7, MV-D30 and `suggestion_id_for`
+  (`mv_scoring.py:1416`) keep their code. Their table inputs become fully
+  qualified names that the space resolves, and the R4 and R6 extractor fixes
+  ride with them.
+- **Unresolved = never guess.** A measure over a table the space cannot resolve
+  is refused as `unresolved_table`. An unresolved table matches nothing in
+  demand, the matcher, or the governed and conflict checks.
+- **Dual read = one deployed release.** After that, M8 deletes the frozen v1
+  module.
+- **Scope.** The semantic graph becomes table-aware. R7 and R8 stay residuals.
+
+**Rulings (planning).**
+1. The formulas are unchanged and only their inputs change. A resolved table is
+   lowercase, unquoted and three-part, which is what `_table_fqn` already gave a
+   three-part spelling. The `sug_` id format is unchanged, so no frontend key
+   code moves.
+2. A table is in one of three states (`TableResolver`,
+   `optimization/mv_tables.py:78`; `TABLELESS` and `UNRESOLVED` at `:44-45`):
+   - *Resolved.* A three-part spelling resolves to itself. A two-part spelling
+     resolves to the one space identifier whose last two parts match, and a
+     one-part spelling to the one identifier with that leaf. Case and backticks
+     are ignored.
+   - *Table-less.* No table is named: a snippet, a `FROM`-less expression, or a
+     column-free aggregate over a join.
+   - *Unresolved.* Zero or two or more identifiers match, or the name is a CTE,
+     a derived alias, or a governed view's query source.
+
+   An unresolved table matches nothing. A table-less occurrence joins the only
+   row of its calculation; when there are two or more rows it joins none. This
+   rule holds in the scan, demand, the matcher and the graph. An unresolved
+   occurrence forms its own row. Cost if wrong: a table-less snippet still
+   strengthens an unsplit measure, as today; without this rule every snippet
+   would drop out of demand and split off in the graph.
+3. The resolver reads only the space's `data_sources.tables[].identifier` and
+   `data_sources.metric_views[].identifier` (`from_config`, `mv_tables.py:99`),
+   in both callers. The in-job wide-schema inventory is not an input. Cost if
+   wrong: the in-job path loses resolution for a table outside the space.
+4. With no table list, the reading is today's (`has_table_list`,
+   `mv_tables.py:122`). Both production callers pass the list, and a test pins
+   that. Cost if wrong: a future caller that forgets the list reads v1 silently.
+   *As built (final-review fix wave):* when the run's iteration rows carry no
+   config, the in-job caller logs one fixed reason, "no applied config; tables
+   read as written" (`_advise`, `mv_advisor.py:1226-1228`), so the run shows why
+   demand and grouping read names as written.
+5. `unresolved_table` is checked first in `_unservable_reason`
+   (`mv_advisor.py:1454-1455`). An unresolved row's key stays MV-D7 over its
+   spelled names.
+6. R4: an aggregate whose `SELECT` reads a derived table or a CTE names no
+   table, and it is unresolved (`_reads_derived_source`,
+   `mv_fingerprint.py:871`). R6: an aliased table registers only its alias
+   (`_relation_map`, `:821`). *The R4 rule is narrowed during execution
+   (Ruling 27).*
+7. A bundle key keeps its membership (MV-D30). A reshape by the cap is a new
+   proposal, and MV-D122's newest-undecided drop lists one row per view. Cost if
+   wrong: a per-view key would need a detector for content changes.
+8. The dual read. `optimization/mv_identity_v1.py` is the v1 grouping copied
+   verbatim at base. It imports nothing from the live grouping, and a source
+   pin checks that. `v1_member_keys` (`mv_identity_v1.py:75`) gives each
+   occurrence its v1 key. A measure is hidden when its v2 key or any v1 key of
+   its occurrences is suppressed (`mv_advisor.py:1672-1676`, `:1732-1740`). A
+   hit on a v1 key only is copied forward through the injected
+   `rekey_suppressions` (`:1816-1817`). Approvals never move. The claim
+   recomputes over the view's three-part `source:`, where v1 and v2 agree. Cost
+   if wrong: a reshaped approved view needs one more approval.
+9. A pending v1-keyed row leaves the list through MV-D122's newest-undecided
+   drop. Decided and created rows stay listed and resolve by their stored
+   `suggestion_id`. No row is superseded or rewritten.
+10. The rekey writers are `rekey_mv_suppressions` (`optimization/mv_state.py:635`,
+    its SQL in `rekey_mv_suppressions_sql` at `:586`) and
+    `wh_rekey_mv_suppressions` (`common/warehouse.py:1199`). Each call runs one
+    `MERGE … WHEN NOT MATCHED THEN INSERT` into `genie_opt_mv_suppressions`:
+    - The source is the v1 ledger rows plus the space's rejected candidate rows.
+    - The window is NULL when any v1 window is NULL, and otherwise the latest.
+    - The originating id is carried, and `reason` is `rekeyed_v1` (`:566`).
+    - An existing v2 row is left as it is.
+    - Every fingerprint is checked as 64 lowercase hex characters
+      (`validated_rekeys`, `:571`) and quoted through the literal helper.
+    - A failure logs the exception type only, and the measure stays hidden for
+      that scan.
+
+    Cost if wrong: a dismissal whose measure does not recur during the window
+    is not copied, and it shows again after M8.
+11. The merged key is retired. `merged_tables`, `rows_per_fingerprint` and
+    `merged_fp` are deleted with their tests. A rejection under the merged key
+    stops hiding (`test_a_rejection_under_the_retired_merged_key_no_longer_hides`),
+    and R9 closes by construction.
+12. The graph's `_concept_key` (`auto_optimize.py:3111`) is the calculation plus
+    the sorted resolved tables. Governed chips take their tables from the YAML
+    `source:` and joins. Curated and corpus measures resolve through a resolver
+    built from the fetched space (`:3501`). A table-less curated measure follows
+    Ruling 2, and two spellings of one table still merge.
+13. The curated snippet's struct path stays a residual (Found while
+    researching (3)). Cost if wrong: a snippet over a struct field does not
+    strengthen the corpus measure's recurrence; it forms its own table-less row.
+14. The dual read lives for one deployed release. The docstring of
+    `mv_identity_v1.py` (`:16`) and this entry name the follow-up "M8 — delete
+    the v1 identity read after one deployed release". M8 deletes the module, its
+    test and the v1 branch of the suppression check in one commit that cites
+    MV-D123.
+15. The baseline is a map. `test_mv_identity_v2_baseline.py` and
+    `data/mv_identity_baseline_3e71d66f.json` were captured at `3e71d66f` before
+    any change: 21 statements, 17 scan rows and 6 bundles. Controls keep their
+    keys, movers land on named sets of full names, and v1 reproduces every
+    captured key. The older baselines lose only the named assertions listed
+    under **Tests**.
+16. `same_tables`, `tables_overlap` and `table_leaves` are deleted. Their pins
+    are rewritten against `same_fq_tables` and `fq_tables_overlap`
+    (`mv_tables.py:185`, `:202`).
+17. Fidelity frame m7e2-a: one calculation over two tables is two nodes on the
+    Model tab.
+
+**Rulings made during execution** (each with its cost if wrong):
+18. The v1 module freezes the grouping, not the extractor. A dismissal of a
+    derived-table `COUNT(*)` or of a misattributed struct-field measure was
+    recorded under a key the fixed extractor no longer forms, so the dual read
+    misses it. Cost if wrong: such a dismissal shows its measure once more.
+19. No commit leaves the suite red. A test that a task makes false is deleted in
+    that task, and Task 11 audits the deletions. Cost if wrong: none.
+20. A CONFLICT row that v2 moves, whose v1 row was decided, keeps its decided
+    name, and its successor takes the next ordinal (MV-D122). Cost if wrong:
+    none.
+21. Rows carry the ids of their occurrences (`occurrence_ids`,
+    `mv_fingerprint.py:331`), and occurrences keep their spelled names
+    (`measure_occurrences`, `:362`). Cost if wrong: none.
+22. `test_the_capture_is_reproducible` joins the deletable list, since v2 is
+    meant to change what it reproduced. Cost if wrong: none.
+23. The floor line is edited once, here, not per task. Cost if wrong: none.
+24. "Inside both checkers' globs" means the GSO checker for a GSO module. Cost if
+    wrong: none.
+25. A three-part spelling resolves to itself even when the space does not list
+    it, as v1 already keyed it, so controls keep their keys. Cost if wrong: a
+    three-part name outside the space is treated as resolved rather than
+    unresolved, with no key move.
+26. `TableState` (the enum behind `TABLELESS` and `UNRESOLVED`) and
+    `ResolvedTables` (the return type of `resolve_all`) stay exported from
+    `mv_tables.py`. Cost if wrong: two exports to make private later.
+27. Ruling 6's R4 rule is narrowed to attribution. An aggregate is unresolved
+    only when its table would come from a derived relation or a CTE: a
+    column-free aggregate whose `FROM` or `JOIN` includes one, or a column
+    qualified by, or resolvable only to, a derived alias or a CTE name. A column
+    qualified by a real table's name or alias keeps that table even beside a
+    derived join (`has_unresolved_source`, `mv_fingerprint.py:148`). Cost if
+    wrong: such a column keeps its pre-M7e-2 single-table key.
+28. The R6 alias rule applies through `_relation_map` to every extractor:
+    measures, dimensions, filters, join keys and shapes. Cost if wrong: none
+    found.
+29. Implementers lint only the lines they add or change, and never rewrite
+    existing code to satisfy a lint rule; the repo has no ruff config. Cost if
+    wrong: an existing lint finding stays.
+30. With no table list, the scan keeps v1's leaf grouping (Ruling 4). Cost if
+    wrong: none, since the production callers pass the list.
+31. An unresolved row counts toward the "two or more rows" of Ruling 2, so a
+    table-less occurrence beside one resolved row and one unresolved row joins
+    neither. Cost if wrong: such a snippet does not strengthen the resolved
+    row's recurrence.
+32. A derived-table or CTE aggregate is refused as `unresolved_table` even with
+    no table list, since the extractor's flag does not depend on the resolver.
+    Cost if wrong: none found.
+33. A governed view with no `source:` governs nothing; two scoring fixtures
+    gained a source. Cost if wrong: such a view no longer suppresses a proposal,
+    and it could not be read as any table anyway.
+34. A governed view's two-part `source:` resolves through the space's table
+    list, like any other name (Ruling 3). Cost if wrong: a two-part governed
+    source the space does not list is unresolved and governs nothing.
+35. Demand matches each history row on its own, and the history corpus's own
+    scan applies Ruling 2 (`demand_signal`, `optimization/mv_signals.py:372`,
+    its table check at `:457-460`). Cost if wrong: a table-less history
+    statement strengthens one half when history saw that calculation on one
+    table only.
+36. A table-less history row that history's scan leaves unjoined still counts
+    toward a candidate whose calculation is a sole row in the advisor's scan
+    (`candidate_sole_row`, `mv_signals.py:377`). Cost if wrong: such a row
+    strengthens the only proposable measure of that calculation.
+37. Ruling 16 retires the comparison helpers only. The leaf grouping for the
+    no-table-list reading survives as the private `_leaf_grain`
+    (`mv_fingerprint.py:1523`), with one caller. Cost if wrong: one private
+    helper survives until M8 removes the no-list reading.
+38. In the matcher, a table-less statement keys its calculation over each table
+    the space lists, and selects only when exactly one of those keys is a
+    member's (`_measure_matches`, `optimization/mv_attach.py:392`, its resolver
+    at `:530`). Cost if wrong: a bare `FROM`-less statement misses a candidate
+    over an unlisted table; qualified statements still match.
+39. Two chips with one name in one box gained distinct ids. The split is this
+    milestone's own output, and a selection that highlights both halves is a
+    visible defect, so the fix landed in Task 10 despite "no component change".
+    A chip's id and key gain a suffix only when its name repeats within the box
+    (`measureChipIds`, `frontend/src/components/model/blueprint/layout.ts:58`),
+    so every other frame export stays byte-identical. Cost if wrong: one small
+    component change outside the planned file list.
+40. The graph's coverage and lineage are left as they are (see **Residuals**).
+    Cost if wrong: if a later surface shows measure coverage, split halves
+    overstate it until fixed.
+41. The graph's governed absorption uses the advisor's rule, `governs_measure`
+    (`mv_scoring.py:1089`): the same canonical expression and
+    `fq_tables_overlap(..., tableless_matches=True)` (`_governed_twin`,
+    `auto_optimize.py:3542`), not exact key equality. Curated and corpus merges
+    stay exact over resolved tables (Ruling 12). A curated measure that two
+    governed nodes overlap joins the first in the graph's governed order. Cost
+    if wrong: a curated measure sits on a joined governed view's chip, which a
+    user might read as the view's own grain; the advisor makes the same call
+    when it suppresses that proposal.
+42. The `ddl.py` column comments on `dedup_fingerprint`
+    (`optimization/ddl.py:201`) and `measure_fingerprint` (`:288`) stay. Their
+    'sorted_source_set' is still true under v2, where the set is the resolved
+    full-name set. `CREATE TABLE IF NOT EXISTS` never re-applies a comment to an
+    existing table, and Task 12 is docs-only. Cost if wrong: a reader of the
+    column comment does not learn that the set is resolved to full names (this
+    entry says so under **Unchanged**).
+43. Frame m7e2-a's density deviation from frame 9a is accepted. Frame 9a is
+    the scaffold `GraphSvg`. Frame m7e2-a renders the real `SemanticModelView`
+    blueprint the Model tab ships today. Of the M7e-1 frames, only m7e1-c
+    renders a real model component (`SemanticGraph`); m7e1-a and m7e1-b render
+    suggestion cards. The ruling's selected-state part is superseded by
+    Ruling 44. Cost if wrong: a user sees two identical chips until they click
+    one.
+44. Frame m7e2-a gains no selected state, and no product or frontend code
+    changes. No Model-tab surface names a table's full name (see
+    **Residuals**), so a selected state could not show one without a label
+    change. Whether to show full names, for example only on a collision as
+    `measureChipIds` does for chip ids, is an open owner decision. Cost if
+    wrong: until the owner decides, a user sees two identical `sum · amount`
+    chips and must click one and follow its highlight to know which table it
+    reads.
+
+A controller check at Task 8: legacy v1 CONFLICT keys with more than one
+spelling can move, but no such row was ever approvable, so the movement is
+accepted.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten):
+- MV-D113 d2: the drop count also counts `unresolved_table`.
+- MV-D116: decisions 1, 2, 4 and 5, and its residuals for two catalogs, the merged
+  key's drift, the table-less history row, the C-8 merged key and the graph's
+  merge.
+- MV-D117: its residuals for the curated snippet, the derived-table `COUNT(*)`,
+  the aliased table name and the bare alias.
+- MV-D118: the matcher decision, its Ruling 6 and its matcher residual.
+- MV-D122: its residuals for the curated-snippet half and the matcher's reach.
+- The MV-D36–MV-D97 numbering note, for the next free number on both lines.
+
+**Unchanged.**
+- The MV-D7 and MV-D30 formulas and `suggestion_id_for`.
+- Every table, column, route, response field, job task and job parameter.
+- The column comments on `dedup_fingerprint` (`optimization/ddl.py:201`) and
+  `measure_fingerprint` (`:288`). Their 'sorted_source_set' is now the resolved
+  full-name set (Ruling 42).
+- Access: no access-level check changes, no create, drop or consent path is
+  added, and the four create invariants hold.
+- Writes: the one new insert path is the rekey `MERGE` into the existing
+  suppressions table. It runs as the service principal that already writes
+  candidates, inside the gated phase in the job and on the IQ scan's existing
+  warehouse client.
+- Approvals: no approval moves to a new key, no decided row is hidden, and the
+  rekey only demotes.
+- Baselines: the three older baselines pass with their JSON byte-identical to
+  BASE, minus the named assertions.
+- Keys of approved and created rows do not move (Task 9's continuity pins).
+
+**What users see.**
+- A proposal over a table named without its catalog or schema now surfaces when
+  the Agent has exactly one table by that name.
+- A measure over an ambiguous or unknown table is not proposed.
+- One calculation over two tables is two nodes on the Model tab (frame m7e2-a),
+  each chip with its own id.
+- A dismissal recorded before the change keeps hiding its measure, with two
+  exceptions. One recorded under a merged key can show its measure again. One
+  of a derived-table `COUNT(*)` or of a misattributed struct-field measure
+  shows its measure once more (Ruling 18).
+- A reshaped bundle shows as a new proposal.
+
+**Tests** (+23 backend, +197 GSO and +10 vitest; the floor moves from 1642 +
+1968 to 1665 + 2165).
+- Task 1: the v1 map captured at `3e71d66f` (+2 GSO,
+  `test_mv_identity_v2_baseline.py`).
+- Task 2: the frozen v1 grouping (+8 GSO, `test_mv_identity_v1.py` and one
+  firewall case):
+  - it reproduces every captured key and groups live and recorded measures
+    alike;
+  - it puts two catalogs on one leaf into one bucket, and keeps a table-less
+    occurrence out of a split;
+  - its import pin, the seeded bite on that pin, and its M8 docstring.
+- Task 3: the resolver's three states and `same_fq_tables` and
+  `fq_tables_overlap` (+102 GSO, `test_mv_tables.py` and one firewall case).
+- Task 4: the R4 and R6 extractor fixes (+8 GSO net: 9 added in
+  `test_mv_fingerprint.py`, the capture assertion deleted):
+  - a derived-table or CTE row count names no table;
+  - an aliased table answers only to its alias, with the unaliased control;
+  - a real table's column beside a derived join keeps its table;
+  - four guards.
+- Task 5: v2 grouping (+21 GSO):
+  - rows carry their occurrence ids, and one table name keeps its identity;
+  - an unresolved row counts toward the table-less rule;
+  - a derived row count is dropped as `unresolved_table`, with and without a
+    table list;
+  - only a missing config has no table list;
+  - the map's base, constants, control and mover pins, and the bundles on
+    untouched grains.
+- Task 6: the dual read and the rekey (+1 backend, +37 GSO net; advisor +10 −2,
+  scoring +5, state +20, firewall +3, v2 baseline +2, table baseline −1):
+  - the rekey `MERGE`'s SQL, validation, window, provenance, quoting and
+    failure;
+  - a v1-only hit hides the measure and is copied forward. The batching across
+    two v2 halves had no test here; the final-review fix wave added it (below);
+  - the retired merged key no longer hides;
+  - `governs_measure` over resolved tables, where a governed query source
+    matches nothing;
+  - both callers pass the space's tables.
+- Task 7: demand (+5 GSO):
+  - an unqualified history row resolves through the space;
+  - an ambiguous history row, and an unresolved one without tables, count
+    toward nothing;
+  - a table-less history row counts toward neither half, or only toward a sole
+    row;
+  - the demand read gets the resolver and the sole-row flag.
+- Task 8: the matcher, and the Ruling 16 rewrites (+11 GSO; attach +6,
+  fingerprint +5).
+- Task 9: continuity (+11 backend, +3 GSO):
+  - an approved v1 bundle reproduces its key under a v2 re-scan and is measured
+    on its own members beside its successor;
+  - a created v1 row resolves by its stored `suggestion_id`;
+  - v1-keyed member fingerprints still match qualified statements;
+  - a reshaping re-scan writes a new row for the same view;
+  - the in-job caller passes the space's tables and the rekey writer.
+- Task 10: the graph (+11 backend, `test_semantic_graph.py`):
+  - a table-less curated measure joins the sole node and neither of two;
+  - a CTE measure stays its own node;
+  - governed absorption follows the table rule, and an unresolved governed
+    measure absorbs nothing;
+  - two spellings still merge;
+  - the resolver is built from the space, including a degenerate config.
+
+  Vitest grew +10 to 790: the m7e2-a frame and its registration, the chip-id
+  helper, and the no-duplicate-key and chip-click pins. Vitest is not counted
+  in the floor.
+- Task 11: the audit, with no test change.
+- The final-review fix wave (+1 backend, +9 GSO; the floor moves to 1666 +
+  2174):
+  - the matcher does not select a `COUNT(*)` over a CTE or a derived table, or
+    an unqualified statement over a table the space does not list
+    (`test_a_row_count_over_a_cte_or_derived_table_does_not_select`,
+    `test_an_unqualified_statement_over_a_table_the_space_does_not_list_does_not_select`);
+  - one v1 key over two v2 halves is handed to each rekey twin in two calls, and
+    the replayed `MERGE` writes both copies
+    (`test_one_v1_key_over_two_v2_halves_writes_both_copies`);
+  - a table-less row and a row over a join of both tables, beside history over
+    two tables, count toward a sole-row candidate and toward neither half
+    otherwise (Ruling 36);
+  - the claim refuses a stored member key that v2 cannot reproduce;
+  - a `Z`-suffixed stamp parses as UTC;
+  - the in-job caller logs its fixed reason once with no table list, and not
+    with one.
+
+*Retired baseline assertions* (deleted, each leaving a one-line MV-D123 comment
+that names its replacement):
+- `test_the_capture_is_reproducible` (`test_mv_identity_v2_baseline.py`, Task 4)
+  is replaced by `test_v1_reproduces_every_captured_key` and the four map
+  assertions: `test_every_control_keeps_its_captured_key`,
+  `test_every_mover_moves_onto_its_full_name_set`,
+  `test_every_control_bundle_keeps_its_captured_key_and_id` and
+  `test_every_mover_bundle_moves_onto_its_full_name_members`.
+- `test_the_merged_key_the_advisor_rebuilds_is_the_one_recorded_at_base`
+  (`test_mv_table_identity_baseline.py`, Task 6) is replaced by the v2 map and
+  `test_a_rejection_under_the_retired_merged_key_no_longer_hides`.
+- `test_a_rejection_of_the_merged_measure_keeps_both_halves_hidden` and
+  `test_a_rejection_of_the_merged_measure_hides_the_half_a_governed_view_leaves`
+  (`test_mv_advisor.py`, Task 6) are replaced by
+  `test_a_rejection_under_the_retired_merged_key_no_longer_hides`.
+
+*Behaviour changes in existing tests* (not baseline deletions):
+- The Ruling 16 rewrites (Task 8, `test_mv_fingerprint.py`, 8 pins → 13):
+  - `test_table_leaves_are_lowercase_unqualified_names` →
+    `test_one_table_spelled_three_ways_resolves_to_one_full_name`;
+  - `test_same_tables` → `test_same_fq_tables` (6 cases: a two-part name the
+    space cannot resolve now never matches, and two catalogs are two tables);
+  - `test_tables_overlap` → `test_fq_tables_overlap` (4 cases);
+  - the empty-side cases → `test_a_tableless_side_follows_the_sole_row_rule`
+    (2 cases).
+- Renames and flips the brief directed:
+  - `test_a_governed_view_over_a_query_source_blocks_as_before` →
+    `test_a_governed_query_source_matches_nothing` (Task 6);
+  - `test_demand_without_candidate_tables_counts_every_table` →
+    `test_a_tableless_history_row_counts_only_toward_a_sole_row` (Task 7);
+  - `test_without_candidate_tables_the_fallback_does_not_run` →
+    `test_without_candidate_tables_an_unqualified_statement_still_selects`
+    (Task 8);
+  - `test_a_bare_expression_with_no_from_selects_through_the_fallback` →
+    `test_a_bare_no_from_expression_selects_a_single_table_candidate` (Task 8).
+
+**Residuals (not fixed here).**
+- R7: the firewall folds a backticked alias but not a bare one
+  (`leakage.py:83`); this is a runtime fingerprint, never persisted (owner).
+- R8: the by-concept agreement skip (`mv_scoring.py:1212`) is unreachable in
+  production (owner).
+- The curated snippet's struct path: a `FROM`-less `payload.fee` reads as
+  `table.column`, so the snippet forms its own row (Ruling 13).
+- M8 — delete the v1 identity read after one deployed release (Ruling 14).
+  Besides `test_mv_identity_v1.py`, four test files import `v1_member_keys` to
+  pin continuity and the dual read, and M8 rewrites them too
+  (`packages/genie-space-optimizer/tests/unit/test_mv_advisor.py:2508`,
+  `test_mv_fingerprint.py:44`, `test_mv_attach.py:1352`, `:1400`, and
+  `backend/tests/test_mv_create.py:3031`).
+- A dismissal whose measure does not recur during the window is not copied, and
+  it shows again after M8 (Ruling 10).
+- A rejection under a merged key stops hiding (Ruling 11).
+- A dismissal of a derived-table `COUNT(*)` or of a misattributed struct-field
+  measure shows its measure once more (Ruling 18).
+- In-job and IQ scans that bundle one view differently alternate which row is
+  listed (MV-D122 Ruling 6).
+- A v1 dismissal over a bucket that held two catalogs on one leaf hides both v2
+  halves, and is copied onto both (Task 6).
+- Demand matches each history row on its own. A table-less history statement
+  strengthens one half of a split measure when history saw that calculation on
+  one table only. It also strengthens the only proposable measure of a
+  calculation that history saw on two tables (Rulings 35–36).
+- The matcher's table-less rule counts only among the selected candidates'
+  member keys, so it can over-select (Task 8). A bare statement no longer
+  reaches a member over a three-part table the space does not list (Ruling 38).
+- The graph's `_apply_coverage` (`auto_optimize.py:3731`) counts by calculation,
+  so each half of a split measure reports both tables' statements. This is not
+  displayed today (Ruling 40).
+- Graph lineage draws from tables as spelled, so a one-part name that now merges
+  adds no lineage edge (Ruling 40).
+- On the graph, a table-less snippet beside two or more rows of its calculation
+  draws its own chip. The advisor's `governs_measure` calls it governed
+  (`tableless_matches=True` at `mv_scoring.py:1110`).
+- A governed view's two-part `source:` resolves through the space's table list,
+  not through the view's own catalog (Ruling 34).
+- No Model-tab surface names a table's full name. Table cards, measure chips
+  and the detail inset all print leaf names: the inset's lineage line prints
+  `shortName(t)` (`frontend/src/components/model/SemanticBlueprint.tsx:719`),
+  and `shortName` keeps the last dotted segment
+  (`frontend/src/components/model/blueprint/model.ts:95-98`). Two same-leaf
+  tables and their split chips are told apart only by the lineage highlight to
+  their own card, which Task 10's vitest "draws each half's lineage to its own
+  table, and the box's to both rows" pins. Showing full names is an open owner
+  decision (Ruling 44).
+- Deferred test and code minors from the task reviews:
+  - Task 2: the two-catalog test asserts equality only; the M8 docstring pin is
+    a substring match.
+  - Task 3: a non-string name raises `AttributeError` in `resolve`; no source
+    pin forbids importing the deleted helpers.
+  - Task 4: no direct test pins a `d.col.field` path on a derived alias, and the
+    R6 dimension path is not pinned.
+  - Task 5: `_Bucket.observe`'s tables argument is unused.
+  - Task 6: `dedup_gate` with no resolver is tested only as written; one
+    backend pin duplicates a GSO one.
+  - Task 8: `_affected_question_ids` takes an optional config; the fingerprint
+    is recomputed per table.
+  - Task 10: the m7e2-a fixture is hand-typed; a blank governed source is
+    read as table-less rather than unresolved; no test pins a snippet beside
+    two governed views.
+
+### MV-D124 — The join rungs are proven in Unity Catalog, and the create paths accept each proven rung (DECIDED 2026-10-01 — PR #332 M7f, owner)
+
+**Problem (the M7f line of the PR #332 tracking issue; MV-D117 decision 8 and
+its residual "The live UC proof of the join rungs").**
+- MV-D117 decision 8 made both create paths refuse any body whose join strategy
+  is not `direct`, until the rungs were proven live. The `denormalized`,
+  `nested` and `subquery_source` rungs had never been created in Unity Catalog.
+- Found while planning: lifting that refusal alone would not have made a
+  `subquery_source` body creatable. The consent-coverage check refused any body
+  whose `_definition_tables` was empty, and that function returns nothing for a
+  query `source`, because a view over a subquery governs nothing (MV-D123). So
+  every subquery body would have been refused as "reads a table the access check
+  did not cover".
+- Found during the first live run (FINDING-1): `_deduplicated_relation`
+  projected only a hop's own key and its requested attributes, while
+  `_subquery_source` joins each child hop on `{parent}.{left_key}`. A depth-2
+  subquery body was therefore unresolvable unless the intermediate key was also
+  requested as a dimension, and `validate` passed it.
+
+**Decisions (owner rulings at planning, 2026-10-01, and one during execution).**
+- **f_shapes = all4.** Prove `direct` with first-level joins, `denormalized`,
+  `nested` and `subquery_source`, and lift each rung that proves.
+- **f_nested = keep_unknown.** MV-D8 stands. A SQL warehouse reports
+  `current_version().dbr_version` as NULL, so `mv_nested_joins` is UNKNOWN,
+  which means unavailable. Create's rung refusal is lifted for `nested`, but
+  `validate`'s downgrade and `_rung_below` still refuse a nested body on a
+  warehouse. The proof is recorded so a later ruling can rely on it.
+- **f_reach = no_wire.** Prove and lift only. The pin that no production caller
+  passes join hops stays, so the rungs stay unproposable. A tracking item covers
+  wiring join hops from the space's join specs.
+- **f_where = m3_schema.** Objects are created in
+  `serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold` with an `m7f_`
+  prefix, on Serverless Starter Warehouse `fda7c3ad00bfac47`, under
+  `--profile fevm-serverless`, and every object is dropped at the end. The owner
+  approved this workspace mutation.
+- **f_subquery = fix_reprove** (during execution, after FINDING-1). Fix
+  `_deduplicated_relation` in M7f, re-prove `subquery_source` live with the
+  natural request, and lift it with the other three. `MV_RENDER_VERSION` does
+  not move, because no stored body can carry the rung under no_wire.
+
+**Rulings (planning).**
+1. The four owner answers are binding.
+2. The proof renders through the real `generate`
+   (`packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_yaml.py:1375`)
+   with hand-built `MvProfiling` fixtures. Uniqueness is never asserted by
+   hand: the harness counts each key's rows and distinct values live, with exact
+   `COUNT(*)` and `COUNT(DISTINCT key)`, and builds `KeyUniqueness` from those
+   numbers. The `nested` rung's profiling sets `mv_nested_joins` to GRANTED,
+   because the warehouse reports UNKNOWN. The `subquery_source` rung renders
+   under GRANTED too, so that its duplicate key, not the capability, sends it to
+   that rung; its body is identical under UNKNOWN.
+3. A rung is proven only when every one of the nine checks below passes. A rung
+   with a failed check stays refused, and the renderer is not fixed to make it
+   pass without an owner ruling.
+4. The proven set is a config constant, `MV_PROVEN_JOIN_STRATEGIES`. A missing
+   strategy still means `direct`, and an unknown strategy string is refused with
+   the same reason. The function name `_unproven_rung`, `UNPROVEN_RUNG_REASON`
+   and the `unproven_rung` skip label are unchanged, because they stay true for
+   a strategy outside the set.
+5. The proof is bound to the renderer by a committed golden and a test that
+   regenerates each body byte for byte. A renderer change that alters a proven
+   body means re-proving the rung or removing it from the set, never
+   re-capturing the golden.
+6. Coverage reads the tables inside a query `source` through a new helper,
+   `subquery_tables`. `_definition_tables` is unchanged, so a view over a
+   subquery still governs nothing (MV-D123).
+7. The probe's table list is not widened (no_wire). `evidence.source_tables`
+   (set at `optimization/mv_advisor.py:1434`, sent by
+   `frontend/src/components/auto-optimize/MvAcceptFlow.tsx:104`) and
+   `_mv_source_tables_from_yaml` (`backend/routers/auto_optimize.py:3088`) stay
+   as they are. A joined body whose consent did not ask about its joined tables
+   is refused as uncovered, which fails closed.
+8. Nested on a warehouse is still refused, at both create paths, by `validate`
+   and `_rung_below`, with today's reason, not by `_unproven_rung`.
+9. The unreachable-rung pin keeps every assertion. Only its docstring changes.
+10. No frontend change, so the FIDELITY GATE does not apply. No frontend string
+    claims a joined view cannot be created: the only strategy text in
+    `frontend/src` is the label map in
+    `frontend/src/components/auto-optimize/mvFormat.ts:19-20`.
+11. The live run is the controller's alone. Implementers and reviewers never
+    touch the workspace.
+12. This entry is the record. MV-D117 decision 8 is amended, its join-rung
+    residual is closed, and the numbering note moves to MV-D125.
+
+**The proof.** The harness and its outputs live in the agent store, not the
+repository: `pr332-m7f-proof.py` (with `--dry-run` and `--live`; the dry run
+imports no Databricks SDK and opens no socket) and `pr332-m7f-proof.out`, the
+live output. The repository holds the binding golden,
+`packages/genie-space-optimizer/tests/unit/data/mv_rung_proof_7eeb5f5b.json`
+(named by its base; the bodies are the post-fix render, not what `7eeb5f5b`
+renders), and its test, `tests/unit/test_mv_rung_proof.py`. The golden keeps the proven
+catalog and schema names, because byte identity with the created body is the
+proof.
+
+*Fixtures.* One row list serves the dry run, the expected answers and the live
+inserts. The fact table `m7f_orders` has 6 rows, with SUM(amount) 58.00 and
+COUNT(order_id) 6. One order points at a store with no store row, so the
+`nested` rung must keep it as a NULL group. Each view has two measures over fact
+columns (MV-D8's additive rule): `total_amount = SUM(amount)` and
+`order_count = COUNT(order_id)`. Each rung's fixture carries a trap that the
+rung must defeat:
+
+| Rung | Hops | Trap | If the trap won |
+|---|---|---|---|
+| `direct` | `dim_customer` (SCD2), `dim_product`, both first-level | A non-current duplicate of a customer key. The `is_current` guard in `on` must stop the fan-out. | One segment reads 47.75 instead of 17.25, and the fan-out check fails. |
+| `denormalized` | `dim_customer` → `dim_region` | A duplicate region key with a different name. The depth-2 attribute is read from the copy on the customer table, so the region table must never be joined. | The region groups fan out under the region table's names. |
+| `nested` | `dim_store` → `dim_city`, both keys 4 of 4 distinct | Distinct depth-2 values, so a silently dropped nested join (failure mode A) groups every order under NULL. | `{NULL: 58.00}`. |
+| `subquery_source` | `dim_branch` (SCD2) → `dim_area` | A duplicate current branch key (3 distinct of 5 rows, so `_try_nested` refuses even with the capability), and a non-current row whose `MAX` would win the dedup without the `is_current` guard. | The area groups read East 44.00 and West 51.00, not 25.50 and 32.50. |
+
+*The nine checks.* Each is printed PASS or FAIL per rung:
+1. `body_identical`: the body regenerated from the live counts is byte-identical
+   to the dry run's, and a body that differs is never created.
+2. `create_ddl` (`mv_yaml.py:2108`) succeeds.
+3. `confirm_metric_view`: `_confirm_metric_view`
+   (`backend/services/mv_create.py:366`) returns `True`.
+4. `describe_json_metric_view`: `DESCRIBE TABLE EXTENDED … AS JSON`, read through
+   `_describe_metric_view` (`mv_create.py:834`), reports type `METRIC_VIEW`.
+5. `measures_match_plain_sql`: every `MEASURE(\`m\`)` with `GROUP BY` equals a
+   hand-written plain-SQL answer over the base tables (the Python answer is
+   check 8). The plain SQL never re-types the view's aggregate inside a
+   `MEASURE` query.
+6. `fan_out_smoke`: the grouped measures sum to the fact total, and the count
+   equals the fact row count.
+7. `deepest_attribute_groups`: the deepest attribute has at least two non-NULL
+   values, each with its expected sum.
+8. `trap_defeated`: the view's answers and the plain SQL's answers each equal
+   the Python answer computed from the fixture with the trap rows removed.
+9. `existing_view_matches`: `_existing_view_matches` (`mv_create.py:931`)
+   answers `matches=True, owned_by_caller=True` for the same body.
+
+*The warehouse.* Serverless Starter Warehouse `fda7c3ad00bfac47`, reporting
+`dbsql_version` 2026.36 and `dbr_version` null.
+
+*The first live run* (2026-10-01, at `7eeb5f5b`). All four rungs were PROVEN on
+every check, but `subquery_source` only with a workaround: its fixture also
+requested the intermediate key (`branch_area_id`) as a dimension. The harness's
+probe of the natural request, which asks for no intermediate key, reproduced
+FINDING-1: Unity Catalog refused the CREATE with
+`UNRESOLVED_COLUMN.WITH_SUGGESTION`. The controller escalated, and the owner
+ruled fix_reprove.
+
+*The renderer fix* (pre-squash commit `aa09835b`). `_deduplicated_relation`
+(`mv_yaml.py:869`) now also projects `MAX(<child.left_key>) AS <child.left_key>`
+for every hop whose `parent` is this hop, unless that column is already the
+hop's key (`:888-892`). The child keys join the attribute set before sorting,
+so a key that is also a requested attribute is projected once, and a hop with no
+children renders byte-identically. On the natural request only one line moves:
+the `dim_branch` relation gains `MAX(\`area_id\`) AS \`area_id\``. The
+`direct`, `denormalized` and `nested` bodies are byte-identical to the ones the
+first run proved. `MV_RENDER_VERSION` stays 2
+(`packages/genie-space-optimizer/src/genie_space_optimizer/common/config.py:2730`),
+and its docstring says why (`:2738-2740`): a change confined to the nested or
+subquery_source rung does not move it while no production caller can render
+those rungs, because no stored body carries them.
+
+*The second live run* (2026-10-02T04:25Z, at the pre-squash commit `aa09835b`;
+the binding block "RE-PROOF after Task 2b (aa09835b)" in `pr332-m7f-proof.out`).
+The `subquery_source` fixture uses the natural request, and the FINDING-1 probe
+is gone. The bodies were created live from the M7f renderer before the squash
+made `aa09835b` unreachable; no render function changed after it, and
+`test_mv_rung_proof.py`'s byte-identity test
+(`test_each_proven_body_regenerates_byte_for_byte`) enforces that the squashed
+renderer still produces them. So the golden's `proven_at` records the base
+(`7eeb5f5b`, which stays on the branch) and no renderer commit. All four rungs
+were PROVEN on all nine checks:
+
+| Rung | Verdict | The deepest attribute, as the view and the plain SQL both answered |
+|---|---|---|
+| `direct` | PROVEN | segment: Online 3.25, Retail 37.50, Wholesale 17.25 |
+| `denormalized` | PROVEN | region_name: North 37.50, South 20.50 |
+| `nested` | PROVEN | city_name: Austin 22.25, Boston 32.50, NULL 3.25 |
+| `subquery_source` | PROVEN | area_name: East 25.50, West 32.50 |
+
+*Cleanup.* Each run dropped everything it created in `finally`, views before
+tables (5 views and 8 tables in the first run, 4 and 8 in the second). After
+each run the controller ran `SHOW TABLES IN … LIKE 'm7f_*'` through the same
+profile and warehouse, and both returned 0 rows. The output carries synthetic
+fixture values only, with no host, token or user email.
+
+**What changed in code.**
+- **The proven set.** `MV_PROVEN_JOIN_STRATEGIES` (`common/config.py:2866`)
+  holds `direct`, `denormalized`, `nested` and `subquery_source`, after
+  `MV_JOIN_STRATEGIES` (`:2851`). Its comment cites this entry and the golden,
+  and says a strategy is added only with a live proof and its golden.
+  `_unproven_rung` (`backend/services/mv_create.py:270`) returns
+  `(stored_strategy or MV_JOIN_STRATEGY_DIRECT) not in MV_PROVEN_JOIN_STRATEGIES`.
+  It is called by the run hook at `:595` and at approval at `:1441`, both with
+  `UNPROVEN_RUNG_REASON` (`:152`).
+- **The coverage reader.** `subquery_tables(sql)` (`mv_yaml.py:513`, exported
+  at `:105`) parses with sqlglot in the databricks dialect and returns every
+  table the query reads, each three-part name backtick-quoted, in textual order,
+  a table named twice returned once. It fails closed and returns `None` for:
+  - text that is not exactly one query, or that does not parse;
+  - a query with a CTE anywhere, nested or recursive, or an optimizer hint
+    (`:534`), since the renderer emits neither;
+  - any table that is not a plain three-part name: a two-part or four-part name,
+    `` `a.b`.c ``, a table function or `IDENTIFIER(...)`;
+  - a query that reads no table.
+
+  It parses through `_parse_without_sqlglot_logs` (`mv_yaml.py:2162`), so no
+  record the `sqlglot` logger emits during the parse reaches a handler: sqlglot's
+  warnings quote the text they parse (an invalid JSON path argument, say), and a
+  stored body's literals must not reach a log. A `logging.Filter` on the
+  `sqlglot` logger (`_QuietSqlglotFilter`, `:2137`, installed once at import,
+  `:2172`) drops a record only while a thread-local depth is set, because the
+  backend parses on worker threads; a record on any other thread, or outside
+  the helper, passes. sqlglot 30.0.3 logs only through the `sqlglot` logger and
+  never a child, which a test pins, since a logger's filter does not see a child
+  logger's records.
+
+  `_uncovered_tables` (`mv_create.py:161`) reads a `source` as a table name when
+  `source_table_name` does, the same parse `_definition_tables` uses, and reads
+  any other source, base or join, nested joins included, through
+  `subquery_tables` (`:200`). A `None` refuses. It also refuses a body whose base
+  `source` is empty, and the `_definition_tables` emptiness guard now applies
+  only when no source is a query. `_definition_tables`
+  (`optimization/mv_scoring.py:876`) is unchanged, so a query source still
+  governs nothing (MV-D123).
+- **`_rung_below` refuses any downgrade** (`mv_create.py:104`). It is
+  `_rung_below(downgrade_to)` and returns `bool(downgrade_to)`; the fix wave
+  dropped its unused `stored_strategy` parameter at both callers (`:628`,
+  `:1466`). `validate` sets `downgrade_to` only when the body itself
+  has nested joins and the probe does not grant `mv_nested_joins`
+  (`mv_yaml.py:1742-1743`). So a nested body is refused whatever its stored
+  label says, including one stored as `subquery_source`, which the lift would
+  otherwise have let through on a warehouse. The run hook logs "Revalidation of
+  suggestion … demands join strategy <downgrade> (stored <label>); aborting
+  create (MV-D22)" (`:630-631`), which stays true when the two strategies are
+  the same; both values are from the fixed strategy vocabulary.
+- **Nested on a warehouse.** The warehouse probe reports `mv_nested_joins` as
+  UNKNOWN (`backend/services/mv_entitlement.py:291`), `validate` returns
+  `downgrade_to="subquery_source"`, and `_rung_below` refuses. The run hook
+  records the `rung_below` skip ("re-validation demands a lower join strategy",
+  `mv_create.py:439`); approval returns "re-validation demands a join strategy
+  below the rendered one; not creating (MV-D22)". `_unproven_rung` passes it.
+- **no_wire.** Production builds `MvProfiling` without hops or attributes
+  (`optimization/mv_advisor.py:1074`, `:1412`), so every proposal is still
+  `direct` over one table. The unreachable-rung pin
+  (`tests/unit/test_mv_rungs_unreachable.py`) keeps every assertion, and its
+  docstring now says the rungs are proven and creatable but unproposable until
+  join hops are wired.
+
+**Rulings made during execution** (from the M7f ledger, each with its cost if
+wrong):
+13. After the first live run, the `subquery_source` rung was proven only for a
+    body that selects its intermediate key, and every real depth-2 input renders
+    the natural body that Unity Catalog refused. So the rung was not liftable as
+    rendered, and the controller escalated it to the owner (plan Ruling 3).
+    Cost if wrong: none; the owner decided.
+14. The owner's fix_reprove ruling (see **Decisions**). Cost if wrong: a body
+    stored before the fix would replay the unresolvable relation; none exists,
+    because no production caller can render the rung.
+15. The proven set is all four rungs. Cost if wrong: a rung the proof did not
+    fully cover is creatable. This is mitigated because production passes no
+    hops (the unreachable pin), and nested stays refused on a warehouse.
+16. `subquery_tables` refuses any query containing a CTE or an optimizer hint,
+    instead of scoping CTE names; the renderer emits neither. This replaced a
+    first version that matched CTE names across the statement, ignoring Spark's
+    scoping, which failed open. Cost if wrong: a future renderer that emits a
+    CTE is refused at create until the helper learns scoping, which fails closed
+    and loud.
+17. The uncovered table is named only in the list `_uncovered_tables` returns,
+    never in a log line or a reason (the firewall). This deliberately deviates
+    from the plan's "names the table". Cost if wrong: none; the reason text is
+    the constant it always was.
+18. `_rung_below` refuses any `downgrade_to`, because `validate` sets it only
+    when the body itself needs an ungranted capability, so the stored label is
+    not trusted. Cost if wrong: none found; every proven golden validates with
+    no downgrade except nested on a warehouse.
+19. The golden keeps the proven catalog and schema names
+    (`serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold`), because
+    byte identity with the created body is the proof, and the names already
+    appear in this playbook and `scripts/e2e/mv_advisor_e2e.md`. Cost if wrong:
+    a rename of every name in the golden plus a re-capture, with no re-proof,
+    since names are inputs.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten):
+- MV-D117 decision 8: the create paths refuse only a strategy outside the proven
+  set.
+- MV-D117's residual "The live UC proof of the join rungs": closed.
+- The MV-D36–MV-D97 numbering note: the next number free on both lines is
+  MV-D125. `origin/ontology` uses nothing above MV-D109.
+
+**Unchanged.**
+- Every route, table, column, response field, job task and job parameter, and
+  `backend/models.py` with its TypeScript mirrors. No frontend file changes.
+- `MV_RENDER_VERSION`, the direct, denormalized and nested renders, and every
+  renderer function except `_deduplicated_relation`.
+- `_definition_tables`: a view over a query source governs nothing (MV-D123).
+- `_unproven_rung`'s name, `UNPROVEN_RUNG_REASON` and the `unproven_rung` skip
+  label, and the skip order.
+- The probe's table list (Ruling 7).
+- Access: no access level, gate or route moves, and the four create invariants
+  hold (the OBO identity, a freshly re-verified consent, downgrade-never-upgrade,
+  and the consented schema). Coverage is stricter for a query source, not
+  looser.
+
+**What users see.** Nothing changes today. Every proposal is still a `direct`
+body over one table, because no production caller passes join hops. Once join
+hops are wired, a proposal at a proven rung can be created, a nested proposal on
+a SQL warehouse is refused as needing a lower join strategy, and a joined
+proposal whose access check did not cover every table it reads is refused as
+uncovered.
+
+**Tests** (+31 backend, +47 GSO with the fix wave; the floor moves from 1666 +
+2174 to 1697 + 2221; pytest warnings stay at 4, and vitest stays at 790).
+- The renderer fix (+5 GSO, `test_mv_yaml.py:500-587`):
+  - the natural depth-2 request renders a body in which every `alias.col` of
+    every `ON` is projected by that alias's relation, checked with sqlglot, with
+    the pre-fix body as the check's control;
+  - a depth-3 chain projects each middle key;
+  - a child key that is also a requested attribute is projected once;
+  - a leaf relation is unchanged byte for byte.
+- The coverage reader (+25 GSO, `test_mv_yaml.py:1521-1612`):
+  - the subquery golden's `source` returns its tables;
+  - backtick-quoted three-part names keep their case, spaces, hyphens and a
+    doubled backtick;
+  - a nested `FROM (SELECT …)` table and an `IN (SELECT …)` table are returned,
+    and a table named twice in different case is returned once;
+  - six CTE refusals (a nested, a recursive and a shadowing CTE among them), two
+    hint refusals, and a plain comment that is still read;
+  - twelve `None` cases: two-part, a two-part join beside a three-part table,
+    `` `a.b`.c ``, four-part, `range(10)`, `IDENTIFIER(...)`, unparsable,
+    `SELECT 1`, `VALUES`, two statements, a bare table name, and empty.
+- The coverage reader's quiet parse (+5 GSO, the fix wave,
+  `test_mv_yaml.py:1616-1709`):
+  - the malformed `get_json_object` path with a sentinel literal: no record
+    containing it reaches the root handler (`caplog`, with propagation) or a
+    handler on the `sqlglot` logger, and the helper still returns the table;
+  - the control: the same input through `sqlglot.parse_one` still logs the
+    literal, after a refused parse inside the helper;
+  - another thread's `sqlglot` record passes while the helper parses;
+  - the filter is installed once however often the installer runs;
+  - every `getLogger` in sqlglot 30.0.3 names `"sqlglot"`.
+- Coverage at both create paths (+14 backend; `test_mv_create.py:3169-3254`,
+  `test_mv_create_at_approval.py:1599-1641`):
+  - `_uncovered_tables` over the golden body: covered, one inner table missing
+    (named in the returned list), and unparsable;
+  - a query as the source of a nested join, missing and covered;
+  - an unreadable table inside a query (two-part, a table function, no table),
+    and a query join under an empty base source, all refused;
+  - the run hook and approval: a covered subquery body is created, one with an
+    inner table missing is refused with `UNCOVERED_TABLES_REASON` and no SQL or
+    table in the log or reason, and an unparsable one is refused;
+  - the control at both paths: `_definition_tables` returns `()` for that body.
+- The proven set at both create paths (+17 backend; `test_mv_create.py:556-698`,
+  `:1546`, `test_mv_create_at_approval.py:446-544`):
+  - an unknown strategy (`"cross"`) is refused with `UNPROVEN_RUNG_REASON`,
+    replacing the three-case direct-only pin in each file;
+  - each proven non-direct strategy is created from its golden body with a
+    covering consent (denormalized and subquery_source on the warehouse probe,
+    nested on a granted probe);
+  - a missing strategy reads as `direct`;
+  - a nested body on a warehouse probe is refused by `_rung_below`, not by
+    `_unproven_rung`, stored as `nested` and, in the fix wave, as
+    `subquery_source`, and the final-review fix wave pins its log line, with no
+    "below" in it;
+  - `_unproven_rung` passes `None`, `""` and the four strategies and refuses
+    `"cross"`;
+  - the probe's capability rows resolve as the pins assume (UNKNOWN on a
+    warehouse, GRANTED on DBR 17.3);
+  - `test_rung_below` gains a label-mismatch case, and its
+    `[subquery_source-subquery_source]` case flips from False to True: a
+    downgrade equal to the stored label held only while the label was trusted.
+    In the final-review fix wave the label left the signature, and the test
+    keeps four cases over `downgrade_to` alone: `subquery_source` and
+    `denormalized` refuse, `None` and `""` pass.
+- The golden binding (+12 GSO, `test_mv_rung_proof.py:96-138`): each body
+  regenerates byte for byte with its strategy; the goldens' strategies equal
+  `MV_PROVEN_JOIN_STRATEGIES`; the direct golden has first-level joins; each
+  golden records the live run and the nine checks, and no renderer commit; the nested golden validates
+  only with the capability granted and is downgraded to `subquery_source`
+  without it; and the golden carries no host, token or email.
+
+**Residuals (not fixed here).**
+- Wire join hops from the space's join specs into the advisor's `MvProfiling`.
+  That lifts the unreachable-rung pin and makes the rungs proposable (tracking
+  item).
+- Widen the probe's table list to every table the body reads (Ruling 7). Until
+  then a joined body whose consent did not ask about its joined tables is
+  refused as uncovered (tracking item, with the wiring).
+- Nested on a SQL warehouse: the proof shows the warehouse executes the nested
+  body, but MV-D8 keeps it refused while `mv_nested_joins` is UNKNOWN there. A
+  later ruling may rely on this proof.
+- The subquery NOTE does not say that `MAX` also picks one join key per dedup
+  key. Changing it moves the stored comment, so it needs a re-proof.
+- `_deduplicated_relation` dedupes its projected columns case-sensitively, as it
+  already did for attributes, so one column spelled in two cases would project
+  twice.
+- The duplicate current branch row has an identical payload to its twin, so
+  per-column `MAX` mixing values from two different current rows that share a
+  key is not exercised live.
+- The struct render's live acceptance is still unproven: no fixture column is a
+  struct (every fixture column is `INT`, `DECIMAL`, `STRING` or `BOOLEAN`), so
+  MV-D117's struct residual stays open.
+- sqlglot's own logger. Only `subquery_tables` parses quietly. The other sqlglot
+  call sites in the metric-view modules have the same exposure, because a
+  sqlglot warning can quote a literal from the text it parses:
+  `parse_statement` and `_parse_expression`, which the fingerprint and
+  canonicalize paths use, and `source_table_name`
+  (`optimization/mv_fingerprint.py:389`, `:401`, `:815`); and in `mv_yaml.py`
+  `_qualify_source_columns`, `_referenced_columns`, `_is_simple_aggregate`,
+  `_validate_fields` and `_parse_condition` (`:994`, `:1014`, `:1030`, `:1908`,
+  `:2056`). Sqlglot calls outside these modules share the exposure too. M7f
+  does not change any of them. `_parse_without_sqlglot_logs` is the seam to
+  route them through.
+
+### Prompt 0.5 — Amend the design docs (run before Phase 1)
+
+```
+Per docs/design/mv-advisor-gap-report.md and decisions MV-D1–MV-D6 recorded in the
+playbook, add an "Implementation deltas" appendix to
+docs/design/metric-view-suggestion-engine-pov.md that supersedes the conflicting
+parts of Part 7: the two-run consent model (MV-D1) replacing single-run
+create-and-attach; phases-in-optimize-task replacing the mv_gate/mv_write_gate/
+mv_baseline task DAG and the task-values contract (7.2, 7.6, 7.7, 7.7.1); the
+dict patch model with new PATCH_TYPES replacing field_path/new_value (7.8 step
+6); genie_opt_artifacts replacing the Volumes DDL artifact path; POST
+/api/auto-optimize/trigger replacing /runs; six genie_opt_* tables (extended)
+replacing "~15 Delta tables"; MLflow tracing-only. Do not rewrite the
+superseded sections — mark each with a one-line pointer to the appendix so the
+original reasoning stays legible. Keep every product-behavior requirement
+intact: consent scoping and re-verification, downgrade-never-upgrade, the
+suggest-only output contract (7.5), detach-never-drop, the firewall, and the
+"Lift not measured" label.
+```
+
+### Prompt 0.6 — Reconcile decision numbering in the appendix
+
+```
+docs/design/mv-advisor-playbook.md is now committed and is the defining source
+of the MV-D1..MV-D6 decision numbering (three-namespace note near the top).
+Update Appendix A of the POV: replace the sequentially numbered deltas'
+"needs reconciliation" markers with their MV-D identifiers per the playbook;
+keep the three-namespace disambiguation table; namespace-qualify every
+reference to the other two numberings ("GSO v2 D9", "applier.py D1–D3")
+everywhere in the appendix. No other content changes. VERIFY: every MV-D
+citation in the appendix resolves to a matching entry in the playbook, and no
+bare D<number> remains in the appendix outside the disambiguation table.
+```
+
+
+---
+
+## Phase 1 — Backend foundations
+
+### Prompt 1 — Data model and migrations
+
+```
+Per the gap report: persistence uses genie_opt_* Delta tables created in
+optimization/ddl.py with name constants in common/config.py and additive-column
+migrations via ADDITIVE_COLUMN_MIGRATIONS. Follow that mechanism exactly — no
+new migration framework, no Lakebase for these (note gso_lakebase synced reads
+are hard-disabled).
+
+Add three tables per POV Parts 4 / 7.7.1 as amended by the deltas appendix:
+1. genie_opt_mv_candidates: full proposal payload (suggestion_id, type,
+   confidence_score, tier, target_space_id, proposed_object, score_components,
+   evidence, provenance, dedup_fingerprint, alternatives, conflicts) plus
+   run_id, requested_mode, effective_mode, created_at, decided_by, decision,
+   decided_at, suppressed_until, approved_for_rerun (bool — MV-D1 hinges on it).
+2. genie_opt_mv_consents: probe_id, run_id, granted_by, granted_at,
+   target_catalog, target_schema, materialize_consented, probe_results,
+   verdict, reverified_at_trigger, downgrade_reason.
+3. genie_opt_mv_created_objects: run_id, suggestion_id, full_name, created_by,
+   created_at, attach_patch_id, baseline_eval_run_id, post_attach_eval_run_id,
+   status (CREATED|ATTACHED|DETACHED|DROPPED), on_regression_action.
+
+Match the existing tables' column-type and naming conventions (read two of the
+six current genie_opt_* definitions first and mirror them). Add typed accessors
+following the repo's existing persistence-helper pattern. Idempotency key:
+sha256(space_id | canonical_measure_expr | sorted_source_set) enforced as
+upsert-on-conflict at the accessor level. Pytest round-trip coverage per table,
+in the GSO package's test layout (pythonpath=["src"], existing fixtures).
+```
+
+### Prompt 2 — Extend the existing eval-run seam
+
+```
+The gap report confirms the Beta eval APIs are already isolated behind exactly
+the seam the design wants: the EvalRunner protocol and OfficialBenchmarkRunner
+in optimization/eval_runner.py, with poll/timeout/page settings in
+common/config.py. EXTEND that module; do not create a parallel adapter, and do
+not change the existing protocol methods' signatures (the unified loop depends
+on them).
+
+Add:
+- run_subset(space_id, question_ids, label): a labeled eval run over a question
+  subset, reusing the existing polling/terminal-status handling.
+- lift_report(pre_run, post_run, question_subset): excludes needs-review
+  questions from BOTH numerator and denominator; returns delta_affected,
+  delta_suite, regressed_question_ids, needs_review_count.
+- Assessment reasons are ALREADY surfaced — genie_eval_taxonomy.py, consumed
+  via map_eval_detail_to_row (eval_runner.py). CONSUME that taxonomy; do not
+  build a second one. If lift_report or run_subset needs a reason-derived
+  grouping the taxonomy does not expose, extend the taxonomy module itself
+  and say so in VERIFY.
+- If useful for cross-run history, wire genie_list_eval_runs (present in the
+  SDK, currently uncalled in this repo) behind the same seam.
+
+lift_report's return shape is a CONTRACT, not an implementation detail: MV-D7
+deferred genie_opt_mv_created_objects.lift_report_json to Prompt 7, and that
+column stores exactly this structure. Define it once here as a typed
+dataclass with a to_dict(); Prompt 7 persists to_dict() verbatim rather than
+reshaping. Name the fields in VERIFY so Prompt 7's PLAN can cite them.
+
+Respect the existing rate posture (poll 20s / timeout 2700s per config) and
+the ~20 q/min workspace ceiling: subset runs serialized, never concurrent.
+Contract tests with mocked SDK responses for every terminal status and every
+assessment reason. There is NO test_eval_runner.py today; the nearest files
+(test_eval_timeouts.py, test_evaluation_extract_json.py) are narrowly scoped
+by name. Create tests/unit/test_eval_runner.py as the seam's own contract-test
+home and leave test_eval_timeouts.py to its narrower job.
+```
+
+### Prompt 3 — SQL fingerprinting engine
+
+```
+Per POV Parts 2 and 3, build the sqlglot-based canonicalization/fingerprinting
+module (dialect="databricks"):
+
+- canonicalize(sql): alias renaming by first appearance, AND-predicate flatten
+  + sort, literal normalization to placeholders, case/whitespace stripping.
+- extract_measures(sql): recurring aggregate expressions (SUM/COUNT/AVG/MIN/MAX,
+  incl. SUM(CASE WHEN ...)), each with source columns and tables.
+- extract_dimensions(sql): GROUP BY sets; extract_filters; extract_join_keys.
+- fingerprint(expr) -> sha256 per the POV's dedup_fingerprint format.
+- classify_shapes(corpus): tag recurring patterns the generator consumes —
+  RATIO (SUM(x)/SUM(y) over the same grain -> emit atomic measures + a
+  MEASURE()-composed derived measure), CONDITIONAL_COUNT
+  (SUM(CASE WHEN c THEN 1 END) -> COUNT(1) FILTER (WHERE c)), and
+  PCT_OF_TOTAL (a windowed total in the denominator -> Fixed-LOD dimension
+  + ANY_VALUE(), NEVER MEASURE()/MEASURE() which always yields 1.0).
+- corpus_scan(iterable of (sql, provenance)) -> fingerprints with recurrence
+  counts, distinct provenance ids, first/last seen.
+- FIREWALL: canonicalized output must contain NO literal values; add an
+  assertion test that a query containing an email/SSN-shaped literal produces
+  a fingerprint with placeholders only.
+Test corpus: 15+ TPC-H-style queries including the discounted revenue pattern
+SUM(l_extendedprice * (1 - l_discount)) with alias/whitespace/predicate-order
+variants that MUST collapse to one fingerprint, plus near-misses that must NOT.
+```
+
+### Prompt 4 — Scoring, dedup, and proposal generation
+
+```
+Per POV Part 3, implement the scoring engine:
+
+- Score = 100 * (0.35*L + 0.30*Y + 0.20*S + 0.15*D), weights in config not code.
+- L: Jaccard of column sets from lineage overlap (input: precomputed overlap
+  data — define the input contract, do not query system tables from this module).
+- Y: normalized recurrence * corpus-internal AST-equivalence flag (did the
+  counted statements genuinely collapse to one canonical form). CORRECTED under
+  MV-D11(a): an earlier wording said "against existing MV measures", which
+  contradicts POV Part 3's first worked example (Y = 0.95 with no MV
+  equivalent). Equivalence against governed MVs belongs to the dedup gate
+  below, which blocks rather than damps. Existing MV YAML still parses from
+  DESCRIBE ... AS JSON view_text — for the gate, not for Y.
+- S: max cosine vs MV field text; make the embedding client injectable with a
+  deterministic fake for tests (FMAPI gte-large-en in prod; note gte does not
+  normalize — normalize vectors in our code).
+- D: frequency*cost*breadth normalized, with half-life decay
+  D_eff = D * 0.5^(age_days/30).
+- Tiers: HIGH >= 75, MEDIUM 50–74, LOW 25–49, suppress < 25.
+- Dedup gate per POV: exact fingerprint match on an existing MV -> block with
+  pointer; partial -> alternatives[]; fingerprint matching an MV AND a
+  conflicting instruction definition -> state CONFLICT, never a suggestion.
+- Emit the full proposal payload (POV Part 4 JSON) and persist via Prompt 1
+  accessors.
+- Reproduce BOTH worked examples from POV Part 3 as exact-value unit tests
+  (80.0 -> HIGH, 58.75 -> MEDIUM).
+```
+
+### Prompt 5 — Entitlement probe and consent service
+
+```
+Per POV Part 7.3.1 and Part 5, implement the entitlement probe + consent:
+
+- probe(catalog, schema, space_id, source_tables) reads EFFECTIVE privileges
+  for the SIGNED-IN USER, using require_obo_workspace_client from
+  backend/services/auth.py. This is greenfield: the existing
+  GET /permissions/{space_id} probes the SERVICE PRINCIPAL's access and must
+  not be reused or extended for this. Checks: USE CATALOG, USE SCHEMA,
+  CREATE TABLE on schema, SELECT on each source table, CAN MANAGE on the
+  Genie Space. NEVER perform a trial CREATE.
+- Returns the structured probe result exactly per POV 7.3.1 JSON, including
+  remediation_sql GRANT statements with the principal filled in.
+- Also returns CAPABILITY rows alongside the privilege rows, per MV-D8: DBR
+  17.3+ create/edit, 17.1+ nested joins, 18.1+ fields/agg/window offset.
+  Prompt 5.5's generator reads them to pick a join strategy, so if the probe
+  omits them the generator either invents them or emits YAML the runtime
+  cannot plan. Detect from current_version(); a SQL warehouse reports only
+  dbsql_version and there is no published DBSQL-to-DBR mapping, so those rows
+  are UNKNOWN, never a guess. UNKNOWN resolves in two directions: for the two
+  optional capabilities it means unavailable (the generator steps down the
+  ladder), while for create/edit it never blocks authorization — no GRANT can
+  satisfy a runtime floor, and only the write itself can prove it.
+- consent record: create/persist per Prompt 1 model; verify(consent, fresh_probe)
+  is called by the TRIGGER flow (Prompt 9) immediately before any OBO create —
+  any mismatch returns effective_mode=suggest_only with downgrade_reason.
+- FastAPI route: POST under the existing /api/auto-optimize router prefix
+  (e.g. /api/auto-optimize/mv/probe), OBO, returning the probe result. Follow
+  backend/routers/auto_optimize.py conventions exactly.
+- Tests: all-granted, each-single-privilege-missing, schema-not-found, revoked-
+  between-config-and-trigger (verify() downgrade), capability rows for a DBR
+  above and below each floor plus the warehouse-only UNKNOWN case, and an
+  assertion that no code path issues DDL.
+```
+
+### Prompt 5.5 — YAML generator and static validator (MV-D8)
+
+```
+Per the generation quality standard in POV Part 4 (MV-D8 in the playbook
+register), add mv_yaml.py to the GSO package: the ONLY place metric view YAML
+is rendered, plus its static validator. Both the advisor (Prompt 6) and the
+backend create path (Prompt 9) call these; neither renders YAML itself.
+
+generate(candidate, profiling) rules — all normative:
+- version "1.1" quoted. Never emit: name, time_dimension, top-level
+  window_measures, join_type, or table inside joins. 'on' key quoted.
+- Multi-hop decision ladder, chosen from GSO profiling (join-key uniqueness,
+  denormalized-column availability, warehouse DBR): (1) denormalized column on
+  the first-hop dimension; (2) nested joins ONLY if DBR >= 17.1 AND every
+  intermediate key is proven 1:1 (nested columns referenced as
+  parent_join.child_join.column); (3) subquery-source pre-join with explicit
+  is_current guards and uniqueness enforced in the subquery. Record which rung
+  was chosen and why on the proposal (join_strategy + evidence).
+- rely.at_most_one_match: true only when profiling proves the dimension key
+  unique; omit otherwise (it is unvalidated at runtime and fan-out inflates
+  SUM/COUNT).
+- SCD2: any joined dimension with an is_current-style column gets
+  AND {dim}.is_current = true in the join.
+- Additive measures must aggregate source (fact) columns; a measure
+  aggregating a joined dimension column is rejected into the CONFLICT path.
+- Shapes from Prompt 3 classify_shapes: RATIO -> atomic measures +
+  MEASURE()-composed derived measure; CONDITIONAL_COUNT -> COUNT(1) FILTER
+  (WHERE ...); PCT_OF_TOTAL -> Fixed-LOD dimension (SUM(x) OVER ()) read via
+  ANY_VALUE(), never MEASURE()/MEASURE().
+- format.type from the closed set {byte,currency,date,date_time,number,
+  percentage} — reject percent/decimal/integer at generation time.
+- Structured comment: PURPOSE / BEST FOR / NOT FOR / DIMENSIONS / MEASURES /
+  SOURCE / JOINS / NOTE. BEST FOR = PARAPHRASED question intents (never
+  verbatim benchmark text — extend the leakage firewall check to reject any
+  comment line that matches a benchmark question at >=0.90 normalized
+  similarity). NOT FOR cross-references the adjacent MV from the dedup gate
+  when one exists. 3-10 synonyms per field, <=255 chars each.
+
+validate(yaml_text) — static, no warehouse:
+- Parses; unsupported-field lint; format-type lint; transitive-join detector
+  (port the left-head-of-'on' check: the left side of every first-level join's
+  'on' must resolve to source, and every deeper level to its parent alias);
+  synonyms limits; comment structure present; capability check against the
+  probe's runtime rows (downgrade nested->subquery rather than emit
+  unplannable YAML).
+
+Tests: golden YAML per ladder rung; a transitive sibling join MUST be caught;
+percent/decimal MUST be rejected; PCT_OF_TOTAL must not render as
+MEASURE()/MEASURE(); a benchmark-verbatim BEST FOR line MUST be rejected;
+round-trip parse with sqlglot(dialect="databricks") on the wrapping DDL.
+
+For this prompt only, you MAY read the metric-views-patterns skill at
+/Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+for reference detail (composability-patterns.md, level-of-detail.md,
+yaml-reference.md, validation-checklist.md). It is a SOURCE, not an authority:
+where it disagrees with MV-D8 or POV Part 4's generation standard, the in-repo
+documents win, and anything you rely on gets restated in-repo rather than cited
+by external path.
+```
+
+*Why the skill pointer was scoped to this prompt, and why it no longer is.*
+The pointer was originally confined to Prompt 5.5 on the reasoning that a
+standing named exception would re-introduce what the in-repository context rule
+exists to prevent — an unversioned dependency on one machine's filesystem,
+invisible to a fresh clone and to every teammate running these prompts — and
+that the rule already carried the right mechanism in *"unless the prompt names
+them explicitly."* That call was **reversed** in the METRIC VIEW BEST PRACTICES
+bullet in the standing preamble above, which promotes the same folder to a
+standing named exception in both rules copies, on the reasoning that YAML, join
+and level-of-detail semantics were being re-derived from scratch every prompt.
+The trade was accepted deliberately and bounded three ways: the exception is
+the only one, it never outranks repo reality or the gap report or MV-D8, and a
+missing path is a proceed rather than a block.
+
+Two things the reversal does not change. The skill remains a SOURCE and not an
+authority, so anything relied on still gets restated in-repo rather than cited
+by external path — the substance is already absorbed and versioned as MV-D8 and
+POV Part 4's generation standard. And the trigger still does not fire before
+this prompt: Prompt 4 confirmed scoring authors no YAML and only consumes
+metric-view fields `metric_view_catalog` has already parsed.
+
+---
+
+## Phase 2 — Job integration
+
+### Prompt 6 — Advisor phase inside the optimize task
+
+```
+Per MV-D3 and the gap report: no new job tasks, no wheel entrypoints, no task
+values. Add an mv_advisor PHASE invoked from jobs/run_optimize.py, in a new
+module under the GSO package following its existing module layout.
+
+- Gating: read enable_metric_view_suggestions via dbutils.widgets, following
+  the pattern in jobs/run_intake_and_snapshot.py:81-119. If not "true"
+  (STRING compare), log via the jobs/_helpers.py logging helpers and return
+  immediately — zero cost when off.
+- Placement: after the unified loop completes (the advisor consumes
+  iteration-0 generated SQL and does not need to block optimization) — read
+  unified_loop.py around the iteration-0 baseline (2854-2859) to find where
+  per-question generated SQL is persisted, and consume it from Delta by
+  run_id, NOT from in-memory state.
+- Pipeline: load iteration-0 generated SQL + benchmark SQL from the
+  genie_opt_* run tables -> corpus_scan (Prompt 3) -> estate MV index via
+  DESCRIBE ... AS JSON over in-scope schemas -> score + dedup (Prompt 4) ->
+  persist to genie_opt_mv_candidates -> render YAML EXCLUSIVELY through
+  mv_yaml.generate + validate (Prompt 5.5; the advisor never hand-builds
+  YAML) -> write the DDL artifact (one SQL text blob, header comments citing
+  evidence, NO literals — extended leakage.py scan, including the
+  benchmark-verbatim comment check) as a row in genie_opt_artifacts, matching
+  how existing artifacts are written. Persist join_strategy and its evidence
+  on each candidate.
+- The advisor ONLY proposes, in every mode.
+- Isolation per the rules: the whole phase in try/except; on any exception,
+  persist a status row (phase=mv_advisor, status=FAILED, reason) and return
+  normally. Add a test proving an advisor exception does not propagate to the
+  optimize task.
+- Unit tests with a fixture corpus (reuse metric_view_only_space and the GSO
+  conftest fixtures where they fit); golden-file test for the DDL artifact.
+```
+
+### Prompt 7 — Attach patch type and lift-measurement phase
+
+```
+Per MV-D1 the job never creates UC objects; it receives the identifier of a
+metric view the backend already created under OBO. Per MV-D2/MV-D3, implement:
+
+A. New patch type (the applier fix):
+- Register mv_attach_data_source in PATCH_TYPES in common/config.py, classified
+  HIGH_RISK, and implement a REAL applier action in optimization/applier.py that
+  mutates data_sources.metric_views in the space config — read
+  _apply_action_to_config (:3409) and the Lever-2 MV no-op (:3914-3932) first,
+  and route the new type through a genuine mutation, not the render-only path.
+  Patch dict shape stays type/target/new_text/old_text.
+  [MV-D16(a), superseding this prompt's original text] Do NOT add it to the
+  unified-loop allowlist. _ALLOWED_PATCH_TYPES (unified_loop.py:79-93) is the
+  LLM-PROPOSAL surface, not the lever surface: apply_patch_set never reads it,
+  and listing attach there would let the loop's LLM invent a UC identifier and
+  attach it with no consent row. The attach phase calls apply_patch_set direct.
+  [MV-D16] mv_remove_raw_table is DROPPED. Use the existing remove_table type
+  for optional table replacement — already HIGH_RISK, already rendered and
+  applied, already outside the LLM allowlist.
+- Tests: apply -> serialized_space contains the identifier; snapshot revert
+  removes it — via applier.rollback against apply_log["pre_snapshot"], NOT
+  integration/revert.py, which is a backend surface whose active-run guard
+  rejects mid-run by design [MV-D16]; render_patch output is reviewable.
+
+B. mv_attach + mv_lift phases, ordered AFTER iteration-0 completes and BEFORE
+   the first lever patch — INSIDE run_unified_optimization_loop, not before the
+   call [MV-D16(b), superseding this prompt's original "BEFORE the unified loop"
+   wording, which contradicted step 3 below because iteration-0 lives inside the
+   loop at unified_loop.py:2854-2859; attaching before iteration-0 would make the
+   baseline corpus post-attach SQL and contaminate the evidence Prompt 6's
+   advisor fingerprints]:
+1. Read job widgets: mv_attach_views (JSON list of identifiers), mv_consent_id.
+   Empty -> skip both phases silently.
+2. Validate: the consent row exists in genie_opt_mv_consents with verdict
+   SUFFICIENT and reverified_at_trigger set; each identifier exists in
+   genie_opt_mv_created_objects with status CREATED and was created_by the
+   consent's granted_by. Any mismatch -> persist status row, skip (never
+   attach an object the trigger flow didn't just create). [MV-D16] The
+   mv_consent_id parameter value IS the probe_id — genie_opt_mv_consents is
+   keyed on probe_id and there is no consent_id column.
+3. Iteration-0 baseline runs first (existing behavior — do not reorder it).
+4. Apply the mv_attach patch(es) via apply_patch_set.
+5. mv-lift eval: run_subset over the AFFECTED question ids recorded on the
+   proposal via the Prompt 2 seam, labeled "mv_lift"; store lift_report vs
+   iteration-0 and both eval_run_ids on genie_opt_mv_created_objects; set
+   status ATTACHED. lift_report_json persists LiftReport.to_dict() verbatim.
+6. On regression per lift_report: revert to the pre-attach snapshot (detach)
+   via applier.rollback against apply_log["pre_snapshot"] [MV-D16], set status
+   DETACHED with the report attached. NEVER drop the UC object.
+   Sandbox mode is out of scope for the job (sandbox creation/teardown is a
+   backend concern under MV-D1).
+7. The lever attempts then run on whatever foundation now exists.
+Each phase try/except-isolated with Delta status rows; tests cover happy path,
+missing consent row, identifier/creator mismatch, regression->DETACHED, and
+that a phase failure leaves the loop running.
+```
+
+### Prompt 6c — Harvest the curated half of the corpus
+
+*Sequenced after Prompt 7 and not yet run. Drafted during the Prompt 7 review, from a gap the review found rather than from the original plan: POV Part 2 calls "Optimized-space harvest" the highest-value signal and TL;DR bullet 2 calls an optimized space the single highest-precision seed, but Prompt 6's pipeline loads only iteration-0 generated SQL and benchmark SQL. The generated half is mined; the curated half is not. Prompt 7 closed the safety-critical slice of this — trusted assets now reach the CONFLICT gate — which is deliberately a different thing from seeding candidates from them.*
+
+```
+Per POV Part 2 ("Optimized-space harvest") and the MV-D9 rule on refreshing what
+the gap report quotes. Prompt 6's corpus is iteration-0 generated SQL plus
+benchmark SQL; the curated half of the space is unmined. Extend the corpus, do
+not add a second pipeline.
+
+SOURCES, all read from the APPLIED serialized_space and the run's patch rows —
+never from a fresh Genie GET, and never from in-memory loop state:
+- instructions.example_question_sqls (trusted-asset SQL). NOTE: Prompt 7 already
+  reads this field for the CONFLICT surface via
+  mv_scoring.trusted_asset_definitions. Reuse that reader or extend it; a second
+  reader of the same field is how the two start disagreeing about what a
+  trusted asset defines.
+- GSO join specs.
+- TVF / SQL function definitions.
+- existing data_sources.metric_views entries.
+- the run's genie_opt_patches rows, so measures GSO itself introduced count as
+  curated rather than generated.
+
+ROUTE EVERYTHING THROUGH mv_fingerprint's EXISTING EXTRACTORS. extract_measures,
+extract_dimensions, extract_filters, extract_join_keys, canonicalize_expr. No
+second parser, no second canonicalizer, no local normalization of a column name
+or a date-part unit. MV-D10's invariants (a)(b)(c) are established and must not
+be re-derived: one measure is one row, and both fingerprint levels have to keep
+agreeing about that.
+
+EVIDENCE TIERING — this prompt must DECIDE MV-D17, which is recorded as open.
+Y weights every corpus occurrence equally, so harvesting curated sources into the
+same corpus makes 60 occurrences of generated SQL outscore 3 occurrences of
+trusted-asset SQL — inverting the POV's own evidence hierarchy. Read MV-D17 for
+the three options (provenance multiplier inside Y / separate signal with its own
+weight / tier floor for curated-sourced candidates) and the cost of each,
+including what a separate signal does to the MV-D15 coverage arithmetic. Register
+the choice as MV-D17 in the same commit, with the reasoning, and pin it with a
+test that a curated-sourced candidate with few occurrences is not outranked by a
+high-recurrence generated one.
+
+FIREWALL BOUNDARY — state it in the code, not only here. Benchmark SQL and
+trusted-asset SQL are legitimate FINGERPRINT input: canonicalization erases
+literals, and MV-D10(b) gives the mechanically-auditable invariant (no quote
+character survives a canonical form). They are NOT legitimate content for a
+shipped metric view. The BEST FOR echo check in mv_yaml already guards that
+boundary and 6c must not weaken it: no harvested text may reach a comment, a
+display_name, or a synonym, and provenance travels as ids. Extend
+optimization/leakage.py if a new surface needs covering rather than adding a
+second scanner. Add a property test over the harvested corpus asserting no quoted
+literal survives, mirroring
+test_no_corpus_statement_leaks_a_quoted_literal.
+
+VERIFY: every source above reaches corpus_scan through an existing extractor
+(asserted by test, not by inspection); MV-D17 decided and registered with its
+pinning test; the echo check still fails a candidate whose comment echoes a
+benchmark question; gap report refreshed per MV-D9; GSO and backend suites green.
+```
+
+### Prompt 8 — Job parameter wiring (no DAG changes)
+
+```
+Per MV-D3/MV-D5: the four-task DAG is untouched. This prompt only adds parameters,
+in lockstep, to all four places the gap report identified:
+
+- Root databricks.yml (job gso-optimization-runner, parameters block :74-109)
+- packages/genie-space-optimizer/databricks.yml (mirror)
+- scripts/deploy_lib/gso_job.py (JOB_PARAMETERS, :87-103)
+- backend/job_launcher.py (the run_now parameter map, :105-125)
+
+New parameters (string defaults, matching the 15 existing ones' style):
+enable_metric_view_suggestions="false", mv_action_mode="suggest_only",
+mv_attach_views="" (JSON list), mv_consent_id="", mv_min_confidence="75".
+(No mv_target_* in the job — the target lives on the consent row; no
+mv_materialize in the job — materialization is a backend/OBO concern under MV-D1.)
+
+- Add the corresponding dbutils.widgets reads to jobs/run_optimize.py per the
+  existing widget pattern.
+- Validate with `databricks bundle validate` for BOTH bundles.
+- Extend test_phase7_job_dag.py in the spirit of its existing assertions: the
+  new parameters exist in all mirrors with identical defaults; still exactly
+  four tasks; still no condition_task anywhere; still no taskValues anywhere.
+- ALSO OWNED HERE (assigned during Prompt 6, from the signal recon): a FOUR-WAY
+  mirror test. Today's pin is only two-way — test_deploy_lib.py:488
+  (test_gso_job_settings_mirror_package_bundle_4task) checks gso_job.py against
+  the package bundle, with llm_model as the sole sanctioned exception. The ROOT
+  databricks.yml and backend/job_launcher.py's run_now map are UNPINNED, so a
+  parameter can be added to two mirrors and silently omitted from the other two.
+  That failure is invisible at runtime: run_optimize.py declares every widget
+  with dbutils.widgets.text(<name>, <default>) BEFORE reading it, so an omitted
+  job parameter resolves to the notebook default instead of raising. The advisor
+  gate inherits that shape — enable_metric_view_suggestions defaults to "false",
+  so a missing mirror silently disables the feature rather than failing loudly.
+  Extend the pin to all four mirrors, keeping llm_model's exception explicit.
+  (Prompt 6 added the enable_metric_view_suggestions widget read to
+  run_optimize.py ahead of this prompt, since the phase cannot be gated without
+  it. The other four parameters and all four mirror entries remain Prompt 8's.)
+  Do NOT weaken any existing assertion.
+- Add a small sync test that parses all four sources and asserts the parameter
+  sets are identical, so MV-D5 drift fails a test instead of a demo.
+```
+
+### Prompt 6a — Signal producers for L and D
+
+*Sequenced after Prompt 8 and not yet run. Drafted from the signal recon's RECOMMENDATION (docs/design/mv-advisor-signal-recon.md), which proposed splitting the original Prompt 6 into signal producers (6a) and the advisor phase (6b). The phase half shipped as Prompt 6, deliberately against injected fixtures — `mv_scoring` takes `LineageOverlap`, `DemandSignal` and the embedding client as inputs, so the advisor could be built and tested in full before its data existed. Two of the recon's four 6a items shipped along the way (`write_artifact`'s `content_hash` passthrough; `SemanticMatch.status`). What remains under these names is the producers (this prompt) and the wiring (Prompt 6b). The arithmetic that made this the priority after Prompt 8: before 6b wired the producers, with L (0.35) and D (0.15) `UNAVAILABLE`, `evidence_coverage` was 0.50, nothing could exceed MEDIUM, and the advisor's ordering — not just its scores — was an artifact of Y. The recon's bottom line stands: a first version ships without S and without full D, but not without L, because zeroing the largest weight distorts ranking rather than merely lowering scores.*
+
+```
+Per the signal recon (Q2, Q3, RECOMMENDATION) and MV-D19, which this prompt must
+DECIDE: build the two missing signal producers as standalone, injected inputs.
+This prompt does NOT touch mv_advisor.py or run_optimize.py — the producers are
+built and tested against warehouse-row fixtures here, and wired in Prompt 6b, so
+the seam the advisor was built on stays reviewable.
+
+PLACEMENT: a new module, optimization/mv_signals.py. Both producers read as the
+service principal through the existing warehouse seam
+(common/warehouse.sql_warehouse_query, warehouse.py:34) — the same identity and
+read path every other in-job system-table read uses. No OBO in-job (MV-D1;
+POV:266 correction — computed under SP, filtered at presentation).
+
+L PRODUCER — decide MV-D19 first (table grain on the existing
+system.access.table_lineage grant, vs column grain requiring a new
+WATCH_SYSTEM_GRANTS row and an install upgrade path). Register the choice with
+its reasoning in the same commit. The producer reads lineage for the space's
+source tables and the candidate's source set, and returns a populated
+LineageOverlap (mv_scoring.py:159) — candidate_columns, reference_columns,
+reference_kind per candidate type (REPLACE_RAW_TABLE reads a governed MV's
+source set; NEW_METRIC_VIEW/ADD_MEASURE read the lineage footprint the space's
+queries touch). If MV-D19 lands on table grain, restate
+lineage_overlap_score's normalization and every "column" docstring for that
+grain in the same commit — do not leave the code claiming a grain it does not
+read.
+
+D PRODUCER — a dedicated per-measure query over system.query.history, not a
+remap of wide_schema_history (whose SELECT has no duration or user column — the
+recon's contradiction #1, already corrected at mv_scoring.py:217). Measure-grain
+mapping reuses the one canonicalizer rather than inventing a grain mapper:
+fingerprint the history statements through mv_fingerprint.corpus_scan and join
+candidate fingerprints against them (MV-D10 — no second parser, by
+construction). From the matched statements: frequency = recurrence, distinct
+users = distinct executed_by, cost_ms = summed duration, age_days from the most
+recent occurrence — a populated DemandSignal for demand_score
+(mv_scoring.py:625). Scope the history read to the space's warehouse and a
+bounded window; make the window a config constant.
+
+FAILURE SEMANTICS (MV-D15): a read that cannot run — missing grant, missing
+table, empty statement_text under CMK, retention window exceeded — returns
+UNAVAILABLE with the reason recorded on the payload, never a silent zero. A
+read that ran and found nothing is EMPTY. Every producer result carries its
+status; the advisor must never have to infer why a signal is missing.
+
+FIREWALL: system.query.history statement_text is raw user SQL and enters ONLY
+as fingerprint input — canonicalization erases literals (MV-D10(b)) and no
+history text may reach a comment, display_name, synonym, or any shipped
+surface. Extend the quoted-literal property test to the history-derived corpus.
+
+VERIFY: producer unit tests against fixture warehouse rows (populated, EMPTY,
+and each UNAVAILABLE reason); the MV-D19 pinning test (grant row present if
+column grain; normalization restated if table grain); firewall property test
+green; both suites via ./scripts/test.sh; mv_advisor.py and run_optimize.py
+untouched (assert via git diff, not inspection).
+```
+
+### Prompt 6b — Wire the producers into the advisor
+
+*Sequenced after Prompt 6a. A naming note so the recon and this playbook stay reconcilable: the recon's "6b" meant the advisor phase itself, which shipped as Prompt 6 — what this prompt carries under that name is the remaining half, swapping the advisor's empty defaults for 6a's producers. Kept separate from 6a on the recon's own caveat (the one MV-D14's marker records): fixtures prove the consumer, so the wiring owes an integration assertion that a real producer's output reaches the scorer in the shape the scorer expects.*
+
+```
+Per the signal recon's RECOMMENDATION and MV-D15/MV-D19: connect 6a's producers
+to the advisor phase. Small diff, three change sites, no scoring changes.
+
+CHANGE SITES:
+- jobs/run_optimize.py:445-456 — construct the producers beside
+  FoundationModelEmbeddingClient and pass them into run_mv_advisor_phase, same
+  injection pattern.
+- optimization/mv_advisor.py:664 and :672 — stop constructing empty
+  LineageOverlap() / DemandSignal(); consume the producer results per
+  candidate.
+- optimization/mv_advisor.py:725 — advisor_statuses stops hardcoding
+  {"L": UNAVAILABLE, "D": UNAVAILABLE} and reports each producer's actual
+  status (COMPUTED / EMPTY / UNAVAILABLE with reason) into the evidence
+  payload.
+
+THE INTEGRATION ASSERTION 6a OWES: one test that drives a real producer (over
+fixture warehouse rows, not a mocked producer) end-to-end into
+candidate_from_measure and asserts the scorer received L and D in the shapes
+mv_scoring declares — the recon's point that fixtures prove the consumer, so
+the producer-to-consumer shape must be proven separately.
+
+COVERAGE FLIP — refresh every committed sentence that states today's coverage
+arithmetic, per MV-D9. The register's MV-D17 coverage note and the 6a preamble
+state the three coverage states (0.50 today / 0.65 with D / 1.0 with L and D)
+and that "nothing can exceed MEDIUM"; after this prompt those are historical.
+Re-verify the pinned tier behavior at full coverage: the POV worked examples
+already assume coverage 1.0 and must not move; what changes is that HIGH
+becomes reachable, so assert capped_tier grants it only at >= 0.80 coverage
+with a genuinely computed L.
+
+DEGRADED MODE STAYS FIRST-CLASS: a workspace where the producers return
+UNAVAILABLE (missing grant, CMK, retention) must behave exactly as the advisor
+behaves today — same scores, same MEDIUM cap, same legible statuses. Pin that
+with a test: producers-all-UNAVAILABLE reproduces today's byte-identical
+evidence payloads. The upgrade is additive or it is a regression.
+
+VERIFY: integration assertion green; degraded-mode pin green; coverage-text
+sites refreshed (register, gap-report Y/coverage rows) per MV-D9; both suites
+via ./scripts/test.sh; grep confirms no empty-default LineageOverlap() /
+DemandSignal() construction remains in the advisor path.
+```
+
+---
+
+## Phase 3 — App API and UI
+
+### Prompt 9 — FastAPI surface
+
+```
+Per the gap report: the router prefix is /api/auto-optimize, the run-start
+endpoint is POST /api/auto-optimize/trigger with the inline TriggerRequest
+model (backend/routers/auto_optimize.py:171-187, :1401-1458), OBO comes from
+the ContextVar + x-forwarded-access-token machinery, and the job launch itself
+stays SP via backend/job_launcher.py.
+
+- Extend TriggerRequest (in place, inline, matching its existing 8-field
+  style) with: enable_metric_view_suggestions, mv_action_mode,
+  mv_approved_suggestion_ids, mv_consent (granted_by, granted_at, probe_id),
+  mv_materialize.
+- Trigger flow for create_and_attach (MV-D1 — this is the heart of it): before
+  launching the job, (1) verify(consent, fresh probe) under OBO; on mismatch
+  coerce to suggest_only, persist downgrade_reason, continue; (2) for each
+  approved suggestion, run the pre-create checks from POV 7.8 under OBO —
+  existing-object check at the target name, EXPLAIN CREATE MATERIALIZED VIEW
+  only if mv_materialize, semantic validation vs the originating aggregation —
+  using the backend's existing OBO SQL-execution path (find how the backend
+  runs warehouse SQL today and reuse it; if none exists, use the SDK statement
+  execution API via require_obo_workspace_client and say so); (3) CREATE VIEW
+  ... WITH METRICS in the consented schema — YAML comes from mv_yaml (Prompt
+  5.5), never rendered inline — then DESCRIBE EXTENDED and assert
+  Type: METRIC_VIEW before recording genie_opt_mv_created_objects
+  status=CREATED; semantic validation queries use MEASURE(`name`) with
+  GROUP BY plus the fan-out row-count smoke test; (4) pass mv_attach_views +
+  mv_consent_id through job_launcher's parameter map, and attach a copy-ready
+  GRANT SELECT checklist for the space's audience to the run record (never
+  auto-granted). Any subsequent edit endpoint for an engine-created MV must
+  use ALTER VIEW ... AS $$...$$ (grants-preserving), never CREATE OR REPLACE.
+  The probe (Prompt 5) additionally returns capability rows (DBR 17.3+
+  create/edit, 17.1+ nested joins, 18.1+ fields/agg/window offset) that
+  mv_yaml.validate consumes. Any create failure -> that suggestion drops
+  out, run proceeds; all failing -> suggest_only.
+- New routes under /api/auto-optimize: GET /runs/{run_id}/mv-proposals,
+  GET /runs/{run_id}/mv-ddl (DDL artifact from genie_opt_artifacts + GRANT
+  remediation), POST /mv/proposals/{id}/decision (approve sets
+  approved_for_rerun; reject writes suppression), POST /mv/created/{id}/drop
+  (OBO, confirm token, refuses unless status=DETACHED),
+  POST /mv/probe (from Prompt 5).
+- OpenAPI schemas; route tests with the repo's OBO fixture pattern, covering
+  coercion-to-suggest_only, create-failure fallthrough, and 403 on drop by a
+  non-owner.
+```
+
+### Prompt 10 — Mockups first (review checkpoint)
+
+```
+Before implementing UI, generate static mockups I can review, extending the
+repo's existing components and styles (the run-config panel is
+frontend/src/components/auto-optimize/OptimizationConfig.tsx; match its
+patterns — local useState, no store):
+
+1. Run-config panel expanded state, first run: "Suggest metric views" toggle ->
+   explanatory copy -> mode line showing "Create and attach" DISABLED with the
+   MV-D1 rationale: "Available after this run produces proposals you approve."
+2. Run-config panel, re-run state: approved proposals listed with checkboxes ->
+   target catalog.schema (read from the consent/proposal) -> inline probe
+   result (granted state per POV 7.3 copy) -> "Create and attach, then
+   optimize" enabled -> separate "Also materialize" checkbox with cost warning.
+3. Same panel, denial state: warning banner, [Copy grant request]
+   [Choose a different schema] [Continue in suggest-only mode].
+4. Output screen, suggest-only: proposals list with confidence badges, DDL
+   panel (prism-react-renderer, already in package.json) with copy button,
+   GRANT panel, the mandatory "Lift not measured" label, [Approve for re-run]
+   and [Re-run with this metric view].
+5. Output screen, create_and_attach: per-proposal card with created object,
+   baseline vs post-attach accuracy (both eval_run_ids linked), tables_freed,
+   regression state with DETACHED badge and the explicit [Drop view] action.
+6. Semantic model visualization (see Prompt 12) — one representative frame.
+7. IQ Scan panel, the pre-optimization surface (MV-D23). This is the ONLY
+   mockup review on this branch, and 13.5 builds this panel, so design it here
+   or pay for a second review: the IQ Scan result screen
+   (frontend/src/pages/IQScoreTab.tsx) gains an advisory metric-view section
+   below the 12 checks, rendering the SAME proposal card as mockup 4 with no
+   run context — no "Lift not measured" label (nothing was run to measure),
+   no [Re-run with this metric view], and a primary action that opens the
+   consent flow directly. Two states, and the second is the common one on a
+   new space: (a) proposals found; (b) the MV-D15 EMPTY state — the corpus was
+   read and no measure recurred. Copy for (b) must say the scan looked and
+   found nothing recurring, NOT that the feature is unavailable or that the
+   scan failed; reuse the empty-table-is-not-a-failed-run framing already
+   agreed for the MV tables in docs/docs/features/auto-optimize.md. Include a
+   third frame for the not-entitled variant, which reuses mockup 3's denial
+   banner unchanged.
+
+Deliver as Storybook stories if the repo has Storybook, otherwise as vitest-
+renderable components plus a static HTML export per screen under
+docs/design/mockups/. Use the exact copy from POV 7.3 and 7.5 as amended by
+the deltas appendix. No backend wiring in this prompt.
+```
+
+**Your job after Prompt 10:** review the mockups, mark up changes, and paste your corrections as a short follow-up prompt before proceeding. Cheaper to move pixels here than after wiring.
+
+### Prompt 11 — Run-config consent panel (implementation)
+
+```
+Implement mockups 1–3 for real in
+frontend/src/components/auto-optimize/OptimizationConfig.tsx and the payload
+builder frontend/src/components/auto-optimize/optimizationRequest.ts:
+
+- Toggle off by default. First-run state: "Create and attach" disabled with
+  the "available after this run produces proposals you approve" copy (MV-D1).
+- Re-run state (approved proposals exist for the space). AMENDED after Prompt 9
+  (MV-D23): the condition here is space-scoped but the Prompt 9 route is
+  run-keyed, so "of the prior run" would make this panel hunt for a prior
+  run_id to stand in for a space-scoped question. Do not do that. The helper
+  already answers it — wh_load_mv_candidates takes target_space_id OR run_id
+  (warehouse.py) — so add the space-scoped route this panel actually needs,
+  GET /api/auto-optimize/spaces/{space_id}/mv-proposals?approved_for_rerun=true,
+  alongside the existing run-keyed one rather than replacing it (the output
+  screen legitimately wants per-run proposals). Prompt 13.5 reuses this route
+  unchanged; a prior-run workaround here would be rewritten there.
+  Then: proposal checkboxes,
+  target read from the proposal/consent, probe call to
+  POST /api/auto-optimize/mv/probe on expand; granted/denied states per the
+  mockups; "Create and attach" enabled only on verdict SUFFICIENT;
+  [Copy grant request] copies remediation_sql.
+- Start records the mv_* fields + consent object into the TriggerRequest via
+  optimizationRequest.ts. "Suggest only" sends mode=suggest_only, no consent.
+- Materialize: DO NOT SURFACE A CONTROL. Amended at the Prompt 11 PLAN review;
+  this prompt body is not yet a frozen transcript, so it is corrected in place
+  rather than worked around. The gap report outranks the POV and playbook
+  (MV-D9) and says plainly at mv-advisor-gap-report.md:1526 that Prompt 11
+  must not surface a live materialize toggle "or it will offer a control that
+  does nothing". Verified against the code: mv_create.py:230-235 logs the
+  request and installs a NON-materialized view, and the EXPLAIN CREATE
+  MATERIALIZED VIEW precheck MV-D1 requires exists nowhere in the repo — the
+  path is unbuilt, not merely unwired.
+  Do NOT render it disabled-with-rationale either. That idiom is right for the
+  first-run "Create and attach" state, because there the control becomes
+  enabled through something the user can do; a disabled control for an unbuilt
+  feature advertises vapor instead.
+  DO still plumb the field: mv_materialize stays in GSOTriggerRequest and
+  buildOptimizationTriggerRequest keeps clearing it with every other mv_* field
+  when the toggle is off, so the later materialization prompt adds a control
+  and nothing else. Leave the mockup's "Also materialize" checkbox in place as
+  that prompt's design, but annotate it in MvRunConfigMockups.tsx as not
+  shipped by Prompt 11, citing the gap-report line — an un-annotated mockup and
+  a shipped panel that disagree is how the next reader concludes one of them is
+  a bug.
+- Component tests (vitest, matching existing frontend tests): probe
+  loading/granted/denied, first-run vs re-run gating, consent payload shape,
+  and that toggling off clears every mv_* field from the request (mv_materialize
+  included, even though no control sets it).
+- Mockup disposal, corrected here: MvRunConfigMockups.tsx's header claims
+  "Prompt 11 deletes this file". That is wrong and must be fixed, not obeyed.
+  Its DenialBanner is reused by frames 7c and 8, which Prompt 13.5 implements,
+  and frames.tsx plus mockups.test.tsx pin frames 1-3. Deleting it here breaks
+  the suite and removes a component two later frames depend on. Correct the
+  header to the real disposal point — after Prompt 13.5 wires the last frame —
+  and leave the scaffold standing this commit.
+- Add the space-scoped route this panel needs as a SIBLING response model
+  (MvSpaceProposalsResponse{space_id, proposals}), not by making run_id
+  nullable on MvProposalsResponse. The element type must stay the SAME
+  MvProposal in both, so Prompt 13 and 13.5 render one card from one shape.
+```
+
+### Prompt 12.0 — Model tab mockups (review checkpoint)
+
+*Inserted before Prompt 12 at review. Prompt 10 was the branch's mockup checkpoint,
+but its frame 6 predates the Prompt 12 amendment: it reviewed one proposal-overlay
+frame, while the amended Prompt 12 ships a whole new surface — a fourth SpaceDetail
+tab, a layered-column layout, a governance-ladder color language, and empty states
+none of which any reviewed mockup shows. A new tab and a new visual vocabulary
+warrant the same cheap gate the other panels got; the scaffold and emitter already
+exist, so this is hours, not days.*
+
+```
+Using the existing mockup scaffold (frontend/src/components/auto-optimize/
+mockups/ + the emitter registry — same fixtures, same test idiom, both themes),
+add the Model tab frames and STOP for review before Prompt 12 implements:
+
+9a. Model tab, populated: layered columns (source/fact -> dims -> MVs ->
+    field chips), join edges labeled with ON predicate + relationship type +
+    SCD2 flag, governance-ladder coloring on measure concepts. CORRECTED at
+    the 12.0 PLAN review — the original "reuse the Prompt 10 card tier
+    tokens" was wrong: those are the CONFIDENCE trio (high/medium/low =
+    danger/warning/info) and governance is a maturity axis, not a confidence
+    axis. The ladder is a traffic light on the theme's semantic tokens,
+    rhyming with the IQ scan's own passed/warning/failed split (the surface
+    the ladder will live on): governed = success, curated = warning,
+    ungoverned = danger. Ungoverned is the state the whole feature exists to
+    fix — it must draw the eye, never render muted. Every chip also carries a
+    NON-COLOR discriminator (icon or label text) so the ladder never relies
+    on hue alone. Include the tab strip showing
+    Score | Model | Optimize | History so placement is reviewed too.
+9b. Model tab, never-optimized/empty: tables unconnected, and the
+    config-scoped empty line, verbatim as approved at the 12.0 review —
+    "This Agent's configuration defines no joins, SQL snippets, or metric
+    views yet — the graph shows the config as it is now. Connect it by adding
+    join specs and snippets yourself, or let an optimization run discover and
+    apply them. Metric view suggestions don't require a run." The ladder shows
+    nothing green (frame-7b honesty rule) and, cutting both ways, nothing red
+    either — an empty space has surfaced no ungoverned measure to alarm about.
+    This is the frame to review hardest; it is most users' first sight of the
+    tab.
+9c. Proposal overlay ON: ghosted proposed MV, dashed replaces edges, the
+    default-off toggle visible.
+9d. Node detail panel: one measure (expr, synonyms, format, evidence) and one
+    join (cardinality, reachable join_strategy only).
+Upgrade MvSemanticModelFrame (frame 6) into these rather than duplicating it —
+frame 6 is 9c's ancestor. No backend wiring; fixture data only.
+```
+
+**Your job after Prompt 12.0:** review the four frames — especially 9b, and
+whether the governance ladder reads at a glance without a legend — and paste
+corrections before Prompt 12 runs, exactly as after Prompt 10.
+
+### Prompt 12 — Semantic model visualization
+
+*Amended after Prompt 11, before execution (a live claim, not a frozen transcript).
+Two of the original body's choices were overturned at review, with reasons recorded
+so they are not silently re-derived. **Scope:** the original body was proposal-scoped
+— a graph of one MV proposal per run. That builds the component for one of its four
+consumers and rebuilds it for the rest. The view is now SPACE-scoped with the
+proposal as an overlay, the same build-once-two-callers shape as MV-D23: SpaceDetail
+gets a lens on what exists — SHIPPED BY THIS PROMPT as a fourth "Model" tab, not
+deferred to a later consumer — Prompt 13's output screen and 13.5's IQ Scan panel get
+the same view with a proposal overlaid, and the create-agent branch inherits it
+later. **Rendering:** the original body said react-force-graph-2d. Overturned for
+this view on four grounds: (1) a semantic model is a layered DAG — fact → dims → MV
+→ fields — the same left-to-right visual language as Catalog Explorer's ERD and
+lineage graph, and force layouts are non-deterministic: two renders of one space
+produce two pictures, which is poison under a diff overlay; (2) the repo's test
+idiom is renderToStaticMarkup in a node environment — a canvas graph asserts
+nothing, an SVG graph tests like every other component; (3) rich nodes (measure
+chips, badges, governance colors) need DOM, which canvas cannot give; (4) mockup
+frame 6 is already a positioned SVG — the real component is that plus data and
+pan/zoom, not a different technology. ForceGraph2D stays where it already earns its
+keep: the exploratory, unbounded Watch resource graph
+(frontend/src/watch/pages/ResourceGraphView.tsx). At this scale (≤30 tables, one
+MV, ≤20 fields) no layout library is needed either — a hand-rolled 3-4 column
+layered layout is ~100 lines and deterministic, so the "no new graph dependency"
+rule survives the change.*
+
+```
+Implement the SPACE-scoped semantic model view, with proposals as an overlay,
+per the mockups approved at Prompt 12.0 — do not run this prompt before that
+review has happened.
+Rendering is a deterministic layered SVG component (see the amendment note
+above — do NOT use react-force-graph-2d for this view, and do NOT add a graph
+or layout dependency). Keep react-diff-viewer-continued for the space-config
+diff mode and prism-react-renderer for any inline SQL.
+
+Base graph (no proposal needed — this must render for a space that has never
+been optimized):
+- Columns, left to right: source/fact tables -> joined dimension tables ->
+  metric views -> their dimension/measure chips. Tables the space uses that
+  join nothing render in the first column.
+- Join edges from instructions.join_specs, labeled with the ON predicate and
+  relationship type, with an SCD2 flag when the predicate carries an
+  is_current guard.
+- Governance ladder coloring on every MEASURE CONCEPT the space knows about —
+  the advisor's story made visible: governed (defined in an attached metric
+  view) / curated (defined in sql_snippets.measures — structured name+expr
+  fields, no parsing needed; example-SQL-derived curated concepts are Prompt
+  12b's, because extracting a measure from SQL text is exactly the parsing
+  this prompt defers) / ungoverned (recurs only in proposal evidence).
+  Concept identity FOR THIS PROMPT is exact name match only — an MV measure,
+  a snippet measure, and a proposal sharing a name are one concept at its
+  highest rung; anything subtler (canonicalized-expr matching) is server-side
+  12b work via the one sanctioned parser. State the name-match rule in a
+  comment where it is implemented, so 12b replaces it knowingly. One glance answers "how
+  governed is this space?". Derivation, stated precisely because the 12.0
+  review got it wrong TWICE (first the mockup, then the reviewer): the ladder
+  reads CONFIG — attached metric_views (governed), sql_snippets / example SQL
+  (curated) — plus proposals (ungoverned). Config is populated three ways: the
+  user's own edits, the create agent, AND optimization runs, whose patch
+  allowlist includes add_join_spec / update_join_spec (unified_loop.py:91-92,
+  applied at applier.py:3173) and snippet-measure patches. So a run is one
+  legitimate way to populate this tab — never present it as the ONLY way (a
+  never-optimized space with snippets already shows green/amber, and metric
+  view suggestions need no run per Delta 9), and the tab must render whatever
+  the config holds regardless of how it got there. Colors per the 12.0
+  correction: a traffic light on
+  the theme's semantic tokens (governed=success, curated=warning,
+  ungoverned=danger), rhyming with the IQ scan's passed/warning/failed split —
+  NOT the Prompt 10 confidence trio, which is a different axis. Non-color
+  discriminator on every chip. Do not invent a new palette.
+
+Proposal overlay (frame 6's content, on top of the base graph):
+- The proposed MV as a ghosted node with distinct styling; dashed "replaces"
+  edges from the raw space tables it would cover (the tables_freed story).
+- Node detail panel on click: for a measure, the expr, synonyms, format, and
+  the evidence (recurrence count, contributing benchmark question ids); for a
+  join, cardinality if known. join_strategy chips show only reachable states
+  (the mockup fixture type already enforces this — MV-D14/D15).
+- Diff mode toggle: current space data sources vs post-attach state. The
+  post-attach side is SYNTHESIZED client-side — current data_sources with the
+  proposal's proposed_object appended to metric_views[] (and its replaced raw
+  tables marked) — because no attach has happened and the run-keyed DDL
+  artifact is not a dependency of this space-scoped tab. No new endpoint for
+  this.
+
+Data:
+- Add GET /api/auto-optimize/spaces/{space_id}/semantic-graph returning
+  nodes/edges JSON (schema in the OpenAPI spec), assembled from
+  serialized_space (data_sources, join_specs, sql_snippets) plus the
+  space-scoped proposals read Prompt 11 added. Space-scoped, not run-scoped
+  (MV-D23: run_id presentational only). Read-only route: the SP-tolerant
+  get_workspace_client is fine here per MV-D20 (only UC writes require the
+  hard-fail OBO client), but MV-D1's presentation rule applies — do not
+  invent per-user evidence filtering here; surface proposals exactly as the
+  run-keyed route already does, and note any gap it has rather than fixing
+  it silently. Any SQL parsing happens SERVER-side
+  with the sqlglot machinery that already exists (mv_fingerprint's
+  extractors) — never a second parser in the browser. For THIS prompt the
+  endpoint does not parse SQL at all: config fields and proposal evidence
+  suffice for the base graph and overlay; SQL-derived edges are Prompt 12b.
+- The overlay consumes the same MvProposal shape as the cards. No new
+  proposal payload.
+
+Surface — this prompt SHIPS a user-facing view, not just a component for
+later prompts to mount:
+- Add a fourth SpaceDetail tab, "Model": extend the SpaceTab union and the
+  isSpaceTab guard (frontend/src/lib/navigation.ts:2), the tabs array
+  (frontend/src/pages/SpaceDetail.tsx:153), and the App routing that consumes
+  them (frontend/src/App.tsx:122, :148), matching the existing three tabs'
+  icon/label/onNavigate pattern. The tab renders the base graph for the CURRENT
+  state of the Genie Agent: config fetched live on tab entry via the existing
+  fetchSpace path (lib/api.ts:156 -> /space/fetch), never from a run artifact
+  or cache — the tab must reflect what the space is NOW, including edits made
+  outside the workbench since the last scan or run.
+- When the space-scoped proposals read (Prompt 11) returns candidates, offer
+  the proposal overlay on this tab too — ghosted, clearly labeled proposed,
+  default off. The base graph never requires it.
+- Empty states are first-class, same honesty rule as frame 7b: a space with
+  no join_specs renders its tables unconnected with a line saying no joins
+  are defined (not an error); no snippets/no MVs means no measure chips and
+  the governance ladder simply has nothing green — never a blank panel, never
+  a spinner that resolves to nothing.
+- A refresh affordance on the tab (the config can change under it); loading
+  and fetch-failure states per the repo's existing tab patterns.
+- Overflow: the SVG lives in a scroll/zoom container — a 30-table space must
+  not squash into an unreadable viewBox, and the page body must never scroll
+  horizontally. Simple pan/zoom (wheel + drag, or fit/actual-size buttons) is
+  in scope; do not add a library for it. Edge-label decluttering: midpoint ON
+  labels collide on crossing edges (12.0 carry-forward) — show full labels on
+  hover/selection and abbreviate at rest.
+
+Tests: render-level with fixture spaces (never-optimized space, space with
+joins + snippets, space with an attached MV, proposal overlay on each; single
+MV, multi-join MV, conflict state; each empty state above), per the repo's
+renderToStaticMarkup idiom
+— there is no Storybook in this repo (Prompt 10 finding). CORRECTED at the
+Prompt 12 PLAN review: do NOT register the production component in the mockup
+emitter's MOCKUP_FRAMES — that registry is review scaffold disposed at Prompt
+13.5, and wiring ship code into it is a backwards coupling. The original line
+predated the promotion of the frames to production. SemanticModelTab.test.tsx
+is the coverage of record; the 9a-9d mockup frames remain in the emitter
+unchanged as the approved design record.
+
+Deliberately OUT of this prompt: column-level ERD (Catalog Explorer already
+draws it — deep-link table nodes there instead, the frame-5 idiom), and any
+query-history heat (no corpus producer exists; same honesty rule as frame 7b's
+copy). Both stay out until a decision entry says otherwise.
+```
+
+### Prompt 12b — Coverage lenses + deferred parsing on the semantic model (GATE OPEN — run after 13.5, BEFORE Prompt 14)
+
+*Gate opened at Prompt 13.5 (both lenses read curated SQL through the
+space-scoped machinery it built — `advise_from_corpus` and the pyspark-free
+import seam now exist). Sequenced BEFORE Prompt 14 deliberately: 14 audits
+"everything added on this branch" and its exposure sweep classifies every
+response field — 12b's additions must be inside that audit, not after it.
+Upgraded from a two-lens stub at the 13.5 close-out: Prompt 12 deferred THREE
+debts here and left signed swap-point comments in the code; this prompt pays
+all three, or the comments rot into archaeology.*
+
+```
+Extend the Prompt 12 semantic-graph endpoint and Model tab. Additive response
+fields ONLY — a Prompt 12 client that never learns about the lenses must keep
+working unchanged. All SQL parsing is server-side via the machinery the
+advisor already trusts (corpus_scan / shapes_in_statement from
+mv_fingerprint, sqlglot==30.0.3) — never a second parser, never in the
+browser.
+
+The three signed debts (each has a swap-point comment naming this prompt —
+find them by grepping "12b" in backend/routers/auto_optimize.py):
+1. Example-SQL curated concepts (:1874): measure concepts extracted from
+   example_question_sqls and benchmark answer SQL join the governance ladder
+   as curated. Reuse the curated-harvest extractors; MV-D16(b) still binds —
+   nothing extracted here re-enters the advisor corpus as recurrence evidence.
+2. DELETE _is_measure_column (:1918): replace the five undocumented
+   speculative key probes with the real read — the MV definition via
+   DESCRIBE ... AS JSON view_text, parsed by metric_view_catalog's existing
+   parsing (do not write a second YAML reader). Governed measure chips then
+   enumerate truthfully. The function is deleted, not extended.
+3. Concept identity (:1999): replace exact-name matching with
+   canonicalized-expr identity via canonicalize_expr — the same
+   canonicalization the fingerprint engine uses, so the ladder and the
+   advisor cannot disagree about what one measure is (the two-readers drift
+   hazard MV-D21 closed for columns, closed here for concepts).
+
+The two lenses:
+- SQL coverage: which example SQLs and benchmark questions touch which tables
+  and measure concepts. Renders as edge weight / a per-node coverage badge.
+  A table no curated SQL touches is a visible cold spot — that is the lens's
+  point; render it plainly, not as an error.
+- Benchmark evidence overlay on proposals: evidence.benchmark_questions ids
+  as weighted edges from questions to the proposed measure.
+
+Honesty rules carry over: a space with no curated SQL shows no coverage and
+says so (frame-7b rule); parse failures degrade per MV-D15 vocabulary
+(UNAVAILABLE with a reason), never a 500 and never silently-zero coverage.
+
+VERIFY: the Prompt 12 render tests pass unchanged against a response with no
+lens fields (compatibility); new tests for each debt (curated-from-SQL
+concepts, DESCRIBE-enumerated governed chips, expr-identity merging two
+spellings of one measure); coverage lens on a fixture space; the swap-point
+comments are GONE from auto_optimize.py; MV-D9 gap-report refresh + baseline
+lockstep in both rule copies.
+```
+
+### Prompt 13 — Output screen panels
+
+*Amended at the Prompt 13 PLAN review (live claim). The PLAN's explore phase found
+"wire to the Prompt 9 endpoints" assumed a create-and-attach results read that
+Prompt 9 never shipped — its four routes are proposals/ddl/decision/drop, with no
+GET exposing the created-objects ledger. The DATA all exists: `lift_report_json`
+on `genie_opt_mv_created_objects` is `LiftReport.to_dict()` verbatim (frozen
+14-key shape, `eval_runner.py:177-193` — delta, pre/post accuracy, needs-review,
+both eval_run_ids), and `downgrade_reason` persists on the consent row
+(`ddl.py:245`). So the fix is plumbing, folded in as step 0 below — the Prompt 11
+precedent, not a separate prompt. Two more PLAN findings resolved here:
+`tables_freed` has NO producer anywhere (gap report confirms) and is CUT from the
+panel — render nothing rather than fabricate; and the suggest-only space-config
+diff synthesizes its proposed side client-side (current data_sources with
+proposed_object appended), the exact precedent Prompt 12's Model-tab diff shipped.
+Frame labels corrected: the output panels are mockup frames 4-5, not 3-4.*
+
+```
+Step 0 — backend results read (small, the Prompt 11 precedent):
+- wh_load_mv_created_objects (plural, by run_id) in common/warehouse.py,
+  mirroring the singular at :848 including the lift_report decode; extend the
+  MV-D21 column-contract pin to cover it.
+- MvLiftReport Pydantic mirror of the frozen 14-key LiftReport shape
+  (eval_runner.py:177-193 — mirror it, do not reshape it); extend
+  MvCreatedObject with lift_report: MvLiftReport | None.
+- GET /api/auto-optimize/runs/{run_id}/mv-created returning the extended
+  MvCreatedObject list, plus the run's downgrade_reason read from the consent
+  row (wh_load_mv_consent). Read-only: SP-tolerant client per MV-D20.
+- Route tests per the repo's idiom; TS mirrors in types/index.ts (the deferred
+  block at :939 names exactly these shapes).
+
+Implement mockup frames 4-5 in the run output/results screen:
+
+- Suggest-only panel per POV 7.5: DDL with copy (from GET /runs/{run_id}/mv-ddl),
+  GRANT with copy, space-config diff (react-diff-viewer-continued) against
+  current data_sources.metric_views[] — the proposed side SYNTHESIZED
+  client-side per the Prompt 12 Model-tab precedent, no new endpoint —
+  evidence block, the verbatim "Lift not
+  measured — this metric view was not created or attached during this run."
+  label, [Approve for re-run] (POST /mv/proposals/{id}/decision), and
+  [Re-run with this metric view] which opens the run config pre-filled in
+  create_and_attach mode with that proposal checked (MV-D1 flow).
+- Create-and-attach panel (wired to the step-0 route): created object name
+  linking to Catalog Explorer,
+  baseline vs post-attach accuracy with both eval_run_ids as links, needs-review
+  count shown separately (never folded into accuracy),
+  regression -> DETACHED badge + [Drop view] flow (confirm dialog quoting the
+  "other consumers may depend on it" warning), downgrade_reason banner when the
+  run degraded, a join-strategy badge (denormalized / subquery-source — the
+  reachable states only, nested is not one today, MV-D14/D15)
+  with its cardinality evidence, and a "Grant access" panel rendering the
+  copy-ready GRANT SELECT checklist with the note that other users' Genie
+  answers silently degrade without it. tables_freed is CUT (no producer —
+  gap-report row stays DOES-NOT-EXIST-YET); annotate the mockup's hardcoded
+  "2" as not shipped, the mv_materialize precedent.
+- Component tests for every state incl. downgraded-run and detached-with-drop.
+- Per MV-D23 (OPEN until 13.5 — this bullet is the obligation it already
+  placed on this prompt, not its decision): the run-detail CONTAINER may fetch
+  by run_id — it lives on a run screen — but every presentational component
+  (cards, panels, stat blocks) takes its data as props and keys nothing on
+  run_id, so 13.5 feeds the same components from a space-scoped source
+  unchanged.
+```
+
+### Prompt 13.5 — Suggest metric views without a run (decides MV-D23)
+
+*Sequenced after Prompt 13 and BEFORE Prompt 14, deliberately. The three prompts that follow are closeout — 14 audits "everything added on this branch", 15 is the E2E pass, 16 writes the docs, changelog and PR — so landing this after 16 pays for all three twice and ships a changelog describing an entry point that changes one prompt later. It is placed after 13 rather than before 10 because its UI is Prompt 13's proposal card with a different data source: build the card once, then feed it.*
+
+*Why this is a prompt at all, rather than a follow-on: the feature as built through Prompt 13 can only advise a Genie Agent that has already completed an optimization run, because the advisor's corpus gate requires iteration-0 generated SQL. That inverts the value proposition — the spaces most in need of a governed measure are the ones nobody has optimized yet — and it is the reason MV-D23 was raised the moment Prompt 9 landed.*
+
+```
+DECIDE MV-D23 AND MV-D24 FIRST and record both decisions in the playbook
+register before writing code. The three options and the recorded leaning are in that entry; the
+four run_id couplings it enumerates are the work. Do not start from the leaning
+without re-reading the couplings against the repo — MV-D23 was written from a
+review, not from an implementation attempt, and the anchors may have moved.
+
+Scope, in dependency order:
+
+1. GSO — make the corpus reachable without a run (coupling 1).
+   - mv_advisor._advise currently returns SKIPPED on `not load.usable` before
+     the curated harvest runs. Restructure so the iteration-0 corpus is one
+     contributor rather than a gate: a usable corpus is a non-empty union, and
+     "no iterations" is a recorded contribution reason, not a phase skip.
+   - curated_corpus_entries consumes load.applied_config. Outside a run the
+     config comes from get_space(include_serialized_space=True) — which is
+     where the iteration row's copy originated anyway. Route both callers
+     through one accessor so the two paths cannot disagree about what the
+     applied config is.
+   - Preserve every existing skip reason and its meaning. The empty-corpus trap
+     documented in the module docstring is unchanged: an eval run that produced
+     no SQL is still SKIP with a reason, and must not become "no recurring
+     measures". MV-D15 vocabulary throughout — EMPTY is a measurement,
+     UNAVAILABLE is a read that could not run.
+   - Do NOT weaken the MV-D16(b) contamination rule: nothing generated by this
+     standalone path may re-enter the corpus as recurrence evidence.
+
+2. GSO — a corpus-agnostic entry point callable without a SparkSession.
+   Extract the orchestration _advise performs into a function whose inputs are
+   the corpus, the estate, profiling, capabilities and the signal readers, and
+   whose persistence is injected. run_mv_advisor_phase keeps its signature and
+   becomes one caller (Spark, in-job); the backend becomes the other (warehouse
+   path). The 6a/6b producers already read through sql_warehouse_query, so no
+   second producer is needed. Persistence for the backend caller goes through
+   the wh_* helpers Prompt 9 built (MV-D21) — extend that set if a writer is
+   missing, and extend the MV-D21 column-contract pin along with it.
+   Import boundary, CORRECTED at the 13.5 foundation checkpoint (the original
+   "do NOT import genie_space_optimizer.optimization into the backend" was
+   both self-contradictory — this same item makes the backend a caller of the
+   extracted orchestration — and already false in the repo: mv_create.py:228
+   lazily imports optimization.mv_yaml). The operative rule: NO Spark and NO
+   job-orchestration in the backend; pyspark-free optimization leaves are the
+   sanctioned seam, imported lazily the way mv_create already does. Pinned by
+   a backend test asserting that importing mv_advisor pulls no pyspark
+   (its SparkSession import is TYPE_CHECKING-only, mv_advisor.py:105).
+
+3. Backend — the route.
+   POST /api/auto-optimize/spaces/{space_id}/mv/suggest, OBO, returning the
+   same ScoredProposal-shaped payload the run-keyed route returns. Reads may
+   use the SP-tolerant client; anything that writes a UC object stays on
+   require_obo_workspace_client per MV-D20. The create path is the Prompt 9
+   mv_create service — reuse it, do not fork it. Whatever MV-D23 decides about
+   couplings 3 and 4 lands here: the create needs a body to replay (MV-D22) and
+   a ledger row to write, and neither has a run.
+
+3b. Backend — bring-your-own registration (MV-D24).
+   The route the copied-DDL path needs to stop being a one-way exit: the user
+   reports an identifier; the backend verifies it under OBO (DESCRIBE EXTENDED
+   asserts Type: METRIC_VIEW; view_text via DESCRIBE ... AS JSON;
+   mv_yaml.validate; fingerprint compared when the user claims it implements a
+   specific proposal); on success, a ledger row with provenance=USER_CREATED
+   (additive column via ADDITIVE_COLUMN_MIGRATIONS — extend the MV-D21 column
+   pin in the same change). Relax the mv_attach.py:484 identity guard for
+   USER_CREATED rows ONLY, narrowly: a verified registration is the consent
+   coverage that guard exists to require. The two MV-D24 invariants are
+   non-negotiable: drop refuses USER_CREATED on provenance (not merely on
+   status), and an unverifiable identifier is refused with the reason, never
+   recorded provisionally. Reuse mv_entitlement.probe + _remediation_sql for
+   the self-create permission guidance; do not build a second probe.
+
+4. Frontend — the IQ Scan panel from Prompt 10 mockup 7, reusing Prompt 13's
+   proposal card. Both states, EMPTY included, plus the denial variant. Plus
+   the frame-8 registration affordance (MV-D24): [I created this myself] on
+   the suggest-only card and the free-standing identifier input, with the
+   verified and refused states from the mockup review.
+
+VERIFY:
+- A test proving a space with NO iterations and a non-empty curated corpus
+  produces candidates. This is the whole point of the prompt; if it does not
+  exist, nothing else here matters.
+- A test proving an eval run that produced no SQL still SKIPs with its existing
+  reason, so (1) did not collapse two outcomes into one.
+- A test proving a genuinely empty corpus reports EMPTY, not a failure.
+- The MV-D21 pin still holds after any wh_* addition.
+- The in-job path is byte-unchanged in behaviour: run the existing
+  test_mv_advisor.py suite unmodified, and do not relax an assertion in it.
+- Route tests per the repo's OBO fixture pattern, including a create refused
+  when no OBO token is present (MV-D20).
+- MV-D24: registering a real metric view succeeds and writes USER_CREATED;
+  a regular VIEW at the identifier is refused with the reason; an identifier
+  the caller cannot see is refused; drop on a USER_CREATED row is refused on
+  provenance even when status is DETACHED; the attach phase accepts a
+  verified USER_CREATED row and still skips an unregistered identifier.
+```
+
+---
+
+## Phase 4 — Testing end to end
+
+### Prompt 14 — Test hardening pass
+
+```
+Audit test coverage across everything added on this branch and close gaps:
+
+- Unit: fingerprint collapse/near-miss suite; both scoring worked examples;
+  decay math; dedup/CONFLICT states; probe permission matrix; consent verify
+  downgrade; DDL artifact golden file; firewall literal-leak assertions.
+- Contract: eval adapter against mocked responses for every status and
+  assessment reason; pagination; timeout.
+- Job: the parameter lockstep and DAG-invariant tests from Prompt 8; a dry-run
+  harness that executes the optimize-task phases in-process with fakes to
+  verify the Delta-by-run_id handoff end to end (trigger-created object rows ->
+  attach phase -> mv_lift phase -> advisor phase -> proposal rows the next
+  trigger reads).
+- API: route tests incl. auth failures and coercion.
+- UI: component tests + stories for all states.
+- Standalone path (Prompt 13.5, MV-D23): the no-iterations-plus-curated-corpus
+  case; the run-produced-no-SQL case still SKIPping with its own reason; EMPTY
+  vs UNAVAILABLE reported distinctly; the space-scoped proposals route; and
+  that the in-job advisor behaviour is unchanged by the corpus restructure.
+- 12b lenses: compatibility of the lens-free response with Prompt 12 clients;
+  the expr-identity merge; DESCRIBE-enumerated governed chips; and that no
+  "12b" swap-point comment survives anywhere in backend/ (they were debts,
+  and Prompt 12b's contract is that it paid all three).
+- WRITE-TO-READ EXPOSURE SWEEP (one-time, then pinned). Twice on this branch a
+  "wire to existing endpoints" instruction assumed a read that the writing
+  side never exposed — the space-scoped proposals read (caught at Prompt 11)
+  and the created-objects/lift read (caught at the Prompt 13 PLAN). Both were
+  found by a PLAN phase, which is one prompt too late. Build the matrix once:
+  for every column on the three genie_opt_mv_* tables (candidates, consents,
+  created_objects — DDL in optimization/ddl.py, decode contracts in the wh_*
+  helpers), record which route serves it and which UI surface renders it.
+  Every cell is one of: SERVED (name the route), DELIBERATELY INTERNAL (name
+  the reason — e.g. dedup_fingerprint internals, consent verification
+  plumbing), or GAP. A GAP is a finding to raise, not to quietly fix in this
+  prompt. Then PIN the sweep so it cannot rot: a test that walks the three
+  CREATE TABLE column lists in ddl.py and asserts every column name appears
+  in the matrix file with a non-empty classification — a new column added
+  without classifying its exposure fails the test, which is the moment the
+  Prompt 11/13 class of defect is actually caught. Park the matrix next to
+  the gap report (docs/design/), one table, no prose beyond the legend.
+Additionally: the recon found the ONLY GitHub Actions workflow is docs deploy —
+there is no test CI. Add a test workflow running the backend pytest suite,
+the GSO package pytest suite (pythonpath=["src"]), and frontend vitest on PRs,
+so this branch's tests actually gate the merge. Keep it minimal and match the
+existing workflow's conventions.
+Report a coverage summary and list anything intentionally untested with why.
+```
+
+### Prompt 14.1 — Close the exposure matrix's first GAP (small, single commit)
+
+*Inserted after Prompt 14 ran. The sweep's raise-don't-fix contract was right for
+the audit prompt, but this GAP cannot survive into Prompt 15: Scenario D's BYO
+leg exercises the exact screen it breaks, and a server-side 403 behind a visible
+button is not a pass. Prompt 15's body already asserts the fixed behavior.*
+
+```
+The matrix's own first run found it (mv-advisor-exposure-matrix.md:112):
+genie_opt_mv_created_objects.provenance is written by register and gates drop
+and the attach identity relaxation SERVER-side — but GET /runs/{run_id}/
+mv-created (route 10) never returns it, so a reloaded output panel cannot
+distinguish USER_CREATED from OBO_CREATED and renders a Drop affordance that
+will 403.
+
+1. Add provenance to MvCreatedObject (Pydantic + the TS mirror), served by
+   route 10 — wh_load_mv_created_objects' decode already carries the column,
+   so this is surface plumbing only. NULL reads as the legacy value
+   OBO_CREATED (the additive-migration convention).
+2. MvCreateAttachPanel: hide the Drop affordance when provenance ===
+   "USER_CREATED" and render the USER_CREATED badge instead (frame 8b's
+   vocabulary — "dropping this one stays in your hands"). The server-side
+   guard is untouched; this is truthfulness, not enforcement.
+3. Tests: route returns provenance; panel renders no Drop for USER_CREATED
+   and still renders it for OBO_CREATED + DETACHED.
+4. Same commit: matrix row GAP -> SERVED (route 10) with the ddl-walking pin
+   still green; resolve the gap-report row (MV-D9, self-dated); baseline
+   lockstep in both rule copies if counts move.
+```
+
+### Prompt 15 — E2E playbook against the dev workspace
+
+```
+Write scripts/e2e/mv_advisor_e2e.md plus a runnable pytest -m e2e suite
+(env-gated on DATABRICKS_HOST/TOKEN + config for space_id and scratch schema)
+that executes the four scenarios (A-D, including D's BYO leg) end to end
+against my dev workspace — "three" predated Scenario D and was corrected at
+the Prompt 15 PLAN review:
+
+Scenario A — suggest_only:
+  Start a run with the toggle on, mode suggest_only. Assert: run completes;
+  optimization tasks unaffected; >=1 candidate persisted; DDL artifact exists,
+  parses with sqlglot, and contains no literals; UI endpoints return the DDL
+  and GRANT; created_metric_views is empty.
+
+Scenario B — denied permission:
+  Run as the low-privilege test identity requesting create_and_attach on the
+  scratch schema. Assert: probe verdict INSUFFICIENT with the right missing
+  privilege; run auto-downgrades (effective_mode=suggest_only, downgrade_reason
+  set); NO UC object created; optimization still completes.
+
+Scenario C — approve, re-run, create_and_attach with lift (two runs, per MV-D1):
+  Run 1 in suggest_only produces proposals; approve one via the decision
+  endpoint; trigger run 2 in create_and_attach with consent. Assert: the MV was
+  created by the BACKEND under the user's identity (check created_by/owner),
+  in the consented schema only, BEFORE the job started; DESCRIBE EXTENDED on it
+  shows Type: METRIC_VIEW; its YAML passes mv_yaml.validate (no transitive
+  joins, structured comment, no benchmark-verbatim BEST FOR line); the
+  semantic-validation query used MEASURE() syntax; the job attached it via
+  the mv_attach patch (visible in serialized_space); the mv_lift eval run
+  reached DONE; lift_report stored with both eval_run_ids on
+  genie_opt_mv_created_objects; the unified loop ran after attach; audit rows
+  in genie_opt_mv_consents/_created_objects answer "who created this and why".
+  Teardown: detach + drop the scratch MV, delete scratch objects. Respect the
+  ~20 q/min ceiling: subset eval runs, serialized, suite marked slow.
+
+Scenario D — suggest with no run at all (Prompt 13.5, MV-D23):
+  Pick a Genie Agent in the dev workspace that has NEVER been optimized and has
+  curated SQL (example_question_sqls or sql_snippets.measures). Call the
+  space-scoped suggest route. Assert: candidates are produced with no run
+  present; every candidate's evidence cites curated provenance; the IQ Scan
+  panel renders them. Then repeat against a space with no curated SQL and no
+  query history and assert the response is EMPTY with a reason — not an error,
+  not a 500, and not silence. That second half is the case a customer demo hits
+  first, so it is not optional.
+  BYO leg (MV-D24): create a metric view manually in the scratch schema from
+  the copied DDL, register it through the route, assert the ledger row says
+  USER_CREATED with the registering user, and that the next run attaches and
+  measures it. Then assert the drop route refuses it AND that the reloaded
+  run-output panel shows no Drop affordance for it (route 10 returns
+  provenance and the panel hides Drop for USER_CREATED — the Prompt 14.1 fix
+  of the exposure matrix's first GAP; a server-side 403 behind a visible
+  button is not a pass). Teardown drops it
+  manually — the app must never have.
+
+Also include a manual smoke checklist for the UI (10 items max) covering the
+consent panel, denial banner, output panels, the semantic model graph, and the
+IQ Scan panel in both its populated and empty states.
+```
+
+### Prompt 15.1 — Serve the advice-run DDL (Tier 1 finding; small, single commit)
+
+*Found by Scenario D's BYO leg in the Tier 1 live run: GET /runs/{id}/mv-ddl
+404s for a suggest-only sentinel run. Root cause: MV-D23 severed the replay
+body from the run-partitioned artifact (candidates carry `yaml_text`), and the
+CREATE path learned the fallback (`mv_create._load_ddl_artifact`) but the READ
+route never did — it reads only `genie_opt_artifacts` (route body:
+`_load_latest_artifact(run_id, "mv_candidate_ddl")`). The exposure matrix's
+`yaml_text` row (:77) is mislabeled by the same blind spot: "DELIBERATELY
+INTERNAL — the rendered form is served by route 7" is FALSE for advice runs,
+so this was a GAP wearing an INTERNAL label. Product impact, not just test:
+the IQ Scan advisory panel — the standalone surface whose contract is
+copy-ready DDL and the BYO invitation — has no DDL to render (MvSuggestResponse
+carries none and the card gets no ddl prop).*
+
+```
+1. Backend: get_mv_ddl falls back to the candidate rows' yaml_text when no
+   artifact exists for the run — the read-side twin of
+   mv_create._load_ddl_artifact's fallback, wrapped via mv_yaml.create_ddl
+   for the proposed_object. Design note the implementer must resolve and
+   record: the route is run-keyed and returns ONE artifact, but an advice run
+   can hold several candidates — either accept an optional suggestion_id
+   query param (preferred; the artifact path keeps its latest-wins behavior)
+   or define and document a deterministic pick. GRANT synthesis unchanged.
+2. Suggest surface: the IQ Scan advisory panel renders the DDL panel per
+   proposal (frame 4's card already has the slot) — fetch via the fixed
+   route with suggestion_id, or extend MvSuggestResponse with the rendered
+   ddl per proposal if the round-trip is unreasonable; whichever is chosen,
+   the response addition is additive and gets an exposure-matrix
+   classification in the same commit.
+3. Bookkeeping, same commit: matrix yaml_text row rationale corrected (it is
+   SERVED-via-fallback now, and the old rationale was false for advice
+   runs); the Tier 1 gap-report row resolved (MV-D9, self-dated); baseline
+   lockstep if counts move.
+4. Rerun the Scenario D leg (Tier 1 config, no eval spend):
+   uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v
+   — all three legs green is the exit criterion, and the run record gains
+   the rerun entry.
+```
+
+### Prompt 15.2 — Make the rendered measure body executable (decides MV-D29; blocks Tier 2)
+
+*The Scenario D BYO leg's second failure, after 15.1 unblocked the first. Read
+the MV-D29 entry in full before planning — in particular, do NOT "fix the
+literal masking": erasure is deliberate and firewall-motivated, and the fix is
+to give the renderer a different source, not to weaken canonicalization.
+Blocks Tier 2 because the benchmark corpus's measures must be authored knowing
+whether literal-bearing expressions render.*
+
+```
+DECIDE MV-D29 first and record it in the register.
+
+1. FingerprintRecurrence gains a representative_expr: the verbatim source
+   expression from one recorded occurrence, captured during corpus_scan
+   alongside the canonical form. Identity, scoring, and dedup keep using
+   canonical_expr ONLY — assert that in a test, because the whole defect is a
+   consumer reaching for the wrong field.
+2. candidate_from_measure renders from representative_expr (mv_advisor.py),
+   not canonical_expr.
+3. Firewall: the representative expression passes LeakageOracle before it can
+   reach a rendered body — erasure-by-construction is replaced by an actual
+   gate. A representative that fails the scan DROPS the candidate; it never
+   ships masked and never ships unscanned. Extend the existing oracle, do not
+   add a second scanner.
+4. mv_yaml.validate rejects placeholder tokens (NUMERIC_PLACEHOLDER,
+   the string twin) anywhere in an emitted expr — the cheap static guard that
+   would have caught this at Prompt 5.5. This is an MV-D8 gate addition:
+   an emitted body containing ?n is invalid YAML output, full stop.
+5. Fixtures: the offline suite is literal-free, which is why this survived.
+   Add literal-bearing fixtures across mv_fingerprint, mv_advisor, mv_yaml —
+   including the POV's own worked example SUM(l_extendedprice * (1 -
+   l_discount)) as a golden case, since a defect that makes the design doc's
+   canonical example unrenderable earns a permanent test.
+6. Bookkeeping: exposure-matrix classification if a persisted column is added
+   (representative_expr on the candidate row, if MV-D29 decides to persist it
+   rather than recompute); gap row resolved; baseline lockstep.
+7. Exit: rerun -k scenario_d — three-for-three green, with the BYO leg's
+   CREATE VIEW executing a literal-bearing measure.
+```
+
+### Prompt 15.3 — Proposal quality: view-grained bundles, gated surfacing, justified EMPTY (decides MV-D30)
+
+*From smoke findings 3 and 7 (and the closing product bar: "not so many, not
+none; if none — justification; if some — clear justification"). Read MV-D30
+first; it forecloses presentation-time-only grouping unless you defend it.*
+
+```
+DECIDE MV-D30 first, record it. Then:
+1. Consolidation per the decision: measure candidates sharing a source-table
+   set become ONE view proposal with multiple MeasureRequests; evidence is
+   the union; confidence per the recorded rule. Per-measure fingerprints
+   remain the dedup/suppression grain — a rejected measure never resurfaces
+   inside a bundle. mv_yaml.generate already takes multiple measures.
+2. Surfacing gates on the IQ Scan panel: MEDIUM+ shown by default; LOW
+   behind an explicit "show N low-confidence" disclosure; a candidate with
+   no proposed_object is a validation failure that never renders (the blank
+   card from the smoke run).
+3. Justification on every card, from data already carried: which measures,
+   recurrence + distinct-source counts, contributing benchmark question ids,
+   and the one-line gain statement. No LLM call — this is assembly.
+4. Justified EMPTY, keyed on the governance ladder the semantic-graph
+   endpoint already computes: (a) space already uses metric views and the
+   curated corpus routes through them -> say that plainly ("Your measures
+   are already governed — N governed concepts, no ungoverned recurrence.
+   You're in good shape."); (b) corpus present but nothing recurs ->
+   today's honest-EMPTY copy; (c) no corpus -> what to add and where.
+   Three variants, chosen from signals we already have — never one generic
+   shrug. This is smoke finding 3's "what is the point?" answered.
+5. Tests: consolidation (two measures, one source set, one proposal);
+   suppression survives bundling; gating (LOW hidden by default, disclosed
+   on demand); blank-proposed_object never renders; each EMPTY variant.
+6. Scenario D assertions updated if the proposal count changes shape;
+   exposure matrix if any column is added; baseline lockstep.
+```
+
+### Prompt 15.4 — The scan lifecycle: hydrate, progress, affordance (decides MV-D31)
+
+*From smoke findings 1, 2, 6, 7-CTA, 8. Read MV-D31 first.*
+
+```
+DECIDE MV-D31 first, record it. Then:
+1. Hydration: on mount the panel loads persisted proposals via the
+   space-scoped read (fetchSpaceMvProposals — it has existed since Prompt
+   11) and renders "last scanned <relative time> · N proposals" with
+   [Re-scan] as the explicit refresh. Navigation away and back costs
+   nothing. The advice run row supplies the timestamp.
+2. Staged progress per the decision (SSE per create.py:288 precedent, or
+   stage-row polling): honest stage names, a failure or timeout reports
+   WHERE it stopped. The bare minutes-long spinner is gone.
+3. Affordance: the scan entry is a first-class action ("Scan for metric
+   view suggestions") with one line on what it reads and expected duration
+   — not a small icon-button.
+4. Copy fixes: MvSuggestSection.tsx:89 "Looking for proposals approved for
+   this Agent..." rewritten to say what it is actually doing and shown only
+   when the check is genuinely pending; the IQ Scan CTA "Review and create
+   metric view" either expands the card inline (DDL, GRANT, evidence — the
+   15.1 wiring already fetches these) with the navigation clearly labeled
+   ("Approve & create opens the run configuration with this proposal
+   selected"), or is renamed to say where it goes. Never a button whose
+   destination surprises.
+5. Tests: hydration-on-mount (no scan call when proposals exist), re-scan
+   flow, progress states incl. failure-with-location, copy assertions.
+```
+
+### Prompt 12c — Semantic model visualization v2 (crash fix first, then the redesign)
+
+*From smoke findings 4 and 5. The v1 layout is structurally wrong for real
+spaces: dozens of measure chips stack in one column, squashing the whole
+graph into an unreadable vertical sliver inside a fixed 700x260 viewBox, with
+edge spaghetti across it. And pan/zoom crashes: drag.current!.tx uses
+non-null assertions inside mousemove (SemanticGraph.tsx:219) — a mouseup race
+nulls the ref and the page dies with "Cannot read properties of null
+(reading 'tx')" and no boundary to catch it.*
+
+```
+PART 1 — ship immediately, before the redesign:
+- Fix the pan/zoom null race (guard drag.current, no non-null assertions in
+  event handlers) and wrap the graph in an error boundary that renders a
+  "the visualization failed — refresh to retry" card instead of killing the
+  tab. A viz must never take the page down.
+
+PART 2 — the redesign. Research first, then a SHORT design note in
+docs/design/ before implementing (this is a checkpoint: post the note, get
+sign-off). Grounding requirements from the research already recorded:
+Catalog Explorer's ERD and lineage graphs are the visual language users
+know (layered left-to-right, expandable nodes); the repo's own testability
+rationale for deterministic SVG stands (renderToStaticMarkup). Directions
+the note must evaluate:
+- GROUPING over sprawl: measures render INSIDE their owning node (an MV
+  card with its measure chips, expandable; a table card with a column
+  count, not columns) — the v1 defect was giving every measure its own
+  node, which no real space survives.
+- Fit-to-content: viewBox computed from layout extents, never fixed;
+  initial render fits the graph; zoom/pan on top of a sane fit.
+- Focus interactions: click a node -> highlight its edges and dim the
+  rest; a search/jump box for spaces with many tables; collapse-by-default
+  when node count exceeds a threshold.
+- Edge routing: orthogonal or curved with labels on demand (the 12
+  carry-forward), never straight lines through node stacks.
+- The governance ladder stays the headline; coverage badges (12b) stay.
+If the note concludes a layout library is genuinely needed, that is an
+explicit decision with the no-new-graph-dependency rule amended knowingly —
+not a quiet npm install; the default remains a hand-rolled layered layout
+over GROUPED nodes, which collapses the cardinality that broke v1.
+Tests: fixture spaces at 3, 10, 30 tables render legibly (structural
+assertions on grouping/fit), crash-race regression test, boundary test.
+```
+
+### Prompt 15.5 — Run read-back integrity: the bundle body and the downgrade reason (Tier 2 findings; blocks Tier 3)
+
+*From the first clean post-redeploy Tier 2 run (record `5e8fe1ac`). Two failures,
+both "the run's read-back does not tell the truth" class. Scenario A is a real
+15.3 regression: for a view-grained bundle, BOTH the run artifact write and the
+`yaml_text` persist are gated on `rendered.ok` (`mv_advisor.py:1346-1348` and
+the backend persist twin) — so a bundle whose multi-measure YAML fails
+render/validate persists as a candidate with NO servable body anywhere:
+`/mv-ddl` 404s (the 15.1 signature reborn in-job at the view grain), the 15.1
+fallback has nothing to fall back to, the IQ Scan card would render without a
+DDL panel, and — decisively — `mv_create` would DROP the suggestion at create
+time, so **Tier 3 cannot pass until this lands**. The offline suite stayed
+green because it covers the standalone persist writer, not the in-job bundle
+render — exactly the gap a live tier exists to catch. Scenario B: a downgraded
+run's `/mv-created` read-back has `downgrade_reason: None` — hypothesis: the
+downgrade path never stamps the consent row with the run (the `run_id` fill
+documented at `ddl.py:236` happens on the create path), so
+`wh_load_mv_consent_by_run` finds nothing. Verify, don't assume.*
+
+```
+Investigation FIRST, fixes second, both findings in one commit:
+1. Reproduce Scenario A's bundle render failure OFFLINE: pull the Tier-2
+   fixture space's measures into a fixture and run the in-job bundle path
+   (advise -> consolidate -> generate -> persist). Name WHY rendered.ok was
+   false for this bundle (multi-measure generate defect? validation lint?
+   measure-name collision?) before touching anything — the fix differs by
+   cause, and a fix without the cause named is a guess.
+2. Fix A structurally, not just for this fixture:
+   - A render failure is LOUD: it rides the AdvisorOutcome detail and the
+     stage row (candidates_render_failed + reasons), never a silent gate.
+   - A candidate without a servable body NEVER surfaces: either it does not
+     persist as a proposal, or it persists in a render-failed state that no
+     read serves as a suggestion — decide which, record it in the register
+     as an "as implemented" addendum on MV-D30, and classify any new
+     column/status in the exposure matrix. The Suggest-Surface Contract
+     gains the clause: no proposal surfaces without a servable DDL body.
+   - Whatever the root cause of the render failure is, fix it too — the
+     structural guard is the net, not the repair.
+3. Fix B: the downgrade path stamps the consent row (run_id +
+   downgrade_reason) so the read-back tells the truth — or, if investigation
+   shows the reason should live elsewhere for downgraded runs, name where
+   and serve it; the invariant is the E2E assertion as written: a downgraded
+   run's /mv-created read carries a non-empty downgrade_reason.
+4. Offline tests for BOTH paths the live tier exposed as untested: the
+   in-job bundle render-and-persist path (green and render-failed variants),
+   and the downgraded-run read-back.
+4b. The OUTCOME INVARIANT, pinned generally — not just this instance. This
+   is the second live-tier catch in the same seam (engine produces X, no
+   surface can serve X: first the ?n body, now the render-gated bundle),
+   and the exposure matrix guards columns, not outcomes. Add an invariant
+   test that walks EVERY persisted surfaceable proposal a scenario produces
+   (both writers: in-job persist and backend suggest persist) and asserts
+   the full serving contract: a resolvable DDL body (artifact or yaml_text
+   fallback), a proposed_object, a tier, and justification fields present.
+   Wire it as a shared assertion helper both writer test suites call, so a
+   third writer added later inherits the pin by construction rather than by
+   memory. A proposal that persists but cannot be served fails offline from
+   now on — that class of defect never reaches a live tier again.
+5. Bookkeeping: gap-report rows flipped to RESOLVED (MV-D9, self-dated);
+   baseline lockstep; matrix if columns/status added.
+6. Exit: redeploy, rerun -k scenario_d (3/3) AND Tier 2 (A green, B's
+   run-half green), record the rerun. Tier 3 stays gated on this exit.
+```
+
+### Prompt 15.6 — Proposal lifecycle and presentation coherence (second smoke run, findings 1/6/8/9)
+
+*Root causes verified before writing this: NOTHING retires legacy per-measure
+candidate rows when a bundle covering the same measures lands — hydration
+serves both grains mixed, which is why the run showed 13 proposals including a
+detail-less single-measure card (legacy row, no measures[]) next to a bundle
+governing the same measure. And the evidence block renders RAW provenance ids
+(sql_snippet:measures:01f1330bd..., trusted_asset:...) to the user.*
+
+```
+1. Lifecycle — supersession (an "as implemented" addendum on MV-D30): when a
+   bundle persists whose member fingerprints cover a legacy per-measure row's
+   fingerprint, the legacy row is marked superseded (additive status/column —
+   matrix classification in the same commit) and no read surfaces it as a
+   proposal. Decisions on superseded rows are preserved (they feed the
+   suppression reader). Hydration and suggest both exclude superseded rows.
+   Test: the mixed-grain fixture surfaces the bundle only.
+2. Card anatomy — uniform, with explicit control: every card renders the
+   same skeleton (identifier, tier, governs-N-measures, gain line) with an
+   explicit expand/collapse chevron for the detail (measures, evidence, DDL,
+   GRANT). No more implicit expanded-vs-collapsed inconsistency — that was
+   legacy rows lacking measures[], fixed by (1), but the explicit control
+   ships anyway so density is the user's choice.
+3. Evidence for humans: counts and labels, never raw ids — "5 curated
+   snippets · 13 trusted assets · 18 curated queries", with the raw
+   provenance behind a "details" disclosure for the debugging user. Raw
+   ids reaching the default view violates the justification clause of the
+   Suggest-Surface Contract in spirit; now in letter.
+4. Recommendation among options: the top proposal (highest tier, then
+   coverage, then measure count) carries a "Recommended" badge with one line
+   on why; the default list shows the top 3-5 with "show all N". Ranking is
+   deterministic assembly — no LLM.
+5. CUJ — the run-setup handoff (finding 6): [Review in run setup] must carry
+   the proposal INTO the run config — deep-link with the suggestion
+   preselected and the MV panel expanded (the MV-D1 prefill flow the output
+   screen already has; reuse it, do not fork). Fix the stuck "Checking this
+   Agent for previously approved proposals..." — reproduce it first: likely
+   the approved-filter fetch erroring/hanging silently; whatever the cause,
+   the state must resolve (found / none / failed-with-reason) within a
+   bounded time. The checkbox copy also must not imply the check gates the
+   toggle.
+6. Progress bar + ETA (finding 8): the four stages become a weighted
+   progress bar (weights from the last scan's per-stage duration_seconds,
+   equal weights when no history) plus "usually takes ~Xm" derived from the
+   last scan's real total — the honest-estimate rule stands (never a
+   fabricated constant; "a few minutes" when no history exists).
+7. Tests per item; exposure matrix for any new column/status; baseline
+   lockstep; rerun -k scenario_d.
+```
+
+### Prompt 15.7 — Research + design: high-confidence suggestions for evidence-poor spaces (decides MV-D32)
+
+*Findings 3 and 7. Read MV-D32 first — the 34%-on-a-strong-proposal defect is
+display conflation before it is a scoring problem, and the blend arithmetic is
+not open for change. This prompt is research + design note + the display fix;
+any new signal lands only after the note's checkpoint.*
+
+```
+1. Ship the display fix now (small): the surfaced confidence becomes
+   coverage-aware — score-of-available-signals with an explicit evidence
+   caption ("based on curated SQL only — no usage history yet" / "backed by
+   usage history and lineage"). Raw blend + coverage stay in the payload for
+   the debugging user. Tier thresholds re-examined against the new display
+   so MEDIUM+ default surfacing (MV-D30) still means what it meant.
+2. Research note (docs/design/, checkpoint like 12c's): how the industry
+   generates semantic layers WITHOUT usage history — the deterministic-
+   ontology + LLM-decomposition pattern (dbt MetricFlow, Cube, AtScale,
+   Snowflake semantic views), schema-first generation from declared
+   relationships, and what an LLM-grounded quality judgment would add for
+   fresh tables (schema + profiling + curated context through
+   llm_utils/validate_chat_model, structurally validated like 17b). The note
+   takes a position on MV-D32(2): whether the judgment signal ships, as a
+   SEPARATELY-LABELED signal that never silently shares a scale with
+   recurrence — and how it relates to MV-D25 (SCHEMA_DERIVED provenance,
+   owned by the create-agent branch) without pre-empting that branch's
+   decision.
+3. Cross-surface enrichment made visible (finding 5, the true answer): GSO
+   runs and IQ scans already upsert the SAME candidates by fingerprint — a
+   GSO run adds generated-SQL recurrence and full L/D to what a scan seeded,
+   so confidence RISES across surfaces by construction. Surface it: a card
+   whose evidence grew since the last scan says so ("evidence grew in run
+   <n>: +generated-SQL recurrence, +usage signals"). Assembly, not new
+   machinery.
+```
+
+### Prompt 12d — Semantic graph data hygiene + layout polish (second smoke run, finding 2)
+
+*The v2 grouped layout landed, but the smoke run shows INTERNAL TOKENS leaking
+into the measure-concepts card: canonical exprs as labels (count(?n),
+sum(count(?n)) — the MV-D29 placeholder visible to a user), a suggestion id
+(sug_f07l2262f800) rendered as a measure concept, truncated relationship
+labels (many-to-o...), edge crossings at the fact column, and an initial frame
+that still is not fitted.*
+
+```
+1. Data hygiene (the P1): the graph's measure-concept labels use display
+   names / representative_expr-derived names — NEVER canonical_expr (the
+   identity form is not a label; MV-D29's separation applies to display
+   too), and NEVER a suggestion id. A concept with no human-usable name is
+   dropped from the card with a count ("+3 unnamed"), not rendered as
+   internals. Validator-style test: no ?n/?s, no sug_ prefix, in any
+   rendered label.
+2. Initial fit: mount applies computeFit, not scale-1 (the fit CONTROL was
+   fixed in 12c; the initial frame was not).
+3. Edge labels: relationship text never truncates into ambiguity — abbreviate
+   to the glyph set (N:1, 1:1) at rest, full text on hover (the
+   labels-on-demand rule already recorded).
+4. Edge routing at the fact column: apply the 12c orthogonal/curve routing to
+   the multi-edge fan-out that still crosses; ports exist, use them per-side.
+5. Structural tests per item; screenshots into the run record for the
+   before/after story.
+```
+
+### Prompt 12e — Semantic model v3: the metric view drawn as a semantic model (decides MV-D33)
+
+*From the semantic-model smoke review of the v2 grouped layout: the graph draws
+a metric view as one opaque "N measures" card, but an MV is itself a semantic
+model (`source` fact + `joins` star/snowflake of dims + its own `dimensions`/
+`measures`). READ `docs/design/semantic-graph-v3-note.md` first — it is the
+approved design and the v7 mockup is its visual contract. DECIDE MV-D33 (it is
+recorded reviewer-approved; confirm it stands, do not re-open) and honor its two
+hard constraints: a relational model is duplicate-free, and arrows require
+declared proof.*
+
+```
+DECIDE MV-D33 first (confirm the register entry). Then, frontend + one reader
+extension, no scoring or persistence changes:
+
+1. Data (grounding, not invention): extend the semantic-graph reader to fetch
+   each metric view's INTERNAL structure — source, joins (on/using),
+   dimensions, measures — from its YAML via the existing describe path /
+   data_sources.metric_views. This is the ONLY admissible source of join-arrow
+   proof and of the inset join tree; never re-derive a join from name
+   similarity or co-membership. A join with no declared on/using yields NO
+   arrow. Config measures (loose, in no MV) come from the space config the
+   reader already assembles.
+2. Deduplicated relational canvas (constraint 1): tables (fact + dim) are the
+   node set, each rendered EXACTLY ONCE; a dim shared by two MVs is one node.
+   Test: shared dim => single node, membership marked in both MV boxes.
+3. Measures boxed by owner: one box per metric view carrying its measures, plus
+   a Space-config box for measures in no MV; each measure provenance-tagged
+   (MV/governed vs config/ungoverned); unnamed measures collapse to a count
+   (+N unnamed) — the 12d/MV-D29 hygiene validator (no ?n/?s, no sug_) extended
+   to this surface.
+4. MV as an on-demand boundary (not a node): at rest the boundary is the
+   measure box, with subtle arrows from the box to the tables it uses (declared
+   joins only), and tables carry NO boundary at rest; on SELECT of an MV box,
+   draw a labeled boundary wrapping EXACTLY its member tables (the Euler
+   contiguity guarantee — no foreign table inside the rect; fall back to a
+   member-hull outline if contiguity fails), highlight only its declared join
+   arrows (N:1 glyph at rest, full on-predicate on hover — labels-on-demand),
+   light its measures, dim the rest.
+5. Unmodeled region (constraint 2 corollary): tables in the space/catalog but
+   in no MV render in a neutral "Unmodeled · no MV" region with ZERO edges.
+   Test: unmodeled table has no arrows.
+6. Selection semantics: select table => light the MV box(es) using it (shared
+   table lights several) + its declared edges; Lineage vs Impact retained from
+   12c (both-direction vs downstream blast radius). Select measure => owning box
+   + the tables in that MV's definition.
+7. Direct manipulation: any table or MV box is DRAGGABLE (session-only offset,
+   layered on the deterministic home layout, cleared by "Reset layout"); pan on
+   empty background. Drag is NOT persisted and NOT part of the diff seed.
+8. Determinism preserved (v2 §7): render stays a pure function of
+   (tables, edges, mvBoxes, selection, dragOffsets, viewport);
+   renderToStaticMarkup-testable; the proposed-MV diff overlay draws as a dashed
+   boundary over existing tables (no ghost table copies). Carry forward v2's
+   fit / focus / derived collapse threshold (§9) / edge ports (§5) unchanged.
+9. Governance roll-up survives grouping (v2 §8, MV-D8 spirit): per-box and
+   panel-level governed/curated/ungoverned counts render even when detail is
+   collapsed. Inset (curator panel) carries the join tree (indented for
+   snowflake), dimensions grouped by binding, measure governance, filter,
+   materialization, and reuse/conflict signals.
+10. Structural tests per item above; before/after screenshots into the run
+    record. No layout library (MV-D33 / v2 §6 reaffirmed).
+```
+
+### Prompt 15.8 — The acceptance journey, owned end-to-end (implements MV-D34 + MV-D35; blocks the fourth look and Tier 3)
+
+*From the third smoke run's process autopsy: three waves of display patches
+never owned "user sees a suggestion → accepts it → the metric view exists" as
+one journey, the Approve affordance never existed on the IQ surface, the
+Recommended badge was reported done and never implemented, and the percent
+display was band-aided twice instead of replaced. This prompt is the journey,
+not patches — and it is built in SHARED components consumed by BOTH suggestion
+surfaces (the IQ panel and the run-output panels), so the post-GSO surface
+inherits every fix by construction rather than by a repeat of this work. READ
+MV-D34 and MV-D35 first; both are reviewer-approved — confirm, do not reopen;
+a repo contradiction STOPs and amends, never silently diverges.*
+
+```
+ARCHITECTURE CONSTRAINT, first-class: one MvProposalCard, one accept flow, one
+display module — consumed by MvIqScanAdvisorySection AND the run-output panels
+(MvSuggestOnlyPanel / MvCreateAttachPanel). A structural test asserts both
+surfaces render the SAME card component and the SAME accept-flow component.
+Divergence between the two suggestion surfaces is the defect class this
+prompt exists to end.
+
+1. THE ACCEPT FLOW (MV-D34). On every proposal card, the primary action is
+   [Create this metric view]:
+   a. Click → fresh probe (POST /mv/probe, the OBO route that exists) against
+      the proposal's target schema.
+   b. SUFFICIENT → consent modal: target shown, GRANT preview, an explicit
+      consent confirm (record_consent) → create under OBO through the
+      mv_create seam (reuse; never fork, never SP) → ledger row OBO_CREATED
+      under the space's advice run — the BYO-register rails (MV-D24), same
+      pickup: attached and measured on the next optimization run. Success
+      state on the card: "Created · will be attached and measured on the next
+      run" + Catalog Explorer link + [Start an optimization run].
+   c. INSUFFICIENT/UNKNOWN → the button degrades to [Approve for later]
+      (approved_for_rerun — the classic MV-D1 path, retained on both
+      surfaces) with the remediation GRANT shown copy-ready. Never a dead
+      end, never a silent downgrade.
+   d. Run setup coherence: the run-config MV section lists created-unattached
+      views ("will be attached this run") and approved-for-rerun proposals
+      (create-at-trigger, unchanged); the [Review in run setup] deep-link
+      carries the suggestion id and preselects it. The "Checking..." state
+      resolves within bounded time (found / none / failed-with-reason).
+2. THE DISPLAY REPLACEMENT (MV-D35), in the shared display module:
+   - Facts row of explicit checks (validated / executable / no-overlap), each
+     wired to the gate that proved it — the check renders ONLY if its gate
+     actually ran (a check that lies is worse than the percent).
+   - Evidence as a human sentence; ids resolved to human things in the
+     details disclosure — a trusted_asset id resolves to its example-question
+     text, a sql_snippet id to the snippet's name/expr (UI display; the
+     metadata firewall is untouched — it governs what ships INTO metric-view
+     metadata, not what the owner sees in their own panel).
+   - Score never displayed as a percent or the word "confidence": it orders
+     the list and picks ONE Recommended (rationale line included); when all
+     surfaced proposals have disjoint measure sets, render the orthogonality
+     callout ("all N are independent — any or all can be created") instead
+     of a forced ranking.
+   - Fix COMPUTED≠SUPPORTIVE in confidenceDisplay (mvFormat.ts:313-315):
+     basis captions reflect signal CONTRIBUTION (value above a floor), not
+     mere execution.
+3. SMALL FIXES, same commit, all verified defects from the third look:
+   - Proposal count = rendered count (server list length minus client-side
+     filters, or the server excludes what the client would filter — one
+     truth, tested).
+   - Uniform expand/collapse on every card section (detail, evidence, SQL),
+     collapsed by default beyond the first Recommended card.
+   - GRANT grantee prefilled from the space's ACL (principals with CAN RUN
+     via the existing permissions read) — a picker when several, never
+     `<grantee>` in the copy-ready statement.
+   - ETA phrasing: "last scan took Xm Ys" states the fact; drop "this
+     usually takes about that long" until there are >=3 samples (then a
+     range). Honest-estimate rule.
+4. TESTS: the journey as one test (suggest -> create -> ledger row
+   OBO_CREATED under an advice run -> run-config lists it as
+   will-be-attached); the degrade path (insufficient probe -> approve-for-
+   later + remediation GRANT, nothing created); shared-component structural
+   test (both surfaces, same card); display checks (facts row gated on real
+   gates, no "%" and no "confidence" string in any rendered proposal card,
+   orthogonality callout, resolved evidence labels); count truth; the
+   COMPUTED≠SUPPORTIVE caption fix. Extend the E2E BYO leg's sibling: a
+   scenario_d sub-leg exercising create-at-approval against the live
+   workspace (create, verify Type: METRIC_VIEW, ledger provenance, manual
+   teardown — the app never drops).
+5. FIDELITY GATE (the process fix, now a rules-file discipline — see the
+   fidelity-gate rule added to .cursor/rules/mv-advisor.mdc alongside this
+   prompt): before reporting done,
+   export the IQ panel and run-output panel states through the mockup
+   emitter (both themes) and attach them to the report next to the approved
+   reference frames; the reviewer accepts only after comparing them and
+   adversarially re-grepping every numbered item above. Structural tests
+   green is NOT acceptance.
+6. MV-D9: matrix classification for any served field this adds; gap-report
+   rows for the third-look findings flipped RESOLVED self-dated; baseline
+   lockstep; redeploy; rerun -k scenario_d.
+```
+
+### Prompt 12f — Semantic canvas fidelity: reconcile the deployed v3 to the approved v7 contract (third-look finding 1; runs with 15.8, same redeploy)
+
+*The third look found a large fidelity gap between the approved v7 mockup and
+the deployed canvas: a tiny cramped diagram floating in a mostly-empty panel
+vs the mockup's spacious, legible, legend-equipped frame. Root cause, found at
+review: **the v7 mockup was never committed** — the v3 note names it "the
+visual contract" but it exists only in the interactive session that produced
+it (brainstorm v4→v7). 12e implemented mechanics against an uncommitted
+contract; structural tests cannot see density; the reviewer met the gap in
+production. The fidelity-gate rule now requires committed references — this
+prompt creates the first one.*
+
+```
+0. COMMIT THE CONTRACT FIRST. Rebuild the approved v7 frame as an emitter
+   mockup (frame 9-family, both themes) from the v3 note's spec §3-§4 and
+   the reviewer's approved v7 screenshot (in the third-look record):
+   spacious columns, fact/dim cards with type captions and coverage dots,
+   MV measure-boxes right with per-box "N measures · governed" chips,
+   Space-config box with overlap warnings and the +N-unnamed row, legend
+   (top-right), header controls (search, Lineage/Impact, Fit, +/-, Reset
+   layout), zoom % indicator, footer tip line, curator inset strip below.
+   STOP for the reviewer's confirmation that the committed frame IS the
+   contract they approved — then it is the reference the gate compares
+   against, forever.
+1. RECONCILE SemanticGraph to it. The mechanics (dedup canvas, proof
+   arrows, boundaries, drag) landed in 12e and are NOT rebuilt; this is
+   fidelity: initial render FILLS the viewport via computeFit (no tiny blob
+   in an empty panel — the fit that ships is the fit the mockup shows),
+   spacing/density constants matched to the frame, card typography and
+   captions, the legend, the visible control row, the zoom indicator, the
+   footer tip, per-box chips, overlap badges, unnamed-measures row styling.
+   Every deviation from the frame is either fixed or named in the report
+   with a reason (the fidelity-gate contract).
+2. VERIFY through the gate it inaugurates: emitter exports of the real
+   component (fixture data, both themes) attached side-by-side with the
+   committed v7 frame; the 3/10/30-table fixtures re-exported; structural
+   tests unchanged and green; the reviewer accepts on visual comparison,
+   not on green tests.
+```
+
+*Execution note — round 4 (2026-08-25). The round-3 reconciliation moved loose
+measures to a full-width `LooseMeasuresPanel` BELOW the canvas; deploying it, the
+reviewer caught three breaks from the reference and v3 note: (1) loose measures
+belong ON the canvas in the measures column, on the right (§3), not in a panel
+below; (2) selecting a box must LIGHT its edges (§4 / reference `BlueprintEdge`);
+(3) selecting a MEASURE must wrap its owning MV's tables (§4). All three are fixed
+in `SemanticGraph.tsx` — the concepts card rides `(CONCEPTS_COL=2,
+CONCEPTS_ROW)` and renders through `CardView`; active joins switch to the accent
+hue + `mv-arrow-on` over a glow underlay; the boundary resolves a selected
+measure to its owning MV via the `membership` edge. Plus reference-parity
+interactions: empty-canvas click clears the selection and re-clicking a node
+toggles it off (`onSelectNode` accepts `null`). The **9e contract frame was
+corrected to match** (its `SpaceConfigBox` HTML panel became an on-canvas
+`SpaceConfigNode` SVG group), the gap report records the reversal of round-3 item
+1 as round 4, and all 41 mockups were re-emitted. Full detail in
+`docs/design/mv-advisor-gap-report.md` (round 4).*
+
+*Execution note — round 5 (2026-08-25). The reviewer filed nine points on the
+round-4 deploy; each is closed, with the reviewer choosing the direction on the
+design forks. Space config now has its OWN column (`CONCEPTS_COL=3`, header
+"Space config · measures") rather than stacking under the MV boxes where it read
+as "below". Fact/dim is now a PROVEN backend `role` (fact = an MV's declared
+`source`, dim = an MV-joined table) captioned FACT/DIM only when proven, else a
+neutral TABLE — the fix for `dim_*` tables shown as FACT from column position.
+Measures carry `expr` + best-effort `description` on the wire, and `NodeDetail`
+shows a Definition section for a selected measure. Definition (`uses`) edges now
+render only for the selected MV (calm at-rest canvas); the palette is calmer
+(near-neutral MV boxes, neutral coverage badges, accent reserved for selection);
+the legend disambiguates the solid join from the dotted MV-definition line; the
+MV title/pill overlap is fixed (title full width, pill on row 2); Impact is
+disabled+greyed until a table is selected; and the select-time boundary is a
+solid accent container with a filled label chip. The authoritative post-round-5
+export is `RealModelV7Frame` (real component); the hand-drawn 9e frame is kept as
+the step-0 layout reference (headers relabelled, geometry not re-hand-drawn).
+Verified: 394 frontend + 31 backend semantic-graph tests green, `tsc`/lint clean,
+41 mockups re-emitted. Full detail in `docs/design/mv-advisor-gap-report.md`
+(round 5).*
+
+*Execution note — round 6 (2026-08-25). On the round-5 deploy the reviewer said
+the arrows were "still hodge podge and illegible … too many arrows … columns and
+tables too close", that the proposal overlay "hides some measures", and that "I
+don't see any MV proposals when I click on it". Re-reading the reference
+(`7-Eleven … BlueprintEdge`) surfaced the actual missing pattern: FOCUS + CONTEXT.
+The reference keeps every edge faint at rest and, on selection, DIMS all
+non-neighbour edges to near-invisible (`opacity 0.06`); ours kept joins loud at
+rest and never dimmed on select, so a click added clutter. `EdgeView` now takes a
+`dimmed` prop (`dimmed = highlight != null && !active && hoverEdge !== index`);
+join labels are on-demand only (nothing floats at rest); and `COL_GUTTER` 40 → 68
+/ `VGAP` 26 → 34 give the curves room. The overlay is fixed at the root: the old
+membership edge MOVED loose measures into an off-screen ghost card (that's the
+"hidden measures" + "no proposals"), so it now KEEPS the measure in Space config
+and draws a dashed "would govern →" link (client-only edge `kind: "governs"`) to a
+visible ghost proposed-MV card, with a `key`-driven re-fit on toggle so the ghosts
+frame into view. A new real-component frame `RealModelOverlayFrame` (9j) exports
+the overlay-on state; the 9c hand-drawn overlay and the 9e contract frame headers
+record the round-6 supersession. Verified: 395 frontend tests green, `tsc`/lint
+clean, mockups re-emitted (incl. 9j); no backend change (edges are
+client-synthesized). Full detail in `docs/design/mv-advisor-gap-report.md`
+(round 6).*
+
+*Execution note — round 7 (2026-08-25). On the round-6 deploy the reviewer asked
+two questions. (1) "Why are there 2 arrows between 2 tables?" — `dim_property ↔
+dim_host` genuinely declares two `join_specs` (a reciprocal declaration + an SCD2
+`is_current` variant) and the backend emits one edge per spec; a reader sees one
+relationship, so the canvas should draw one arrow. New pure helper
+`collapsePairJoins` keeps ONE `join` per unordered card pair (preferring the
+left→right survivor so the arrowhead points at the dim side); the full predicate
+list still lives in the node-detail "Declared joins" panel. (2) "Why doesn't
+lineage light up for space config measures?" — a loose measure belongs to no MV,
+so it had no edge: `focusSet` found nothing and round-6 dimming then hid the
+canvas. Its real lineage is the tables its EXPRESSION reads, so the backend now
+parses each non-governed measure's `expr` (`_expr_table_refs`: fully-qualified
+`catalog.schema.table.column` → its table) and emits a `derives` edge measure →
+table (new `MvSemanticGraphEdge.kind`). A table the expr proves but the space never
+modeled is ADDED as a neutral source (lands in the unmodeled region — the honest
+read). The client renders `derives` ONLY on-select (dashed, like `uses`), and
+`focusSet` lights the referenced tables. Governed measures already wrap their MV, so
+they're skipped. Verified: 34 backend + 93 frontend model tests green, `tsc`/lint
+clean. Full detail in `docs/design/mv-advisor-gap-report.md` (round 7).*
+
+### Prompt 15.9 — Complete the 15.8 contracts (fourth look; four partial landings, one of them masking the feature)
+
+*15.8's card-level work landed — the facts row is live and correct. But four
+contracts landed PARTIALLY, and the first one hides the feature the prompt
+existed to build. Root causes verified at review, so no re-diagnosis needed:*
+
+*(a) THE MASKING BUG — `MvAcceptFlow` renders its `status === "approved"`
+terminal ("Approved for the next run", `MvAcceptFlow.tsx:238-243`) on first
+paint for proposals the user never acted on, so `[Create this metric view]`
+— which DOES exist in the component, with a working `created` terminal at
+`:207-232` — is never reachable. MV-D34 shipped and is invisible. Find why the
+initial status resolves to approved (a persisted `approved_for_rerun` written
+by something other than the user's click, or an initialization deriving
+success from a null/adjacent field) — then honor the new TERMINAL-STATES-MUST-
+BE-EARNED rule: the state initializes only from a persisted record of the
+user's OWN action.*
+
+*(b) MV-D35 applied to cards, NOT to list chrome: "Show N low-confidence
+suggestions", "(nothing scored MEDIUM or higher)", "Low-confidence
+suggestions — weaker recurrence or thinner evidence"
+(`MvIqScanAdvisorySection.tsx:426-432`). Chrome is surface; the word
+"confidence" is banned there too.*
+
+*(c) The ACL grantee resolution EXISTS (`_space_audience_grantees`,
+`auto_optimize.py:1526`) and feeds the consent modal, but the card's
+`grant_sql` still emits `` `<grantee>` `` (`:1419-1431`). One call site fixed,
+its sibling not.*
+
+*(d) Evidence id resolution was specced and not built: `mvFormat.ts` has count
+labels by prefix only (`:149-161`); the details disclosure still dumps
+`sql_snippet:measures:01f1330…` / `trusted_asset:01f1330…` at the user.*
+
+```
+1. (a) Fix the masking bug FIRST — nothing else matters while the primary
+   action is unreachable. Report the actual cause before fixing. Then: the
+   default state of an un-acted proposal is the ACTION state
+   ([Create this metric view] / [Approve for later]); "Approved for the next
+   run" renders only for a proposal whose ledger says THIS user approved it,
+   and even then the card offers [Create it now] if entitlement allows —
+   approval-for-later is not a dead end.
+2. (b) Sweep MV-D35 across all chrome: rename the disclosure to describe
+   EVIDENCE, not doubt — e.g. "Show N with lighter evidence" / "N more, ranked
+   lower by evidence" — and delete the "weaker recurrence or thinner
+   evidence. Review before creating." framing (every surfaced proposal is
+   already validated, executable and non-overlapping; the disclosure orders,
+   it does not warn). The empty-primary case says what it means: "All N
+   suggestions are ranked lower by demand evidence — each is still validated
+   and executable."
+3. (c) Card `grant_sql` uses the SAME `_space_audience_grantees` resolution as
+   the consent modal — one grantee truth. Multiple principals → the copy-ready
+   statement names them (or one statement per principal); zero resolvable →
+   say so in words rather than emitting a placeholder that cannot run.
+4. (d) Build the evidence resolution: a `trusted_asset:` id resolves to its
+   example-question text (truncated, full on hover), `sql_snippet:` to the
+   snippet's name/expression, `gso_patch:` to its patch type + run. Ids move
+   behind a "show raw ids" affordance for debugging. UI display only — the
+   metadata firewall governs what ships INTO metric-view metadata, not what
+   the space's own owner reads in their own panel.
+5. VERIFY — grep-proofs pasted into the report, per the new CONTRACT-SWEEPS
+   rule: zero occurrences of "confidence"/"low-confidence" in any rendered
+   proposal or chrome string; zero `<grantee>`; zero raw-id rendering outside
+   the debug affordance; and a test that an un-acted proposal renders the
+   action state (the masking-bug regression pin). Plus the fidelity-gate
+   exports for both surfaces, and the adversarial re-grep of items 1-4.
+6. MV-D9 bookkeeping; baseline lockstep; redeploy; -k scenario_d incl. the
+   create-at-approval sub-leg — which is now actually reachable, so this is
+   its first real live exercise.
+```
+
+*Execution note — Prompt 15.9 (2026-08-25). All four landed; local VERIFY green.*
+
+*(a) Masking bug — ROOT CAUSE reported before fixing: warehouse rows arrive
+stringified (Statement Execution `JSON_ARRAY`), so `bool("false")` was `True`
+for EVERY row (`_mv_proposal_from_row` used a raw `bool()`), forcing
+`approved_for_rerun` true → `MvAcceptFlow` opened on its "approved" terminal →
+`[Create this metric view]` unreachable (MV-D34 shipped invisible). Fix: the
+backend coerces via the existing `_safe_bool` (both `approved_for_rerun` and the
+sibling `tier_capped_by_coverage`); the frontend now earns the terminal —
+`status` initializes to `approved` ONLY from `proposal.decision === "approved"`
+(TERMINAL-STATES-MUST-BE-EARNED), never the derived gate — and the approved
+terminal still offers `[Create it now]` (not a dead end). Regression pins:
+`test_proposal_mapping_coerces_stringified_false_boolean` (backend) and
+"an un-acted proposal renders the ACTION state, even when approved_for_rerun is
+set" (frontend).*
+
+*(b) MV-D35 chrome sweep: the low-evidence disclosure in
+`MvIqScanAdvisorySection.tsx` describes EVIDENCE, not doubt — "Show N more,
+ranked lower by evidence" / empty-primary "All N suggestions are ranked lower by
+demand evidence — each is still validated and executable." The word
+"confidence" and the "weaker recurrence or thinner evidence. Review before
+creating." framing are gone from rendered chrome.*
+
+*(c) One grantee truth: `get_mv_ddl` resolves the audience from
+`_space_audience_grantees` (the SAME ACL the consent modal reads) via a new
+`_mv_audience_grant_sql` helper — one `GRANT SELECT ... TO` per resolved
+principal, or a commented "no queryable audience resolved" instruction when the
+ACL yields none. The fallback DDL payload now carries `target_space_id` so the
+advice-run path resolves too. The frontend `grantPreview` mirrors it. Zero
+`<grantee>` in any emitted string.*
+
+*(d) Serve-time provenance resolution: the backend resolves each evidence id to
+a human label from the CURRENT space config (no re-scan) — `sql_snippet:` →
+the snippet's display name (detail = its expression), `trusted_asset:` → its
+example-question text, `gso_patch:` → lever/iteration; a bare benchmark id stays
+the "curated query" count. `_mv_attach_provenance_labels` runs on all three
+proposal reads (run-keyed, space-scoped, and the on-demand suggest/stream, which
+reuse the config already in hand). `MvProposal.provenance_labels` carries them;
+`MvProposalCard`'s EvidenceBlock renders the labels and keeps the raw ids behind
+a renamed "show raw ids" DEBUG affordance — the ONLY place a raw id renders. A
+latent raw-id leak in re-run chrome (`MvSuggestSection` fell back to
+`suggestion_id`) now reads "Proposed metric view". New pins in
+`backend/tests/test_mv_provenance.py` and a frontend "renders resolved
+provenance labels, keeps raw ids behind the affordance" test.*
+
+*VERIFY (local): backend 2208 passed, frontend 401 passed, eslint clean, tsc
+clean. grep-proofs — zero rendered "confidence" on MV production surfaces (only
+identifiers/comments and the graduated hand-drawn scaffold `mockups/
+MvProposalCard.tsx`, unwired from the app, retain the word); zero emitted
+`<grantee>` (all occurrences are comments/tests asserting its absence); raw ids
+render only inside the `showRaw` block. Fidelity exports regenerated (43 frames,
+both themes) — the real-component frames `15.8a`/`15.8b` now show "show raw ids"
+and no percent. REMAINING: MV-D9 bookkeeping, baseline lockstep, live redeploy to
+fevm-serverless, and `-k scenario_d` incl. the create-at-approval sub-leg (first
+reachable now that (a) is fixed).*
+
+*Execution note — deployed review of 15.9 (2026-08-25). Four points on the
+fevm-serverless deploy; two were regressions from (c)/(d), two were design calls.*
+
+*1. "Why so many grants?" — the card emitted one GRANT per space-ACL principal
+(a group UUID, `users`, `admins`, and a self-grant to the app SP). Reviewer's
+call: the ONE grant that matters functionally is SELECT to the GSO service
+principal, so the optimizer can read a view created under the owner's identity on
+a create-and-attach run. `get_mv_ddl` now emits a single `GRANT SELECT ... TO
+\`<sp-uuid>\`` via `_mv_optimizer_grant_sql` + `_gso_sp_application_id` (the same
+resolution `check_permissions` uses); no SP resolvable → a commented instruction.
+The consent modal's audience selector/preview is replaced by a worded
+optimizer-grant note (no SP identity threaded to the modal). `_space_audience_
+grantees` stays only for the probe's `audience_grantees` field.*
+
+*2. "Repeating trusted asset / curated snippet." — REGRESSION from (d):
+`_mv_fetch_space_config` returned the export envelope, but the config lives under
+`_parsed_space`, so the index was empty and every id fell back to its generic
+category label. Fix: `_mv_provenance_index` unwraps `_parsed_space`, AND a label
+is emitted ONLY when it resolves to real config text (snippet name/expr,
+example-question text) — `gso_patch`/unknown/id-less now return `None` and ride
+the count chip. Deduped by text; card caps at 6 with "+N more". Reviewer's
+"count unless meaningful" satisfied literally.*
+
+*3. Metric-view attributes columnar. — `MvProposalCard`'s full-width governed-
+measures list is replaced by `MetricViewAttributes`: a responsive grid, Source +
+Joins on the left, Measures (by formula) on the right; empty sections omitted.
+Source moved out of `EvidenceBlock` (which stays about WHY) to avoid duplication.*
+
+*4. "Review in setup → empty/stuck GSO run gate." — two parts. (i) The stuck
+"checking for approved proposals" was (d) latency: `_mv_attach_provenance_labels`
+ran a serve-time Genie config export on the `approved_for_rerun` GATE query too;
+now skipped when that filter is set. (ii) The pointless jump: the pre-create
+`[Review in run setup]` button (idle + approved terminals) is removed so IQ scan
+stays self-contained; `[Start an optimization run]` remains on the CREATED
+terminal only (the endorsed create→optimize flow). `MvOutputPanels` pin flipped
+to assert the button's absence.*
+
+*VERIFY (local): backend `-k "mv_create or provenance or mv_ddl or
+auto_optimize_router"` 176 passed; frontend auto-optimize+model 330 passed; tsc
+clean; eslint clean. Not yet redeployed.*
+
+*Execution note — deployed review round 2 (2026-08-26). Six points on the full
+fevm-serverless deploy; #3 (grants) confirmed good. One was a real create-path
+bug verified against the live workspace; the rest were surface polish + a feature.*
+
+*4a. "Create failed — no access, but I DO have access." — VERIFIED false negative.
+Against fevm-serverless the signed-in user OWNS the target schema
+(`serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold`) and holds
+`ALL_PRIVILEGES`+`MANAGE` on the catalog (a full-token CLI read as the same
+identity returns them). The probe (`mv_entitlement.probe`) nonetheless denied all
+three of USE CATALOG / USE SCHEMA / CREATE TABLE: it relied solely on
+`grants.get_effective`, which the OBO app token is not scoped to call (the
+documented OBO-scope gap), and it mapped that READ FAILURE to DENIED — a false
+"ask an admin to GRANT." Two fixes, both OBO-only (the probe still never falls
+back to the SP): (1) ownership is authoritative — `_securable_owner`
+(catalogs/schemas/tables `.get().owner`, metadata the user can always read) short-
+circuits a check to GRANTED when the user or a group owns the securable or an
+ancestor; owning the schema also satisfies the parent USE CATALOG. (2) a failed
+effective-read is now UNKNOWN, not DENIED. Regression pin
+`test_schema_owner_is_sufficient_without_any_grant_read`; two prior "read failure
+⇒ DENIED" tests re-pinned to UNKNOWN. Verified: 42 entitlement tests pass.*
+
+*2. "Measures still bland — no Source/Joins/Measures columns." — the columns
+existed but the Source column never populated: `evidence.source_tables` was never
+written by the advisor, and member `expr`s are short-form (not FQ), so the left
+column was always empty and the grid collapsed to Measures-only. Fix: serve-time
+`MvDdlArtifact.source_tables`, parsed from the rendered `yaml_text` (`source:` of
+base + each join, per-segment backticks normalized) — the authority, works for
+existing rows with no re-scan (`_mv_source_tables_from_yaml`). The advisor also
+now stamps `evidence["source_tables"]` for forward rows / the run-output surface.
+`MetricViewAttributes` reads `ddl.source_tables ?? evidence.source_tables` and
+labels a one-source view "Single-source view" when the DDL is loaded. Pin
+`test_get_mv_ddl_parses_source_tables_from_yaml`.*
+
+*4b. "After expanding, no way to collapse." — the card's "Hide detail" toggle sits
+ABOVE the detail; once measures + evidence + two SQL blocks open, it scrolls out
+of reach. Added a second "Hide detail" affordance at the foot of the expanded
+detail.*
+
+*5. "No summary of what's proposed." — new `MvProposalsSummary` above the cards on
+BOTH surfaces (IQ-scan advisory + run-output): "Suggesting N metric views to
+govern M recurring measures", the view names each with their measure count, and
+one line on what they help. Pure assembly from the same `MvProposal[]`; renders
+nothing when no proposal carries a name.*
+
+*1. Evidence formatting. — counts rendered as quiet pills (not a run-on sentence);
+label list given a bullet + tighter spacing; raw ids stay behind "show raw ids".*
+
+*VERIFY (local): backend 195 passed (entitlement/create/provenance/semantic-graph
++ GSO advisor); frontend auto-optimize suites 76 passed; `npm run build` (tsc -b +
+vite) clean; 43 fidelity mockups re-emitted. Not yet redeployed.*
+
+*Execution note — deployed review round 3 (2026-08-26). Three points after the
+round-2 deploy; #4a's ownership fix WORKED — create now reaches UC execution
+(access is no longer the blocker), which surfaced the real generator bug below.*
+
+*1. "Text overflow on the confirmation screen." — the consent modal rendered the
+FQN as an inline `font-mono` span, and a long `catalog.schema.name` has no spaces
+to wrap on, so it ran past the dialog edge. Fixed in `MvAcceptFlow`: the sentence
+no longer inlines the name; the FQN renders on its own `break-all` block below it,
+so any length wraps inside the modal.*
+
+*2. "Error when I actually tried to create it." — VERIFIED, and it's a real
+generator defect (not access): UC returned `METRIC_VIEW_INVALID_VIEW_DEFINITION —
+Measure and dimension names must be unique` for a bundle whose duplicated names
+(`…_rate`, `…_rate_numerator/_denominator`, `…_pct_of_total`, `…_pct_of_total_base`,
+`…_grand_total`, `…_matching_count`) were ALL shape-derived. Root cause in
+`mv_yaml._shape_measures`: a shape's name comes from `concept` + kind, so two
+shapes of the SAME kind in one bundle (two ratios, two share-of-totals) render
+identical names. Fix: de-dup the shape BASE (every component name and every
+`MEASURE()`/`ANY_VALUE()` reference is built from it, so deduping the base keeps
+the whole family unique and self-consistent) — a repeated base becomes
+`<base>_2`, `_3`, …; the dedup is seeded with the primary measure/dimension names
+too, so a shape can't collide with those either. Belt-and-suspenders: the local
+validator now rejects any residual duplicate name (`_validate_unique_names`),
+turning this class into a local rejection with the offending name rather than a
+late UC-create failure. Pins `test_two_same_kind_shapes_get_unique_names_and_validate`
+and `test_validate_rejects_duplicate_measure_or_dimension_names`.*
+
+*3. "Still don't see the option to expand/collapse the suggestion." — the round-2
+control was a faint gray text link ("› Show detail") buried between the evidence
+line and the Create button; users didn't read it as the accordion. Replaced with
+an always-visible, labeled/bordered chevron toggle in the card HEADER (the
+standard accordion affordance), so expand/collapse of the whole suggestion is
+obvious at a glance; the foot-of-detail "Hide detail" from round-2 stays.*
+
+*VERIFY (local): GSO `test_mv_yaml.py` 43 passed (incl. 2 new pins); frontend
+tsc-app clean; MV suites (`MvOutputPanels` / `MvIqScanAdvisorySection` /
+`MvSharedAcceptFlow`) 37 passed; 43 fidelity mockups re-emitted; `uv.lock`
+untouched. Not yet redeployed.*
+
+*Execution note — deployed review round 4 (2026-08-26). One point after the
+round-3 deploy; the dedup fix WORKED (the rendered body carried `…_rate_2`…`_8`,
+`…_pct_of_total_2`, all unique), which surfaced a deeper generator bug — and it
+confirmed the user's instinct that "robust suggestion+validation+creation" was
+overstated.*
+
+*1. "PARSE_SYNTAX_ERROR at or near '(' " on a share-of-total dimension. — VERIFIED
+as a compound generator defect, backend AND job (one shared `advise_from_corpus`
+→ `generate` → `validate` path). Two causes. (a) The fixed-LOD grand-total
+dimension was built as `f"{qualified} OVER ()"`, valid ONLY when the base is a
+bare aggregate; the base here was `COUNT(*) * 100.0`, so `OVER ()` bound to the
+literal `100.0` → parse error (a second one stapled `OVER ()` onto an
+already-windowed `LAG(...) OVER (...)`). (b) The bigger cause: recurring shapes
+are mined from the WHOLE corpus into one global `safe_shapes`, and that same set
+was handed to EVERY bundle regardless of table — so a view over
+`fact_booking_daily` got 8 ratios / 2 share-of-totals / 2 conditional-counts
+whose expressions read columns the source doesn't have (`total_revenue`, `month`,
+`total_amount`, `property_id`, …), a 34-item kitchen sink. Nothing rejected it
+because `_qualify_source_columns` silently leaves an unknown column bare and
+`validate()` never SQL-parsed the expressions.*
+
+*Fix (three layers, defense in depth, all in `mv_yaml`): (1) SCOPE — a shape is
+dropped unless every column its expression reads is in the columns we can prove
+belong (source columns ∪ the columns the view's own measures read; the `name`
+label is never scanned). This kills the foreign-column kitchen sink even when the
+source's columns weren't profiled (the observed case: primary measures rendered
+unqualified, i.e. `source_columns` was empty — it degrades to the measures'
+columns rather than to nothing). (2) GUARD — the share-of-total shape is dropped
+unless its base `_is_simple_aggregate` (single aggregate, no window), so
+`… OVER ()` is only ever built where it is valid. (3) GATE — `validate()` now
+SQL-parses every measure/dimension `expr` (databricks dialect) and rejects an
+unparseable one with the offending name, turning this whole class into a local
+rejection instead of a UC-create failure. Confirmed sqlglot rejects both
+malformed `… OVER ()` forms and accepts every form we actually emit
+(`MEASURE()`, `ANY_VALUE()`, `FILTER (WHERE …)`, `SUM(…) OVER ()`, `NULLIF`).
+Pins: `test_shape_reading_a_foreign_column_is_dropped`,
+`test_pct_of_total_with_a_non_aggregate_base_is_dropped_not_broken`,
+`test_validate_rejects_an_unparseable_expression`. NOTE (replay): the create path
+replays the STORED artifact, so an already-persisted bad proposal still fails
+gracefully — a re-scan regenerates a clean one.*
+
+*VERIFY (local): GSO full unit suite 1517 passed (incl. 3 new pins); backend
+suite 2216 passed; gap-report line counts refreshed (`gap_report_counts.py
+--write`); `uv.lock` untouched. Backend/engine-only — no frontend surface changed,
+so the Fidelity Gate needs no new mockups this round.*
+
+*Execution note — deployed review round 5 (2026-08-26). One point after the
+round-4 deploy, and the one that reframed the whole create CUJ. The user created
+a metric view successfully, then reported: "I continue seeing proposals for 3
+metric views, I don't see the semantic model updated, and I'm not sure the Genie
+Agent config was updated." The instinct was right — and it exposed a design gap,
+not just a UI staleness bug.*
+
+*1. "Created, but the config/semantic model didn't change and the proposals still
+list it." — VERIFIED against the code (loaders confirmed run_id-scoped in
+`warehouse.py:1413/1445/1483`; attach phase reads its own run's `CREATED` rows in
+`mv_attach.py:384-398,469-472`). Root cause: create-at-approval only issued an OBO
+`CREATE VIEW` + an `OBO_CREATED` ledger row under a **sentinel advice run_id**;
+the documented "attach on the next run" was NOT wired — the optimize job's attach
+phase requires `mv_attach_views`/`mv_consent_id` job params set ONLY by the
+create-at-**trigger** hook, and loads `CREATED` rows keyed to the optimization
+run's own id, never the advice run's. So a view made via "Create this metric view"
+was never attached by any later run: no `serialized_space` change, and the
+candidate list (which never cross-referenced created state) kept re-offering it.*
+
+*Decision (user-directed): the Genie config is the source of truth, so approving a
+create should ATTACH the view immediately — not defer it to some later run.
+Reshaped create-at-approval into **create-AND-attach-at-approval**, DECOUPLED from
+measurement: `create_at_approval` now, after the confirmed OBO `CREATE VIEW`, reads
+`serialized_space` (OBO), appends the view to `data_sources.metric_views`, and
+PATCHes it back via the same validated write path the job uses
+(`_attach_metric_view_to_space` → `fetch_space_config`/`patch_space_config`). The
+job-side `mv_attach` phase still measures lift and auto-detaches on regression for
+views IT attaches autonomously (MV-D16 intact); a user-approved create is a manual
+config edit, not a gated optimization step. Failure is a clean seam: a failed PATCH
+(e.g. no CAN EDIT) leaves a created-not-attached view — result `attached=False`,
+ledger `CREATED` — the card explains, never a silent no-op. The ledger status now
+mirrors the attach outcome (`ATTACHED`/`CREATED`).*
+
+*2. Consequences that fall out of "config is the source of truth": the semantic
+model and IQ re-scan read `serialized_space`, so they reflect the view once it is
+shelved (re-scan then drops the now-governed measure per `mv_advisor.py:1278-1288`);
+optimization reads the live config as baseline, so it picks it up with no special
+wiring. To make the list truthful immediately (before a re-scan), `MvProposal`
+gains an `attached` marker computed serve-time from the live config's
+`_metric_views` identifiers (`_mv_mark_attached`, reusing the one config read the
+provenance-label step already does) — NOT from a ledger, so a detach in Genie
+un-marks it. The one manual step left is the SP `GRANT SELECT` (the optimizer is a
+different principal), now returned on the create response (`grant_sql`) and shown
+in the created terminal.*
+
+*3. UI (fidelity gate): the consent modal is now "Create and attach this metric
+view?" (attach happens now, not on a later run); the created terminal shows
+"Created & attached to your Agent" + the SP grant (or a created-not-attached
+degrade with how to attach it in Genie); an already-attached proposal opens the
+shared accept flow on an "Attached to your Agent" terminal and the card carries an
+"Attached" header badge instead of re-offering create. New fidelity frame
+`15.10-attached-proposal` renders the REAL card from an `attached` payload; all 45
+mockups re-emitted in both themes.*
+
+*VERIFY (local): backend `mv_create`/`mv_create_at_approval` suites green (incl.
+new pins `test_happy_path_creates_and_attaches_at_the_consented_name`,
+`test_attach_failure_records_created_not_attached`,
+`test_attach_helper_is_idempotent_and_never_raises`,
+`test_mark_attached_flags_only_proposals_on_the_config`,
+`test_create_route_returns_created_attached_and_grant`); frontend `tsc` + ESLint
+clean; `MvSharedAcceptFlow`/`MvOutputPanels`/`mockups` vitest green (incl. the
+attached-terminal pin). Deploying to fevm-serverless for the deployed eyeball.*
+
+*Execution note — deployed review round 6 (2026-08-26). The round-5 deploy left
+one dead end the user hit immediately: a proposal for a view that ALREADY EXISTS
+(created in a prior round, before attach-at-approval was wired) was still listed
+with a live "Create this metric view" button, and clicking it failed with
+"`… already exists; refusing to clobber it`". Two symptoms, ONE root cause
+(traced with `systematic-debugging`): `create_at_approval` treated any existing UC
+object as a terminal refusal, so it never attached the pre-existing view; and
+because `_mv_mark_attached` only badges proposals present on `serialized_space`,
+an existing-but-unattached view was never marked → stayed listed → re-hit the
+clobber guard. The refusal was written to protect an unrelated same-named object,
+but it also stranded the user's own view forever.*
+
+*Fix (root cause, not symptom): make create-at-approval IDEMPOTENT. When the
+consented object already exists AND is a usable metric view (`_confirm_metric_view`
+on the existing object), skip the `CREATE` and fall through to the SAME attach
+path — the config is the source of truth, so attaching is exactly what clears it
+from the list. Only a same-named object that is NOT a metric view stays a genuine
+collision we refuse to touch (never dropped — it is not ours). A new
+`already_existed` flag rides `MvCreateAtApprovalResult` → response → the frontend
+type, so the created terminal is honest ("Attached to your Agent (view already
+existed)") rather than claiming a fresh create; `grant_sql` still resolves so the
+SP `SELECT` is one copy away even for a view made in a prior round. This also
+retires the round-5 "attach on next run" framing left in the `/mv/create`
+docstring.*
+
+*VERIFY (local): backend `mv_create_at_approval` suite green — the old
+`test_existing_object_is_not_clobbered` (which pinned the dead end) is replaced by
+`test_existing_metric_view_is_attached_not_clobbered` (created+attached+
+`already_existed`, no `CREATE VIEW`/`DROP VIEW`, ledger `ATTACHED`) and
+`test_existing_non_metric_object_is_refused` (genuine collision still refused,
+nothing created/dropped), plus route pin
+`test_create_route_reports_already_existed_and_still_grants`; full backend suite
+2222 passed. Frontend `tsc` + ESLint clean; full vitest 404 passed. The changed
+copy lives in the interaction-only created terminal (reached only after the async
+create), so — per the round-5 precedent for that terminal — it is proven by the
+component/backend tests, not a new static frame. Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 7 (2026-08-26). Three polish points on the
+round-6 create-and-attach terminal + consent modal.*
+
+*1. Created terminal overflowed its card. The SP `GRANT SELECT … TO <sp>` is one
+long, space-free line; the `SqlCodeBlock` already has `overflow-x-auto`, but it
+sat inside `MvProposalCard`'s `actions` row (`flex flex-wrap`), and a flex item's
+default `min-width:auto` refuses to shrink below its content — so the block grew
+to the GRANT's width and pushed the whole card past its right edge instead of
+scrolling. Fix: the accept-flow terminals now carry `w-full min-w-0`, so the
+terminal fills the row and the long GRANT scrolls WITHIN the SQL block. Root cause
+(the flex min-width trap), not a symptom patch on `SqlCodeBlock` (left shared and
+unchanged).*
+
+*2. "I created this myself" showed even after "Created & attached". The tertiary
+MV-D24 claim was a SIBLING of `MvAcceptFlow` in `ScanProposalCard`, so it rendered
+regardless of the flow's state — including the created/attached terminals, where a
+view demonstrably exists and there is nothing left to claim. Fix: the claim is now
+a `claimAffordance` prop the flow owns and renders only in its pre-create states
+(action / degraded / approved), and HIDES in the created and attached terminals
+(the early returns simply don't render it). One state machine, one truth. The
+run-output surface never passed a claim, so it is unaffected.*
+
+*3. Consent modal was wordy and lax. Rewrote the run-on paragraph as a short lead
+("Runs under your identity. This will:") plus three bullets — create in UC (owned
+by you), attach to the Agent config (source of truth, updates immediately), and
+return one GRANT to run afterward. The `<ul>` is a sibling of `AlertDialogDescription`
+(a list nested in the description's `<p>` is invalid markup), and the long FQN keeps
+its `break-all` block.*
+
+*VERIFY (local): frontend `tsc` + ESLint clean; full vitest 406 passed (+2 pins in
+`MvSharedAcceptFlow`: the claim renders in the action state and is hidden in the
+attached terminal). All three are interaction-only states (consent modal, created
+terminal) or the statically-pinned attached terminal, so — per the round-5/6
+precedent — they are proven by component tests, not new static frames. Deploying to
+fevm-serverless.*
+
+*Execution note — deployed review round 8 (2026-08-26). Two points: attached views
+kept re-appearing as suggestions, and there was no link to the new view.*
+
+*1. Attached views still surfaced as "create this" suggestions — even after a
+Re-scan. Two seams (found by tracing the IQ pipeline end to end): (a) the Re-scan
+path `POST /spaces/{id}/mv/suggest/stream` (and its blocking twin `…/mv/suggest`)
+reloaded ALL space-scoped warehouse candidate rows and NEVER called
+`_mv_mark_attached` — so a created-and-attached view came back un-badged, with a
+fresh Create CTA, the moment the user re-scanned; and (b) even where marking DID
+run (`GET …/mv-proposals` on hydrate), nothing FILTERED attached out of the cards
+or counts — the marker only badged them. Root of the "config is the source of
+truth, so it should just drop out" expectation was unmet on both axes. Note the
+advisor's own governed-measure exclusion is UC-DESCRIBE-derived over corpus tables,
+NOT `serialized_space.metric_views`, so attach alone never retires a candidate row
+— the fix has to be at the list/marker layer, which is where it now lives.*
+
+*Fix (backend): both `suggest_space_mv` and the stream `done` branch now call
+`_mv_mark_attached(proposals, raw)` — `raw` (the full `fetch_space_config` result),
+not `applied_config` (`_parsed_space`, which has no `_metric_views` key), so the
+identifiers actually match. `_mv_mark_attached` also strips backticks on both sides
+now (Genie can export `` `cat`.`sch`.`view` ``; the warehouse `proposed_object` is
+bare), so a truly-attached view is never left looking un-attached. Fix (frontend):
+`MvIqScanAdvisorySection` partitions `proposal.attached` OUT of the active set —
+the open set feeds the summary callout, the primary/low cards, and the header count
+(now "N suggestions" = open only), while the attached set renders in a compact
+`MvAttachedSummary` ("Already attached to your Agent (N)" + names) that states they
+are no longer suggested. An all-attached space shows this positive terminal instead
+of the "nothing found" empty.*
+
+*2. No link to the created view. The created terminal already had a "View in Catalog
+Explorer" affordance, but it was gated on a `databricksHost` prop NO caller ever
+passed (so `catalogExplorerUrl` always returned null — the link never rendered). Fix:
+`MvCreateAtApprovalResponse` now carries `workspace_host` (resolved server-side from
+the client config, best-effort — a missing host just omits the link, never fails the
+create), and the created terminal prefers that host over the prop. The link now
+appears right after a create, deep-linking `…/explore/data/<catalog>/<schema>/<view>`.*
+
+*VERIFY (local): backend `test_mv_create_at_approval` 24 passed (+`workspace_host`
+assertion on the create route, +a backtick-normalization pin on `_mv_mark_attached`;
+the `client` fixture stubs `get_workspace_client` so the host resolves
+deterministically); MV/auto-optimize suite 848 passed. Frontend `tsc` + ESLint clean;
+`MvAttachedSummary` exported and pinned (attached views are confirmed by name, the
+all-attached terminal is positive, empty renders nothing). Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 9 (2026-08-26). Round 8 STILL showed
+attached views as suggestions after a re-scan — so I stopped guessing and read the
+deployed state directly (fevm-serverless, via the SQL Statement Execution API +
+the Genie export).*
+
+*Root cause (found in the field, not the code): the `genie_opt_mv_created_objects`
+ledger showed `fact_booking_daily_metrics` and `fact_booking_detail_metrics` at
+status `ATTACHED` (OBO_CREATED) — the PATCH succeeded — yet the live
+`serialized_space` for the space (`01f1330752b119a392aa7b725aec6251`) had
+`data_sources.metric_views` EMPTY and every `*_metrics` view listed under
+`data_sources.tables` instead (including `dim_property_metrics`, which we never
+created). So this Genie space represents its metric views as `tables` data sources.
+`_mv_mark_attached` matched ONLY `_metric_views`, so it saw nothing attached and the
+list re-offered all of them as "create". The schema does define a separate
+`data_sources.metric_views` (confirmed via the conversation-API reference — it has
+its own sorting rule), but empirically a metric view added to this space round-trips
+under `tables`; matching only one list was the bug.*
+
+*Fix (point 1): `_mv_mark_attached` now matches `proposed_object` against the UNION
+of `_metric_views` AND `_tables` — presence in EITHER data-source list means the
+view is on the Agent, so it drops out of the suggestions (and into the "Already
+attached" summary). Exact 3-part-name match, so a base table (`fact_booking_daily`)
+never masks its `*_metrics` proposal. This is a READ/marker change only; the attach
+write is unchanged (the object is already a data source, so re-approval stays an
+idempotent no-op). Pinned by a new test that a metric view filed under `tables` is
+recognized while a same-stem base table is not.*
+
+*Fix (point 2 — "prepend proposed"): `MvProposalCard` now renders an amber
+"Proposed" tag before the 3-part name whenever the proposal is NOT attached, so a
+view that does not exist yet is never mistaken for a real object. Attached views
+drop the tag (they show the existing "Attached" badge instead). Pinned both ways.*
+
+*Fix (point 3 — Evidence + Source/Joins/Measures readability): the SQL an evidence
+id stood for, each source identifier, and each measure expression now render as
+distinct bordered mono code chips set off from their human labels (with more
+line spacing and a pill for the join strategy), instead of running together on one
+muted line. Layout unchanged; the visual hierarchy is clearer.*
+
+*VERIFY (local): backend MV/marking/suggest 39 passed (+a tables-referenced marker
+pin); full frontend vitest 411 passed (+`Proposed`-tag pins, both attached and not);
+`tsc` + ESLint clean. Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 10 (2026-08-26). Round 9 left an open
+question flagged in review: because this space keeps metric views under `tables`,
+was the attach a no-op because Genie COLLAPSES `metric_views`→`tables` on write, or
+because the `metric_views` bucket is simply never used here? The distinction
+matters — if the server honors `metric_views`, we were writing to the wrong list;
+if it collapses, the bucket is cosmetic. So I stopped inferring and ran a
+controlled round-trip.*
+
+*Evidence 1 — corpus scan (read-only). Downloaded all 16 `serialized_space` configs
+in fevm-serverless. EVERY one is version 2 with `data_sources` keys = `['tables']`
+only; NOT ONE emits a `metric_views` key. Genuine UC `METRIC_VIEW` objects added via
+the Genie UI (e.g. `customer_/property_/revenue_analytics_metrics` in the Wanderbricks
+and Vacation Rental spaces) sit under `tables` WITH full `column_configs` — so even
+the product UI files metric views as `tables`. The string `"metric_view"` appears
+nowhere in any raw config: there is no per-entry type discriminator, so a metric
+view is indistinguishable from a table in `serialized_space` (you must resolve
+`table_type` from UC — which the marker already does).*
+
+*Evidence 2 — controlled round-trip (write, throwaway space `mv-e2e-empty-bare`
+/ `01f1a02f90151e9abc8b8a8914707dab`). PATCHed a real `METRIC_VIEW`
+(`…prashanth_wanderbricks_gold.host_analytics_metrics`) EXPLICITLY under
+`data_sources.metric_views`. The PATCH was accepted (fresh `etag`, no error). The
+immediate read-back returned it under `data_sources.tables` with `metric_views`
+empty/absent. VERDICT: `COLLAPSED into tables`. Restored the space to its original
+single-table state afterward. This is definitive: Genie v2 accepts a `metric_views`
+write and server-side relocates it into `tables`.*
+
+*Conclusion: the round-9 "collapse" reading was correct and is NOT an artifact of our
+code — sending under `metric_views` vs `tables` yields identical persisted state
+(everything lands in `tables`). The attach was always genuinely effective (the view
+IS a governed data source; PATCH succeeded, etag advanced); it just never populated
+the documented bucket because this Genie build does not use it. The public schema
+does define a separate `data_sources.metric_views` (own sorting rule) — so this is a
+deployment/version characteristic of this serverless Genie, not a schema violation.*
+
+*Fix: `_attach_metric_view_to_space` now appends to `data_sources.tables` instead of
+`data_sources.metric_views`, so our SENT payload matches what Genie PERSISTS and
+returns (no more silent relocation, no confusion when re-reading our own writes).
+Idempotency is now cross-bucket: a view already present under EITHER `tables` OR a
+legacy `metric_views` entry is an idempotent no-op, so configs written before this
+change still de-dupe. The round-9 READ marker (`_mv_mark_attached` over
+`_tables ∪ _metric_views`) is unchanged and remains correct. Pinned by two tests:
+the attach lands in `tables` and never creates a `metric_views` bucket, and the
+cross-bucket idempotency (legacy `metric_views` entry ⇒ no-op).*
+
+*VERIFY (local): backend MV suite green (idempotency rewritten for tables +
+new write-target pin). Deploying to fevm-serverless.*
+
+### Prompt 15.10 — PR #332 review remediation, M5: availability and deploy (findings 16–20b)
+
+Scope: the five availability findings from the PR #332 review, plus the three doc
+guards the version-control merges dropped. No job DAG, parameter or user-facing
+change. Decisions VC-D-runas1 and VC-D-poll1 are recorded in
+`backend/services/version_control/OBSERVE_ONLY_PIVOT_PLAN.md` §23.
+
+- 16: the contract JSON moved from `backend/tests/fixtures/vc_contracts/` to
+  `frontend/src/contracts/vc/`, because `tsc -b` compiles the demo adapter and
+  the notebook installer drops `tests/`. `test_frontend_build_inputs.py` guards it.
+- 17: an unreadable optimizer Job `run_as` degrades `/trigger` (503, re-checked
+  per trigger) instead of failing app boot; a readable, wrong `run_as` still fails
+  boot. The read uses `bounded_read_client` (1 s SDK retry window, 30 s timeout), and
+  `/trigger` also refuses a Job id that is not configured.
+- 18: the post-run poller is a coroutine with a 16 h budget (four tasks × 14400 s),
+  held by `_spawn_background`.
+- 19: `create_genie_space`, the initial capture and `trigger_optimization` run
+  off the event loop.
+- 20b: `/current-version` lists runs through `MV_ADVICE_RUN_EXCLUSION`, falling
+  back only for a table without `run_kind`.
+- Restored from `897603b1`: `test_rules_parity.py`, `test_gap_report_counts.py`,
+  `test_exposure_matrix.py`, `scripts/gap_report_counts.py`.
+
+*VERIFY (local): 1253 backend + 1541 GSO; notebook-shaped staged build green.*
+
+### Prompt 15.11 — PR #332 review remediation, M1a: one space access resolver
+
+- **Resolver asks Genie per level under OBO.** VIEW is a plain space GET; EDIT is the same read with `include_serialized_space=true` and a present export; MANAGE is `GET /api/2.0/permissions/genie/{id}` (200 only for CAN MANAGE). Package helpers: `check_space_access` / `user_can_edit_space` / `user_can_manage_space` in `common/genie_client.py`. Backend gate: `require_space_access` in `backend/services/space_access.py` (OBO only; allow-only 30 s cache per token; 401/403/404/503 with `{code, required, message, platform_message}`).
+- **Helper fix at source.** The old ACL parser matched any caller to the inherited `admins` entry and every caller passed `acl_client=<service principal>`, so a 403 on the OBO ACL read retried as the SP and every EDIT/MANAGE gate passed for a user with no access (M0 V1). Both the `admins` clause and the SP fallback are deleted; Genie answers under the caller's token only.
+- **Gates re-pointed.** `/trigger` requires EDIT (right after `_is_configured`, before any side effect). Apply, discard, revert, revert-options, and history-entry call `_require_run_space_access(run_id, EDIT)` first. The metric-view probe's space row (`_space_manage_row`) calls `user_can_manage_space` so MANAGE for create-and-attach stays an honest downgrade, not a refusal at trigger.
+- **Identity-gate carry-overs (M5).** Single-flight `_require_verified_optimizer_identity` with a lazy `app.state.gso_run_as_lock` and WARNING logs; empty `GSO_JOB_ID` still fails at `_is_configured`, non-numeric id still returns the identity-gate "not configured" message.
+- **Deferred.** M1b and M1c gate the remaining routes (`pr332-m1-route-levels.md`).
+
+*VERIFY (local): 1279 backend + 1555 GSO; contract greps clean (no `acl_client` / `admins` shortcut / deleted helpers in src).*
+
+### Prompt 16 — Docs, changelog, PR
+
+```
+Finish the branch:
+
+- Update the repo docs (per its docs structure) with: feature overview, the
+  consent model, mode table, how to enable, and screenshots exported from the
+  Storybook/mockup states. Document BOTH entry points (MV-D23): the IQ Scan
+  surface for a space that has not been optimized, and the optimization-run
+  surface for one that has — and say plainly which evidence each rests on, so a
+  reader does not expect history-grade confidence from a space with no history.
+  The Ontology Pages track (Prompt 17.x) lands on this branch BEFORE this
+  prompt (the combined-PR decision, recorded in the Prompt 17 preamble) —
+  document it as its own feature page: the eight archetypes, the dual output
+  (instruction augmentation is API-applied under consent; Pages are pasted
+  into Discover manually because no Pages API exists), and the enrichment
+  labeling contract. The PR description covers BOTH tracks, organized by
+  track, with each track's E2E results cited from its own run record.
+- Add an entry to the changelog/release notes per repo convention.
+- Update docs/design/metric-view-suggestion-engine-pov.md status flags for
+  anything the implementation resolved or contradicted, with a short
+  "implementation deltas" appendix.
+- Write the PR description: problem, design link, screenshots, the four E2E
+  scenarios and their results, rollout guidance (feature defaults to off;
+  suggest_only is the safe first mode), and explicit reviewer callouts:
+  (1) the CREATE TABLE privilege assumption for metric views needs runtime
+  verification, (2) the eval APIs are Beta and isolated behind the adapter,
+  (3) detach-never-drop semantics.
+- Run the full test suite and linters; fix anything red; list remaining known
+  issues honestly in the PR.
+```
+
+---
+
+## Optional follow-on branch
+
+### Prompt 17 — Ontology Pages track (REDRAFTED: space-scoped Page suggestions, SAME branch)
+
+*Redrafted at the post-12b review, superseding the original separate-branch
+domain-tag curator (preserved as Prompt 20, deferred — POV Appendix A Delta 10
+records the pivot). What changed and why: Pages are the human-modeled layer of
+the Genie Ontology — Genie One PRIORITIZES a Page's definition over inferred
+context and CITES it in answers — which makes Page curation a direct accuracy
+lever on the same axis this branch already works. But Pages have NO public
+create/update API: they are created in the Discover UI (with Genie Code assist
+inside the Page editor). POV API-ask #4 stands, re-verified 2026-08-24. So the
+feature is DUAL-OUTPUT: (a) the API-writable half — consent-gated augmentation
+of the space's text_instructions, inside the GSL schema; (b) the manual half —
+a copy-ready Page draft in the standardized format for paste into Discover,
+the DDL-panel pattern. Evidence comes from the space context this branch
+already assembles: the semantic graph and its governance ladder and coverage
+lens (12/12b), fingerprint shapes and CONFLICT candidates, curated snippets and
+example SQL, profiling, and join topology. SEQUENCING (settled at the pre-16
+review after considering and REJECTING a split): the track runs on THIS
+branch, BEFORE Prompt 16, and Prompt 16 ships ONE combined PR covering both
+tracks. A separate MV-only PR was considered (reviewability of a ~30-commit
+branch) and rejected by the owner: the feature set is session-scoped, the
+owner is the reviewer, and the one-prompt-one-commit history is the review
+unit — the PR is the packaging, not the review. Two disciplines carry the
+cost of the longer-lived branch: (1) the working-rhythm drift check is now
+MANDATORY before 17.0 starts and again before 16 — rebase on main and re-run
+Prompt 0 in diff mode over any moved surfaces; (2) 17d still carries the
+track's OWN hardening and E2E (Prompts 14/15 predate it), so Prompt 16
+inherits two independently-verified tracks, not one verified and one hoped.
+Decisions MV-D26 (persistence, 17a), MV-D27 (instruction write path, 17c),
+MV-D28 (web enrichment, 17b) are OPEN in the register; each sub-prompt decides
+its own and records it BEFORE writing code, the 13.5 discipline.*
+
+*ENRICHED 2026-08-24 from a Genie-generated architecture self-description,
+distilled into docs/design/genie-retrieval-notes.md — READ IT before any 17.x
+prompt; page-archetypes.md's "How Genie consumes what we write" section is now
+normative. The material facts: Pages and instructions are auto-extracted into
+CHUNKED ontology snippets ranked by semantic similarity × authority (source
+type, corroboration, specificity), searched BEFORE schema; certified Pages sit
+at the top of the trust stack and win conflicts absolutely, Pages outrank
+instructions, instructions outrank metric views. Consequences baked into the
+sub-prompts below: synonyms are retrieval-critical (validator-enforced, ≥3
+across four classes); rules are written chunk-safe (each sentence self-
+contained) and specific (exact identifiers — vagueness loses ranking);
+the top rules are deliberately DUPLICATED across instruction delta and Page
+with consistent wording, because corroboration raises authority; every draft
+passes a contradiction gate against the space's existing instructions, because
+a conflicted low-authority snippet loses silently; and each Page draft carries
+a certify-yes/no recommendation, since certification is the single strongest
+retrieval lever and is a manual UI step the checklist must name.*
+
+**The eight archetypes (the standard 17.0 codifies — title prefix is part of
+the format):**
+
+| Archetype | Title prefix | What it does |
+|---|---|---|
+| Disambiguation | `[Disambiguation]` | Same English phrase, several valid answers — pick which grain/count/role |
+| Method selection | `[Method]` | Several correct metrics; pick by the question, not habit |
+| Metric routing | `[Routing]` | Map NL questions to the metric view + measure |
+| Status / enum decode | `[Taxonomy]` | Decode codes, buckets, glossaries |
+| Guardrail / non-additivity | `[Guardrail]` | Never average rates; recompute from numerator/denominator |
+| Default assumptions | `[Defaults]` | What to assume when the question is silent |
+| Comparability / break | `[Rule]` | A rule that makes periods or universes incomparable |
+| Cross-domain traversal | `[Cross-domain]` | Shared spines and join keys across domains |
+
+### Prompt 17.0 — Page standard, recon, and mockups (review checkpoint)
+
+```
+No production code. Three deliverables, then STOP for review:
+1. docs/design/page-archetypes.md — the Page standard: complete the seed,
+   keeping its "How Genie consumes what we write" section NORMATIVE and
+   consistent with docs/design/genie-retrieval-notes.md (read that first;
+   if the two ever disagree, fix them in the same commit — that pair is
+   this track's rules-parity analogue). The eight-archetype
+   table above (verbatim), plus the format template drawn from the
+   demonstrator Pages: title = "[Archetype] Name"; header fields Domain,
+   Owner, Synonyms, Description (one line); a Definition body that answers
+   the archetype's question with the space's OWN identifiers (tables,
+   columns, measures — backticked); an OPTIONAL "Recent context
+   (informational, as of DATE)" section that MUST end with the disclaimer
+   line "Informational context summarised by an LLM from public sources as
+   of DATE. Not certified operational data." and MUST have a Sources list;
+   Draft/Publish lifecycle notes. Also: which archetypes default to
+   instruction augmentation vs Page-draft-only — instruction space is scarce
+   (single block, ~2000-char warning), so Routing/Guardrail/Defaults/
+   Disambiguation earn instruction lines; long Taxonomies are Page-first
+   with a one-line instruction pointer.
+2. A gap-report "Ontology surfaces" section: the reuse inventory with live
+   anchors — semantic-graph assembly + governance/coverage (auto_optimize),
+   fingerprint shapes + CONFLICT states (mv_fingerprint / mv_scoring),
+   llm_utils.call_serving_endpoint (:24) + parse_json_from_llm_response
+   (:179), model_catalog.validate_chat_model (:90), LeakageOracle,
+   the Model-tab wiring precedent (navigation.ts / SpaceDetail.tsx), and
+   the OBO space-update path (find it — create agent's update_space /
+   genie_creator; quote it, do not invent one).
+3. Mockups in the existing scaffold + emitter, both themes: the "Ontology"
+   tab (Score | Model | Optimize | History | Ontology) — suggestions list
+   grouped by archetype with evidence chips; the Page-draft view with copy
+   button and the labeled Recent-context section; the instruction-
+   augmentation diff preview (react-diff-viewer, GSL sections visible);
+   empty state (honest: what was read, what would change the answer);
+   enrichment-failed state (draft complete, Recent-context absent, reason
+   shown). STOP for review before 17a.
+```
+
+### Prompt 17a — Evidence assembly + deterministic archetype detectors (decides MV-D26)
+
+```
+DECIDE MV-D26 first, record it in the register. Then, backend only, NO LLM
+calls in this prompt:
+- A space-context assembler reusing the semantic-graph reader, fingerprint
+  shapes, curated harvest, and profiling — one read path, not a parallel one.
+- Per-archetype DETECTORS emitting PageCandidate(archetype, evidence,
+  confidence) from deterministic signals only: [Disambiguation] from CONFLICT
+  candidates and same-concept-different-expr fingerprints; [Routing] from
+  data_sources.metric_views + their measures; [Guardrail] from
+  ratio/percentage-format measures and AVG-of-rate shapes; [Taxonomy] from
+  low-cardinality coded columns (profiling distinct values + column comments);
+  [Method] from same-family curated measures; [Cross-domain] from join-spine
+  topology; [Defaults]/[Rule] may emit LOW-confidence stubs (their substance
+  is 17b's synthesis). A detector with no evidence emits NOTHING — no
+  fabricated candidates.
+- Persistence per the MV-D26 decision; wh_* twins; MV-D21 pin extended;
+  every new column classified in the Prompt 14 exposure matrix in the SAME
+  commit (the ddl-walking pin will fail otherwise, by design).
+- Tests per detector: fires on a fixture that has the signal, silent on one
+  that lacks it.
+```
+
+### Prompt 17b — LLM synthesis + web enrichment (decides MV-D28)
+
+```
+DECIDE MV-D28 first, record it. Then:
+- Draft synthesis through the workbench's LLM path ONLY:
+  llm_utils.call_serving_endpoint with the model override validated by
+  model_catalog.validate_chat_model — no new client, no direct SDK chat
+  calls. Input: the PageCandidate + its evidence + the space's own
+  identifiers. Output: the Page standard format, validated structurally
+  (title prefix from the eight, required sections present, identifiers
+  backticked and EXISTING in the space — an LLM-invented column name fails
+  validation, it does not ship).
+- Retrieval gates, per genie-retrieval-notes.md (validator-enforced, not
+  stylistic): SYNONYMS ≥3 spanning the four classes (acronym, casual, jargon,
+  abbreviation) — a page without them is invisible to the ontology search;
+  CHUNK-SAFE rules — every rule sentence names the metric/table it governs
+  (no bare pronouns opening a rule line); SPECIFICITY — at least one
+  backticked identifier or literal formula per Definition/Rules section;
+  CONTRADICTION GATE — the draft and its instruction delta are checked
+  against the space's CURRENT text_instructions for conflicting guidance
+  (reuse the conflict-surface machinery, not a new comparator; a detected
+  contradiction downgrades the suggestion to CONFLICT for human
+  adjudication, never auto-resolves — the candidates-table precedent).
+  Scope honesty: existing Discover Pages cannot be enumerated (no Pages read
+  API), so the gate covers what we CAN read — say so in the response rather
+  than implying page-conflict coverage. CORROBORATION: for Routing /
+  Guardrail / Defaults / Disambiguation, the top rule appears in BOTH the
+  Page draft and the instruction delta with byte-consistent wording (one
+  renderer for the shared sentence, not two paraphrases). CERTIFY
+  RECOMMENDATION: every draft states certify yes/no per the standard
+  (formulas yes, informational context no; a Recent-context section never
+  earns certify-yes).
+- Firewall: extend LeakageOracle for Page bodies and instruction deltas —
+  benchmark question text never lands verbatim (the MV-D8 comment-echo rule
+  transposed; same oracle, no second scanner).
+- Web enrichment per the MV-D28 decision: best-effort, hard timeout, degrades
+  to a complete draft without the Recent-context section, status in MV-D15
+  vocabulary. Every enriched section carries the disclaimer line and Sources
+  — a draft with unsourced enrichment fails validation.
+- The instruction-augmentation delta: for archetypes that earn instruction
+  lines (per the 17.0 standard), synthesize the GSL-schema-compliant delta
+  alongside the Page draft — targeted at the correct canonical section,
+  within the length budget, marked with a provenance tag so a later
+  suggestion supersedes rather than appends (the MV-D27 entry names this).
+- Tests: format validation (golden Page fixture), identifier-existence gate,
+  firewall assertions, enrichment-degradation, budget enforcement, plus the
+  retrieval gates: synonym-count/class failure, a chunk-unsafe rule line
+  rejected, a contradiction downgraded to CONFLICT (and NOT auto-resolved),
+  byte-consistency of the corroborated sentence across both outputs, and
+  certify-recommendation presence.
+```
+
+### Prompt 17c — Ontology tab + consent-gated instruction augmentation (decides MV-D27)
+
+```
+DECIDE MV-D27 first, record it. READ docs/docs/platform/gsl-instruction-schema.md
+before touching anything near instructions — CLAUDE.md mandates it. Then:
+- Routes under /api/auto-optimize: suggest (space-scoped, OBO-tolerant reads,
+  blocking with the same degrade-not-hang contract as /mv/suggest), list,
+  decision (approve/reject with suppression), and APPLY — the instruction
+  augmentation write, OBO via require_obo_workspace_client (hard-fail, never
+  SP), preceded by a fresh read of the current block, applied per the MV-D27
+  decision, with the prior block snapshotted on the decision row for undo.
+  Never auto-applied; the diff preview is what the user consents to, so a
+  block that changed since preview REFUSES and re-previews (the MV-D22
+  immutable-body principle transposed).
+- The Ontology tab per the 17.0 mockups: fifth SpaceDetail tab, prop-driven
+  cards (the MV-D23 obligation — 18's create-agent branch will want these
+  components), archetype grouping, Page-draft copy panel, the augmentation
+  diff + [Apply to instructions] + [Copy Page for Discover] dual actions,
+  the manual-steps line for Discover paste (Pages are UI-created — say so
+  plainly rather than pretending an API). The manual checklist includes the
+  CERTIFY step: which pages the draft recommends marking Certified in the
+  Discover UI and why it matters (certified wins conflicts absolutely — the
+  strongest single retrieval lever, per genie-retrieval-notes.md), plus the
+  domain/subdomain to file under. Surface the synonym list prominently in
+  the draft panel — it is what makes the page findable, and the user pastes
+  it into a dedicated UI field.
+- Empty/failed states per the mockups; run_kind machinery reused if MV-D26
+  chose advice-run scoping.
+- Tests: route tests incl. the changed-block refusal and apply-refused-
+  without-OBO; component tests per state.
+```
+
+### Prompt 17d — Ontology track hardening + E2E
+
+```
+The track's own hardening and E2E, because Prompts 14/15 predate it — docs,
+changelog, and the combined PR are Prompt 16's job (the combined-PR decision):
+- Extend the exposure matrix + its pin to the new tables/routes; extend the
+  dry-run harness with suggest -> synthesize -> approve -> apply -> undo.
+- Mutation-test the new pins (format validator, identifier gate, firewall
+  extension) — red when broken, not just green when whole.
+- E2E scenario against the dev workspace: a real space, suggestions produced,
+  one augmentation applied and verified in the live serialized_space (GSL
+  sections intact, budget respected), then undone; one Page draft manually
+  pasted into Discover and the manual-steps checklist validated by doing it.
+  Enrichment-off leg proves the degraded draft is still complete.
+- Baseline lockstep both rule copies, self-dated; MV-D9 sweep. Docs,
+  changelog, and the combined PR follow in Prompt 16, which cites this
+  prompt's E2E record for the track's results.
+```
+
+### Prompt 18 — Create Agent semantic-model step (separate branch, after Prompt 16; owns MV-D25)
+
+*Stub, recorded so the design worked out during this branch's reviews is not
+lost. This is the OTHER evidence route: the advisor proposes from recurrence
+(SQL that exists); the Create Agent designs from profiling (tables, column
+metadata, sampling) — MV-D25's owner. Do not blend the two: a profiling-derived
+candidate asserts "this looks computable", a recurrence-backed one asserts
+"people already compute this", and they must never share a confidence scale.*
+
+```
+On a NEW branch off the merged advisor branch:
+- DECIDE MV-D25 first and record it in the register (SCHEMA_DERIVED provenance,
+  capped below the recurrence tiers, suggest-only — or overturn with reasons).
+- A new create-agent step between profiling and plan (STEP_ORDER / STEP_TOOLS /
+  detect_step in prompts_create/__init__.py are declarative — data change plus
+  a prompt file plus one CreateAgentChat.tsx entry). Placement is load-bearing:
+  it needs the profiles, and whether an MV exists changes the SQL rules,
+  example SQLs, and benchmark answers plan_builder generates downstream.
+- A sixth parallel plan_builder section (_gen_metric_views) consuming
+  describe_table / profile_columns / assess_data_quality / assess_readiness
+  and the analytics section's measures + join_specs. It emits
+  MetricViewCandidate shapes ONLY — mv_yaml stays the sole renderer (MV-D8's
+  guard fails anything else), and create-agent SQL never enters the advisor
+  corpus as recurrence evidence (MV-D16(b)).
+- The EXACT-uniqueness probe: a cost-guarded COUNT(DISTINCT k) = COUNT(*) tool
+  on the agent's read-only SQL path — the producer MV-D14 says nothing emits
+  today, which makes rely.at_most_one_match and the nested-join rung reachable
+  for the job path too. KeyUniqueness gains when-measured/against-what.
+- Creation stays out of the agent's tools: the agent proposes in the plan, the
+  user approves in the existing plan-review surface, the BACKEND creates under
+  OBO via the existing mv_create/mv_entitlement seam (MV-D1/D20 invariants).
+  validate_sql_read_only is not relaxed. MV must exist before generate_config
+  (column_configs and example SQLs reference its field names), so the plan
+  step becomes re-entrant: approve -> create -> regenerate affected sections
+  -> create space. Degrade to today's sql_snippets path on decline or probe
+  failure; never block space creation on an MV.
+```
+
+### Prompt 19 — Materialization consent path (separate prompt, after Prompt 16)
+
+*Stub, so the tracked debt has an owner. Prompt 11 shipped no materialize
+control because the path is unbuilt, not unwired (gap-report mv_materialize
+row); the mockup's "Also materialize" checkbox is annotated not-shipped.*
+
+```
+- The EXPLAIN CREATE MATERIALIZED VIEW precheck MV-D1 requires — it exists
+  NOWHERE in the repo today. Surface incremental-eligibility blockers inline
+  before any create.
+- The materialize DDL path as a separate OBO consent (materialize_consented,
+  ddl.py:241 — the column exists, nothing writes it meaningfully), never
+  bundled with create-or-attach (MV-D1).
+- Only then: the run-config control, per the annotated mockup, enabled only
+  when the probe proves the capability.
+- REFRESH POLICY defaults per POV Key Finding 5; cost note in the consent copy.
+```
+
+### Prompt 20 — Discover domain curator (DEFERRED, separate branch — the original Prompt 17)
+
+*The pre-redraft Prompt 17 body, preserved verbatim so POV Part 8's domain/tag
+half is not lost. Deferred behind the Ontology Pages track (Delta 10): Pages
+proved the higher-leverage half of Part 8 for this workbench, and tag-apply
+automation carries write risks the space-scoped track does not.*
+
+```
+On a NEW branch feature/discover-curator off the merged advisor branch,
+implement POV Part 8 phase 1 only: the discover_gate + discover_curator task
+(propose-only), domain/subdomain proposal scoring per POV 8.3, the membership
+diff against system.information_schema.table_tags, the ALTER ... SET TAGS apply
+plan generator, the blocking firewall scan, and the copy-ready manual-steps
+checklist for UI-only domain/Page creation. No tag writes in this phase.
+Reuse the advisor's consent-gate pattern for the eventual tag-apply mode.
+```
+
+---
+
+## Working rhythm
+
+- **One prompt, one commit, review the diff before the next prompt.** Cursor drift compounds; the gap report and rules file are your rails, but your review is the brake.
+- **Every prompt runs two-phase.** Read the PLAN before saying "proceed." The moment a PLAN quotes code you don't recognize, or names a symbol without a file:line, stop — that's the stale-context signal, and it's cheaper to catch there than in the diff.
+- **The gap report is a living document, not a one-time artifact.** When any PLAN phase reveals the repo has changed relative to the gap report (a renamed task, a moved module, a refactored router), update `mv-advisor-gap-report.md` in the same commit as the code change. A stale gap report silently re-poisons every subsequent prompt that references it.
+- **Drift check against main every few working days:** rebase the branch, and if `git diff --stat main...` on the areas the gap report covers (job YAML, optimizer package, routers, UI components) shows upstream movement, re-run Prompt 0 in diff mode — "re-verify only the sections of the gap report touching these changed paths" — before continuing. Genie Workbench moves quickly; a two-week-old recon of an active repo is a liability.
+- **When Cursor reports a doc-vs-repo conflict, resolve it in the doc first**, commit, then re-run the prompt. Never let the two diverge silently.
+- **Prompts 0, 10, and 15 have human checkpoints built in** — recon review, mockup review, E2E sign-off. Those three are where the feature is actually decided; everything else is typing.

@@ -1,0 +1,384 @@
+{
+  "bundles": [
+    {
+      "dedup_fingerprint": "60618dadd36fc2edbf5fc704263f6d351db403810a7531feeeb66d7ca8067144",
+      "members": [
+        "afcc0a342d2ca9cb3a60fb855b4e3241c0e58f162199b41c583fd94e1d8da438",
+        "e7ccfea5cc19fc1f6767f48ed49e748ae245a7042d5880fa6fdefa3b59c5b5f6"
+      ]
+    },
+    {
+      "dedup_fingerprint": "83765332d0e4286769211370933f32a87e81669e0f81e7a99d9e087b6d9b051f",
+      "members": [
+        "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+        "808e31fe9280dbfc970f97bd284de2ac6d946a69fed44712d6b0842be9d5cc3f"
+      ]
+    },
+    {
+      "dedup_fingerprint": "a20e6b473483900c6d30586deee1c9848c0d37e26b67757c5951d64548da1dc3",
+      "members": [
+        "1104a0f3e5b48684f62010d929bab2364f02be480e3b9333b9bffcfe179b44f6",
+        "34e89a252a0675dbe3deaef3c1419a6cfe3816c6b94ee19f8ebb41266d4a7f37",
+        "c8e5aa3de0d3eb0cbc90b1f8355032c1440ff306c7185e9d946fa3547913d746"
+      ]
+    }
+  ],
+  "captured_at_head": "ab2e68cf",
+  "corpus_scan_measures": [
+    [
+      "0a281a3838f45c3ec47a075d4b3030aab6cc110234401e67f4a19bccade3dec9",
+      "sum(case when o_orderstatus = ?s then o_totalprice else ?n end)",
+      8
+    ],
+    [
+      "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+      "count(l_orderkey)",
+      8
+    ],
+    [
+      "2b1a7536b707a7ea358d8e150339a31d31b632d2ca483ae1eb0ebf6aa0095e6c",
+      "count(case when region = ?s then ?n end)",
+      8
+    ],
+    [
+      "71d4a50cf6988a754dd8f0c2fb6868dcb3bff728e27274ab80a0415f6caea88f",
+      "sum(l_extendedprice * (?n - l_discount))",
+      8
+    ],
+    [
+      "8d9b4dd7e805af6ac8b35802e56ec979f23def959d9df21a8c4cec60e91323f7",
+      "avg(datediff_day(shipped, created))",
+      8
+    ],
+    [
+      "8ef4c7a392fc7d8a317021001d58b65a4e332f4206d5e81ce1670358dcefee37",
+      "sum(case when status = ?s then amount end)",
+      8
+    ],
+    [
+      "a631065ad51d2e482c78f5035294ad75d8fa2b8de9d6afc41a4729721297cdaf",
+      "sum(o_totalprice)",
+      8
+    ]
+  ],
+  "corpus_scan_shapes": [
+    [
+      "c17d6395c6fca83d478f2830e1a4a49e58c0663524e01e272b97807bfbcc1b33",
+      "RATIO",
+      8
+    ],
+    [
+      "c41e931a53d7fa331a2d91ee49f75bd8bc7f74de46115cf758e411b900245dfc",
+      "CONDITIONAL_COUNT",
+      8
+    ]
+  ],
+  "space_id": "01f04ac8c1f11c9a9e5b3b2b0e5d5c11",
+  "sqlglot": "30.0.3",
+  "statements": {
+    "conditional_count": {
+      "canonical_sql": "select count(case when t1.region = ?s then ?n end) from main.sales.orders as t1",
+      "dimensions": [],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "1104a0f3e5b48684f62010d929bab2364f02be480e3b9333b9bffcfe179b44f6",
+          "canonical_expr": "count(case when region = ?s then ?n end)",
+          "fingerprint": "2b1a7536b707a7ea358d8e150339a31d31b632d2ca483ae1eb0ebf6aa0095e6c",
+          "source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ],
+      "shapes": [
+        {
+          "components": {
+            "condition": "region = ?s",
+            "rewrite": "count(1) filter (where region = ?s)"
+          },
+          "fingerprint": "c41e931a53d7fa331a2d91ee49f75bd8bc7f74de46115cf758e411b900245dfc",
+          "kind": "CONDITIONAL_COUNT"
+        }
+      ],
+      "sql": "SELECT COUNT(CASE WHEN o.Region = 'EMEA' THEN 1 END) FROM main.sales.orders o"
+    },
+    "count": {
+      "canonical_sql": "select count(l_orderkey), l_returnflag from samples.tpch.lineitem as t1 group by l_returnflag",
+      "dimensions": [
+        [
+          "l_returnflag",
+          "d3c10b94d2304fd78dabddae68092de7a55ef1c57998c7f359022dc51b844c2a"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+          "canonical_expr": "count(l_orderkey)",
+          "fingerprint": "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+          "source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT COUNT(l_orderkey) AS orders, l_returnflag FROM samples.tpch.lineitem GROUP BY l_returnflag"
+    },
+    "date_trunc": {
+      "canonical_sql": "select timestamp_trunc_month(t1.ts), count(distinct timestamp_trunc_day(t1.ts)) from main.sales.orders as t1 group by timestamp_trunc_month(t1.ts)",
+      "dimensions": [
+        [
+          "timestamp_trunc_month(ts)",
+          "2c3d367a6752355b967ff4367377e410566fb2ce9310fc6ef7580fd1bfff7b82"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "3a5614b787543c737363edded684acd9c1987b1d050db8204721b584cca109b4",
+          "canonical_expr": "count(distinct timestamp_trunc_day(ts))",
+          "fingerprint": "1258efcae68efe050cdb657d0e4d3bd6eba6bef58365145bb12799bf4bd76c6e",
+          "source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT DATE_TRUNC('MONTH', o.ts) AS m, COUNT(DISTINCT DATE_TRUNC('DAY', o.ts)) FROM main.sales.orders o GROUP BY 1"
+    },
+    "datediff": {
+      "canonical_sql": "select avg(datediff_day(t1.shipped, t1.created)) from main.sales.orders as t1",
+      "dimensions": [],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "34e89a252a0675dbe3deaef3c1419a6cfe3816c6b94ee19f8ebb41266d4a7f37",
+          "canonical_expr": "avg(datediff_day(shipped, created))",
+          "fingerprint": "8d9b4dd7e805af6ac8b35802e56ec979f23def959d9df21a8c4cec60e91323f7",
+          "source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT AVG(DATEDIFF(DAY, o.created, o.shipped)) FROM main.sales.orders o"
+    },
+    "filtered": {
+      "canonical_sql": "select sum(l_quantity) from samples.tpch.lineitem as t1 where l_returnflag = ?s and l_shipdate >= cast(?s as date)",
+      "dimensions": [],
+      "filters": [
+        [
+          "l_shipdate >= cast(?s as date)",
+          "1e0b7fc4e1339980b50558f0fe0a4ad5484fd20d8999032005b677314e41964b"
+        ],
+        [
+          "l_returnflag = ?s",
+          "8b591cdcdc8b71d71197aab8b2b79da25f5ef1d75fb81c2c4e737e1c16bb3223"
+        ]
+      ],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+          "canonical_expr": "sum(l_quantity)",
+          "fingerprint": "449958ffe459bb03d935328c841975bfb786a3432b0b82007aeb9108fffafcee",
+          "source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT SUM(l_quantity) FROM samples.tpch.lineitem WHERE l_shipdate >= DATE '1998-01-01' AND l_returnflag = 'R'"
+    },
+    "mixed_case_literal": {
+      "canonical_sql": "select sum(case when t1.status = ?s then t1.amount end) from main.sales.orders as t1",
+      "dimensions": [],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "c8e5aa3de0d3eb0cbc90b1f8355032c1440ff306c7185e9d946fa3547913d746",
+          "canonical_expr": "sum(case when status = ?s then amount end)",
+          "fingerprint": "8ef4c7a392fc7d8a317021001d58b65a4e332f4206d5e81ce1670358dcefee37",
+          "source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT SUM(CASE WHEN o.status = 'Paid' THEN o.amount END) FROM main.sales.orders o"
+    },
+    "pct_of_total": {
+      "canonical_sql": "select o_orderpriority, sum(o_totalprice) / sum(sum(o_totalprice)) over () from samples.tpch.orders as t1 group by o_orderpriority",
+      "dimensions": [
+        [
+          "o_orderpriority",
+          "26f747a6ed2b1ee25fe87fa4c371f769d49d7e3bcf249aa87d05f78448544b4e"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "e7ccfea5cc19fc1f6767f48ed49e748ae245a7042d5880fa6fdefa3b59c5b5f6",
+          "canonical_expr": "sum(o_totalprice)",
+          "fingerprint": "a631065ad51d2e482c78f5035294ad75d8fa2b8de9d6afc41a4729721297cdaf",
+          "source_tables": [
+            "samples.tpch.orders"
+          ]
+        },
+        {
+          "candidate_fingerprint": "04c467a166608d145870980793f5cb8ba015aad3f338bc94ece35b9547a242df",
+          "canonical_expr": "sum(sum(o_totalprice))",
+          "fingerprint": "1a3394ec2750784881ff91e12dab12c850bc03375848ddfa6f7d4dafd5e3ae97",
+          "source_tables": [
+            "samples.tpch.orders"
+          ]
+        }
+      ],
+      "shapes": [
+        {
+          "components": {
+            "numerator": "sum(o_totalprice)",
+            "windowed_total": "sum(sum(o_totalprice)) over ()"
+          },
+          "fingerprint": "55f88490998dc2b3fb1dd967ef38f2cd8ac071d6acbd3a12181d9c3ea533c050",
+          "kind": "PCT_OF_TOTAL"
+        }
+      ],
+      "sql": "SELECT o_orderpriority, SUM(o_totalprice) / SUM(SUM(o_totalprice)) OVER () FROM samples.tpch.orders GROUP BY o_orderpriority"
+    },
+    "ratio": {
+      "canonical_sql": "select sum(case when o_orderstatus = ?s then o_totalprice else ?n end) / sum(o_totalprice), o_orderpriority from samples.tpch.orders as t1 group by o_orderpriority",
+      "dimensions": [
+        [
+          "o_orderpriority",
+          "26f747a6ed2b1ee25fe87fa4c371f769d49d7e3bcf249aa87d05f78448544b4e"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "afcc0a342d2ca9cb3a60fb855b4e3241c0e58f162199b41c583fd94e1d8da438",
+          "canonical_expr": "sum(case when o_orderstatus = ?s then o_totalprice else ?n end)",
+          "fingerprint": "0a281a3838f45c3ec47a075d4b3030aab6cc110234401e67f4a19bccade3dec9",
+          "source_tables": [
+            "samples.tpch.orders"
+          ]
+        },
+        {
+          "candidate_fingerprint": "e7ccfea5cc19fc1f6767f48ed49e748ae245a7042d5880fa6fdefa3b59c5b5f6",
+          "canonical_expr": "sum(o_totalprice)",
+          "fingerprint": "a631065ad51d2e482c78f5035294ad75d8fa2b8de9d6afc41a4729721297cdaf",
+          "source_tables": [
+            "samples.tpch.orders"
+          ]
+        }
+      ],
+      "shapes": [
+        {
+          "components": {
+            "denominator": "sum(o_totalprice)",
+            "numerator": "sum(case when o_orderstatus = ?s then o_totalprice else ?n end)"
+          },
+          "fingerprint": "c17d6395c6fca83d478f2830e1a4a49e58c0663524e01e272b97807bfbcc1b33",
+          "kind": "RATIO"
+        }
+      ],
+      "sql": "SELECT SUM(CASE WHEN o_orderstatus = 'F' THEN o_totalprice ELSE 0 END) / SUM(o_totalprice) AS finished_share, o_orderpriority FROM samples.tpch.orders GROUP BY o_orderpriority"
+    },
+    "revenue": {
+      "canonical_sql": "select sum(l_extendedprice * (?n - l_discount)), l_returnflag from samples.tpch.lineitem as t1 group by l_returnflag",
+      "dimensions": [
+        [
+          "l_returnflag",
+          "d3c10b94d2304fd78dabddae68092de7a55ef1c57998c7f359022dc51b844c2a"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "808e31fe9280dbfc970f97bd284de2ac6d946a69fed44712d6b0842be9d5cc3f",
+          "canonical_expr": "sum(l_extendedprice * (?n - l_discount))",
+          "fingerprint": "71d4a50cf6988a754dd8f0c2fb6868dcb3bff728e27274ab80a0415f6caea88f",
+          "source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue, l_returnflag FROM samples.tpch.lineitem GROUP BY l_returnflag"
+    },
+    "revenue_alias": {
+      "canonical_sql": "select t1.l_returnflag, sum(t1.l_extendedprice * (?n - t1.l_discount)) from samples.tpch.lineitem as t1 group by t1.l_returnflag",
+      "dimensions": [
+        [
+          "l_returnflag",
+          "d3c10b94d2304fd78dabddae68092de7a55ef1c57998c7f359022dc51b844c2a"
+        ]
+      ],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "808e31fe9280dbfc970f97bd284de2ac6d946a69fed44712d6b0842be9d5cc3f",
+          "canonical_expr": "sum(l_extendedprice * (?n - l_discount))",
+          "fingerprint": "71d4a50cf6988a754dd8f0c2fb6868dcb3bff728e27274ab80a0415f6caea88f",
+          "source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT l.l_returnflag, SUM(l.l_extendedprice * (1 - l.l_discount)) FROM samples.tpch.lineitem l GROUP BY 1"
+    },
+    "space_column": {
+      "canonical_sql": "select sum(t1.order amount) from main.sales.orders as t1",
+      "dimensions": [],
+      "filters": [],
+      "join_keys": [],
+      "measures": [
+        {
+          "candidate_fingerprint": "e3245634c5cb05843a21d86dd3f8506d833b77ba8e58261347492238ed3aaf3f",
+          "canonical_expr": "sum(order amount)",
+          "fingerprint": "a11ce53be36b0346afac3e94d78fd324eb8d3dafe48926a0b3ec007e4c8b2e31",
+          "source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT SUM(o.`Order Amount`) FROM main.sales.orders o"
+    },
+    "two_table": {
+      "canonical_sql": "select sum(t1.qty * t2.price) from main.sales.lines as t1 join main.sales.products as t2 on t1.pid = t2.id",
+      "dimensions": [],
+      "filters": [],
+      "join_keys": [
+        [
+          "main.sales.lines.pid = main.sales.products.id",
+          "34282261fb78264d232737b1e5038d360b17fe3d8c9a4bc533a3cd825dbb4649"
+        ]
+      ],
+      "measures": [
+        {
+          "candidate_fingerprint": "36624ba8b44a3324eba24c6a9de1b521279cf30b9c354f63966af91a8d496424",
+          "canonical_expr": "sum(qty * price)",
+          "fingerprint": "974096cb8acf73c61bc7e38e1d99a0d4af1a6b9992b77558e5896b63cdf7c3af",
+          "source_tables": [
+            "main.sales.lines",
+            "main.sales.products"
+          ]
+        }
+      ],
+      "shapes": [],
+      "sql": "SELECT SUM(l.qty * p.price) FROM main.sales.lines l JOIN main.sales.products p ON l.pid = p.id"
+    }
+  }
+}

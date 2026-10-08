@@ -708,7 +708,7 @@ def test_revert_reads_state_with_sp_and_requires_obo_edit_permission(monkeypatch
         revert.revert_optimization("r-auth", ws, sp_ws, cfg, target="baseline")
 
     assert load_run.call_args.args[0] is sp_ws
-    can_edit.assert_called_once_with(ws, "space-auth", acl_client=sp_ws)
+    can_edit.assert_called_once_with(ws, "space-auth")
 
 
 def test_revert_refuses_when_a_different_run_for_space_is_active(monkeypatch) -> None:

@@ -31,6 +31,52 @@ user_api_scopes:
 
 env:
   # ---------------------------------------------------------------------------
+  # Version Control feature flags
+  #
+  # CUJ-1 (version history, capture, and in-workspace restore) is a NATIVE, baked-in
+  # feature — there is no switch to disable it. It is live whenever the observe surface
+  # is wired (all VC_OBSERVE_* below resolved); app_observe.py hardwires
+  # vc_history/vc_writes/vc_restore on for the app surface, so nothing is patched here at
+  # deploy time.
+  #
+  # The switches below gate the CUJ-2+ GOVERNED writes (cross-workspace promotion,
+  # optimizer write-back, reconcile). These are not built into the app surface and stay
+  # fail-closed; test_vc_composition enforces they ship "false".
+  # ---------------------------------------------------------------------------
+  - name: VC_PROMOTION_ENABLED
+    value: "false"
+  - name: VC_OPTIMIZER_APPLY_ENABLED
+    value: "false"
+  - name: VC_RECONCILE_ENABLED
+    value: "false"
+
+  # ---------------------------------------------------------------------------
+  # Version Control observe runtime (control plane)
+  #
+  # ALL of these must be set for the observe surface to mount (fail-closed).
+  # deploy.sh patches every VC_OBSERVE_* token automatically from values it
+  # already resolves: WORKSPACE_ID/HOST from the deploy profile, CATALOG +
+  # CONTROL_SCHEMA from the GSO location (the VC control tables are colocated in
+  # the GSO schema — grant_permissions.py creates them and the app SP's
+  # schema-level grants cover them), and SP_PRINCIPAL_ID from the created app SP.
+  # If host/workspace-id cannot be resolved, deploy.sh substitutes EMPTY so the
+  # observe runtime stays fail-closed rather than blocking the core deploy.
+  # ---------------------------------------------------------------------------
+  - name: VC_OBSERVE_WORKSPACE_ID
+    value: "__VC_OBSERVE_WORKSPACE_ID__"
+  - name: VC_OBSERVE_HOST
+    value: "__VC_OBSERVE_HOST__"
+  - name: VC_OBSERVE_CATALOG
+    value: "__VC_OBSERVE_CATALOG__"
+  - name: VC_OBSERVE_CONTROL_SCHEMA
+    value: "__VC_OBSERVE_CONTROL_SCHEMA__"
+  - name: VC_OBSERVE_SP_PRINCIPAL_ID
+    value: "__VC_OBSERVE_SP_PRINCIPAL_ID__"
+  - name: VC_OBSERVE_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: VC_OBSERVE_ENVIRONMENT
+    value: "nonprod"
+  # ---------------------------------------------------------------------------
   # MLflow Tracing
   # ---------------------------------------------------------------------------
   - name: MLFLOW_TRACKING_URI

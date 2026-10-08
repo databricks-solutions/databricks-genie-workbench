@@ -1,6 +1,15 @@
 """Shared test fixtures for backend unit tests."""
 
+from types import SimpleNamespace
+
 import pytest
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_space_access: run against the real MV-D109 resolver, not the default grant",
+    )
 
 
 def _make_table(name, *, description=None, columns=None, column_configs=None,
@@ -124,3 +133,25 @@ def metric_view_only_space():
         "instructions": {},
         "benchmarks": {},
     }
+
+
+@pytest.fixture(autouse=True)
+def _grant_space_access_by_default(request, monkeypatch):
+    """Route tests exercise their route, not the access gate; the gate has its own tests."""
+    from backend.services import space_access
+    from genie_space_optimizer.common.genie_client import SpaceAccessCheck
+
+    space_access.clear_cache()
+    if request.node.get_closest_marker("real_space_access") is None:
+        monkeypatch.setattr(
+            space_access, "require_obo_workspace_client",
+            lambda: SimpleNamespace(config=SimpleNamespace(token="test-default-grant")),
+        )
+        monkeypatch.setattr(
+            space_access, "check_space_access",
+            lambda client, space_id, level: SpaceAccessCheck(True, 200),
+        )
+        # Keep this fixture about access, not SDK cloning of the fake OBO client.
+        monkeypatch.setattr(space_access, "bounded_read_client", lambda c, **k: c)
+    yield
+    space_access.clear_cache()

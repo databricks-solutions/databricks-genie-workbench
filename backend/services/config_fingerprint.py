@@ -15,15 +15,19 @@ Fingerprint contract (all three steps matter equally):
    GSO's preflight mutates the latter in place (e.g. injecting
    ``_data_profile``) before persisting the snapshot, so the parsed copy can
    diverge from what the Genie API round-trips. Internal ``_``-prefixed
-   top-level keys are stripped regardless of source.
+   top-level keys are stripped for hashing regardless of source; VC snapshots
+   retain the exact, unstripped payload for restoration.
 2. **Canonicalize** — configuration hashing drops the top-level ``benchmarks``
    block, while benchmark hashing isolates that block and treats an omitted
    block as an empty question set. ``content`` and ``sql`` fragments are
    concatenated; boundary quotes added by Genie are ignored for configuration
    hashing but preserved for benchmark ground-truth SQL; object keys are
-   sorted; arrays whose elements all carry a string ``id`` are sorted by id
-   (Genie's validation rules require id-sorted arrays, so this only normalizes
-   ordering the API itself does not treat as meaningful).
+   sorted. The legacy ``_collection_keys=None`` path retains blanket sorting
+   of string-id arrays for persisted-hash compatibility. The VC path sorts
+   only declared id-addressed collections (t4), retaining other array order.
+   Duplicate-id arrays retain their order only in the VC path. VC data sources
+   merge tables and metric views by identifier: read-back loses that split,
+   so the hash must ignore it and its METRIC_VIEW type markers.
 3. **Hash** — SHA-256 over the compact JSON serialization.
 
 Pure functions only — no I/O, fully unit-testable offline.
@@ -34,7 +38,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from typing import Any
+
+from backend.services.version_control.contracts import (
+    Comparison,
+    DiffItem,
+    Fingerprints,
+    Snapshot,
+    canonical_json_hash,
+    to_wire,
+)
 
 # Recognized as a bare serialized_space object when any of these keys is present.
 _SERIALIZED_SPACE_KEYS = ("data_sources", "instructions", "config", "benchmarks")
@@ -46,12 +60,251 @@ _SERIALIZED_SPACE_KEYS = ("data_sources", "instructions", "config", "benchmarks"
 # meaningful.
 _FRAGMENT_ARRAY_KEYS = frozenset({"content", "sql"})
 
+_VC_COLLECTION_KEYS = {
+    "sources": "identifier",
+    "tables": "identifier",
+    "metric_views": "identifier",
+    "column_configs": "column_name",
+    **dict.fromkeys(
+        (
+            "text_instructions",
+            "example_question_sqls",
+            "join_specs",
+            "joins",
+            "filters",
+            "expressions",
+            "measures",
+            "parameters",
+            "questions",
+            "sample_questions",
+            "sql_functions",
+        ),
+        "id",
+    ),
+}
+
 # Genie also canonicalizes unquoted literals/phrases by adding boundary single
 # quotes (for example ``Segment = Enterprise`` -> ``Segment = 'Enterprise'``
 # and ``Highest churn risk`` -> ``'Highest churn risk'``). Ignore only quotes
 # that are not between two alphanumeric characters. Apostrophes inside words
 # such as ``customer's`` and ``O'Reilly`` remain significant.
 _BOUNDARY_SINGLE_QUOTE_RE = re.compile(r"(?<![A-Za-z0-9])'|'(?![A-Za-z0-9])")
+
+
+class Canonicalizer:
+    """VC/1.0 adapter extending the legacy fingerprint entry point."""
+
+    def __init__(self, *, dual_compute_version: str | None = None) -> None:
+        self._versions = {"vc-c14n/1": _canonical_state_v1}
+        if (
+            dual_compute_version is not None
+            and dual_compute_version not in self._versions
+        ):
+            raise ValueError("Unsupported dual-compute canonicalizer version")
+        self._dual_compute_version = dual_compute_version
+
+    def observe(self, envelope: dict, version: str = "vc-c14n/1") -> Snapshot:
+        if version not in self._versions:
+            raise ValueError(f"Unsupported canonicalizer version: {version}")
+        if not isinstance(envelope, dict):
+            raise ValueError("envelope must be a JSON object")
+        response = deepcopy(envelope)
+        serialized = _extract_restorable_space(response)
+        metadata = {}
+        if "description" in response:
+            metadata["description"] = response["description"]
+        if (
+            "description" in metadata
+            and metadata["description"] is not None
+            and not isinstance(metadata["description"], str)
+        ):
+            raise ValueError("description must be a string or null")
+        canonical = self._versions[version](serialized, metadata)
+        fingerprints = Fingerprints(
+            config=canonical_json_hash(
+                "vc-config/1", {"value": canonical["config"]}
+            ),
+            benchmark=canonical_json_hash(
+                "vc-benchmark/1", {"value": canonical["benchmark"]}
+            ),
+            metadata=canonical_json_hash(
+                "vc-metadata/1", {"value": canonical["metadata"]}
+            ),
+            canonicalizer_version=version,
+        )
+        return Snapshot(
+            response_envelope=response,
+            serialized_space=serialized,
+            restorable_metadata=metadata,
+            response_envelope_digest=canonical_json_hash(
+                "vc-envelope/1", {"envelope": response}
+            ),
+            raw_state_digest=canonical_json_hash(
+                "vc-raw-state/1",
+                {"serialized_space": serialized, "metadata": metadata},
+            ),
+            canonical_state=canonical,
+            fingerprints=fingerprints,
+            state_digest=fingerprints.state_digest,
+        )
+
+    def compare(self, left: Snapshot, right: Snapshot) -> Comparison:
+        pair = self._comparable_pair(left, right)
+        if pair is None:
+            return Comparison.UNKNOWN
+        left, right = pair
+        return (
+            Comparison.EQUAL
+            if left.fingerprints == right.fingerprints
+            else Comparison.DIFFERENT
+        )
+
+    def semantic_diff(self, left: Snapshot, right: Snapshot) -> list[DiffItem]:
+        # Local import breaks the config_fingerprint ↔ canonical_diff cycle.
+        from backend.services.version_control.canonical_diff import semantic_diff
+
+        pair = self._comparable_pair(left, right)
+        if pair is None:
+            raise ValueError(
+                "Cannot diff incompatible canonicalizer versions without dual compute"
+            )
+        return semantic_diff(*pair)
+
+    def _comparable_pair(
+        self, left: Snapshot, right: Snapshot
+    ) -> tuple[Snapshot, Snapshot] | None:
+        left_version = left.fingerprints.canonicalizer_version
+        right_version = right.fingerprints.canonicalizer_version
+        if left_version == right_version and left_version in self._versions:
+            return left, right
+        if self._dual_compute_version is None:
+            return None
+        try:
+            for snapshot in (left, right):
+                if (
+                    canonical_json_hash(
+                        "vc-envelope/1", {"envelope": snapshot.response_envelope}
+                    )
+                    != snapshot.response_envelope_digest
+                ):
+                    return None
+            return (
+                self.observe(
+                    to_wire(left.response_envelope), self._dual_compute_version
+                ),
+                self.observe(
+                    to_wire(right.response_envelope), self._dual_compute_version
+                ),
+            )
+        except (ValueError, TypeError):
+            return None
+
+
+def _canonical_state_v1(serialized: dict, metadata: dict) -> dict:
+    return {
+        "config": _canonical_config(serialized),
+        "benchmark": _canonical_benchmark(serialized),
+        "metadata": metadata,
+    }
+
+
+def _extract_restorable_space(response: dict) -> dict:
+    """Validate the payload without stripping keys needed for exact restoration.
+
+    Prefer serialized_space over the optimizer-mutated _parsed_space copy;
+    internal keys are removed only later, when computing the config hash.
+    """
+    serialized = response.get(
+        "serialized_space", response.get("_parsed_space", response)
+    )
+    if isinstance(serialized, str):
+        try:
+            serialized = json.loads(serialized)
+        except ValueError as error:
+            raise ValueError("serialized_space must contain valid JSON") from error
+    if not isinstance(serialized, dict) or not any(
+        key in serialized for key in _SERIALIZED_SPACE_KEYS
+    ):
+        raise ValueError(
+            "serialized_space must contain a recognized payload section"
+        )
+    if "version" in serialized and (
+        type(serialized["version"]) is not int or serialized["version"] < 1
+    ):
+        raise ValueError("serialized_space version must be a positive integer")
+    for key in _SERIALIZED_SPACE_KEYS:
+        if key in serialized and not isinstance(serialized[key], dict):
+            raise ValueError(f"serialized_space {key} must be an object")
+    _validate_collections(serialized)
+    return serialized
+
+
+def _validate_collections(node: Any) -> None:
+    """Reject malformed addressed collections rather than hashing false empties."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _VC_COLLECTION_KEYS:
+                if not isinstance(value, list) or not all(
+                    isinstance(entry, dict) for entry in value
+                ):
+                    raise ValueError(
+                        f"serialized_space {key} must be an array of objects"
+                    )
+            _validate_collections(value)
+    elif isinstance(node, list):
+        for value in node:
+            _validate_collections(value)
+
+
+def _canonical_benchmark(serialized: dict) -> dict:
+    """Unify empty benchmark shapes while preserving ground-truth SQL quotes."""
+    benchmarks = serialized.get("benchmarks") or {}
+    return canonicalize(
+        {**benchmarks, "questions": benchmarks.get("questions") or []},
+        normalize_boundary_quotes=False,
+        _collection_keys=_VC_COLLECTION_KEYS,
+    )
+
+
+def _canonical_config(serialized: dict) -> dict:
+    """Hash only recoverable config semantics, leaving restoration data intact.
+
+    Genie flattens metric views into tables without preserving their kind.
+    Always emit one sources collection, even when empty, without guessing
+    kind from identifier prefixes. Drop METRIC_VIEW markers on either input.
+    Accept sources itself so canonical observations remain idempotent.
+
+    Duplicate identifiers merge fields, with later entries winning conflicts
+    (sources, then tables, then metric_views); unaddressed entries are retained.
+    """
+    config = _strip_internal_keys(deepcopy(_with_default_version(serialized)))
+    sources = config.setdefault("data_sources", {})
+    entries = [
+        entry
+        for key in ("sources", "tables", "metric_views")
+        for entry in sources.pop(key, [])
+    ]
+    by_identifier: dict[str, dict] = {}
+    unaddressed = []
+    for entry in entries:
+        entry = {
+            key: value
+            for key, value in entry.items()
+            if not (
+                key in ("table_type", "type", "object_type")
+                and "METRIC_VIEW" in str(value).upper()
+            )
+        }
+        identifier = entry.get("identifier")
+        if isinstance(identifier, str):
+            by_identifier.setdefault(identifier, {}).update(entry)
+        else:
+            unaddressed.append(entry)
+    sources["sources"] = [
+        *(by_identifier[key] for key in sorted(by_identifier)),
+        *unaddressed,
+    ]
+    return canonicalize(config, _collection_keys=_VC_COLLECTION_KEYS)
 
 
 def unwrap_serialized_space(config: Any) -> dict | None:
@@ -132,6 +385,7 @@ def canonicalize(
     normalize_boundary_quotes: bool = True,
     _depth: int = 0,
     _parent_key: str | None = None,
+    _collection_keys: dict[str, str] | None = None,
 ) -> Any:
     """Recursively canonicalize a parsed serialized_space object.
 
@@ -143,9 +397,12 @@ def canonicalize(
     * Genie-added boundary single quotes are optionally ignored while
       apostrophes inside words remain significant; benchmark ground-truth SQL
       disables this because SQL quote punctuation changes semantics;
-    * arrays whose elements are all dicts with a string ``id`` are sorted by
-      that id — Genie's validation rules require id-sorted arrays, so element
-      order there carries no meaning;
+    * the legacy ``_collection_keys=None`` path retains blanket string-id
+      array sorting, frozen for compatibility with persisted fingerprints;
+    * the VC path sorts only collections declared in ``_collection_keys`` by
+      their identity field (t4), never arbitrary arrays containing id fields;
+    * the VC uniqueness guard preserves duplicate-id array input order rather
+      than assuming stable addressing; legacy sorting remains unchanged;
     * everything else (scalars and non-id array order) is preserved — those
       are meaningful configuration.
     """
@@ -156,6 +413,7 @@ def canonicalize(
                 normalize_boundary_quotes=normalize_boundary_quotes,
                 _depth=_depth + 1,
                 _parent_key=key,
+                _collection_keys=_collection_keys,
             )
             for key, value in node.items()
             if not (_depth == 0 and key == "benchmarks")
@@ -179,14 +437,27 @@ def canonicalize(
                 normalize_boundary_quotes=normalize_boundary_quotes,
                 _depth=_depth + 1,
                 _parent_key=_parent_key,
+                _collection_keys=_collection_keys,
             )
             for value in node
         ]
-        if items and all(
-            isinstance(value, dict) and isinstance(value.get("id"), str)
-            for value in items
+        identity_key = (
+            "id" if _collection_keys is None else _collection_keys.get(_parent_key)
+        )
+        if (
+            identity_key
+            and items
+            and all(
+                isinstance(value, dict)
+                and isinstance(value.get(identity_key), str)
+                for value in items
+            )
+            and (
+                _collection_keys is None
+                or len({value[identity_key] for value in items}) == len(items)
+            )
         ):
-            items.sort(key=lambda value: value["id"])
+            items.sort(key=lambda value: value[identity_key])
         return items
     if isinstance(node, str):
         return (

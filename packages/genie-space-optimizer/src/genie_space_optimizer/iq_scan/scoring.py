@@ -677,3 +677,75 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         "warning_next_steps": warning_next_steps[:8],
         "scanned_at": datetime.now(UTC).isoformat(),
     }
+
+
+# A caller below Can Edit sees a finding, warning or check detail only in one of
+# these forms (MV-D110, MV-D119): each is a template in calculate_score with its
+# interpolations reduced to counts and percentages. Text in no form, including an
+# older scorer's wording, is not shown. Changing a template above means changing
+# its form here; test_iq_viewer_safe.py fails on drift in either direction.
+_N = r"[0-9][0-9,]*"
+_P = r"[0-9]+%"
+
+
+def _form(template: str) -> re.Pattern[str]:
+    return re.compile(template.replace("{N}", _N).replace("{P}", _P))
+
+
+VIEWER_SAFE_FORMS: tuple[re.Pattern[str], ...] = tuple(_form(t) for t in (
+    r"{N} chars(?: — add domain, audience, and scope details)?",
+    r"No agent description configured",
+    r"Missing or placeholder agent description",
+    r"{N}/{N} tables have descriptions \({P}\)(?: — 80%\+ required| — aim for 100%)?",
+    r"Metric-view-only agent — descriptions managed in Unity Catalog",
+    r"No data sources configured",
+    r"{N}/{N} visible columns have descriptions \({P}\)(?: — 50%\+ required| — aim for 80%\+)?",
+    r"Metric-view-only agent — columns managed in Unity Catalog",
+    r"No column synonyms defined",
+    r"{N} instruction\(s\), {N} chars total(?: — {N} warning\(s\))?",
+    r"No text instructions configured",
+    r"Text instructions are too brief",
+    r"Instructions total {N} chars — keep under 2,000 to avoid pushing out higher-value SQL context",
+    r"SQL patterns found in text instructions — move to Example SQLs or SQL Expressions\.",
+    r"{N} join spec\(s\) for {N} table\(s\)(?: — relationship coverage may be incomplete)?",
+    r"No join specifications for multi-table agent",
+    r"{N} data source\(s\)(?: — consider focused agents for broad domains| — consider multi-room architecture)?",
+    r"No tables or metric views configured",
+    r"{N} data sources — more than 12 reduces Genie accuracy",
+    (r"{N} functions, {N} measures, {N} filters, {N} expressions, {N} example SQLs"
+     r"(?: — at least one required| — {N} warning\(s\))?"),
+    r"No SQL guidance artifacts configured",
+    r"Add (?:filters|measures|filters and measures) for better SQL snippet coverage",
+    r"{N}/{N} example SQLs lack usage_guidance",
+    (r"{N} columns with entity matching, {N} with format assistance"
+     r"(?: — exceeds 120/agent limit, excess will be ignored| — approaching 120/agent limit)?"),
+    r"No columns have entity matching or format assistance enabled",
+    r"Tables with row-level security — entity matching is silently disabled for these",
+    r"{N} benchmark question\(s\)(?: — add more for broader coverage)?",
+    r"Only {N} benchmark question\(s\) — add at least 10",
+    r"No benchmark questions configured",
+    (r"{N}/{N} visible columns look internal/noisy(?: \({P}\)"
+     r"(?: — (?:review noisy internal columns(?:; a table exposes {N} columns)?|a table exposes {N} columns))?)?"),
+    r"Agent has not been through the optimization workflow",
+    r"Accuracy: {P}",
+    r"Optimization accuracy is {P} — target ≥ 85%",
+))
+
+# The three templates that quote space content, rewritten to their count-only form.
+_QUOTING_FORMS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\A(SQL patterns found in text instructions — move to Example SQLs or SQL Expressions\.)"
+                r" First offender: .*\Z", re.DOTALL), r"\1"),
+    (re.compile(rf"\A({_N}/{_N} visible columns look internal/noisy) \(.*\)\Z", re.DOTALL), r"\1"),
+    (re.compile(r"\A(Tables with row-level security) \(.*\)"
+                r"( — entity matching is silently disabled for these)\Z", re.DOTALL), r"\1\2"),
+)
+
+
+def viewer_safe_text(text: object) -> str | None:
+    """``text`` in a viewer-safe form, or None when it has none."""
+    if not isinstance(text, str):
+        return None
+    for candidate in (text, *(pattern.sub(repl, text) for pattern, repl in _QUOTING_FORMS)):
+        if any(form.fullmatch(candidate) for form in VIEWER_SAFE_FORMS):
+            return candidate
+    return None

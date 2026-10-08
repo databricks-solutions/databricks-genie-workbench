@@ -1,0 +1,11 @@
+{
+  "type": "Fingerprints",
+  "examples": [
+    {
+      "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "canonicalizer_version": "vc-c14n/1"
+    }
+  ]
+}

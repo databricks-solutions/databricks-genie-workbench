@@ -1,0 +1,105 @@
+{
+  "DriftState": [
+    "clean",
+    "external_ahead",
+    "desired_ahead",
+    "diverged",
+    "unknown",
+    "unreachable",
+    "applied_unverified",
+    "conflicted"
+  ],
+  "OperationStatus": [
+    "requested",
+    "preimage_captured",
+    "apply_attempted",
+    "applied_unverified",
+    "applied_partial",
+    "confirmed",
+    "conflicted",
+    "quarantined",
+    "failed",
+    "compensation_attempted",
+    "compensated",
+    "noop"
+  ],
+  "Origin": [
+    "workbench",
+    "external",
+    "optimizer",
+    "restore",
+    "promotion",
+    "unknown",
+    "create"
+  ],
+  "DiffCategory": [
+    "sources",
+    "columns",
+    "instructions",
+    "joins",
+    "filters",
+    "parameters",
+    "sql",
+    "benchmarks",
+    "questions",
+    "metadata",
+    "bindings"
+  ],
+  "DiffChange": [
+    "added",
+    "removed",
+    "modified"
+  ],
+  "Comparison": [
+    "equal",
+    "different",
+    "unknown"
+  ],
+  "PatchStage": [
+    "config_pending",
+    "config_in_flight",
+    "config_observed",
+    "description_pending",
+    "description_in_flight",
+    "description_observed"
+  ],
+  "CoordinationState": [
+    "idle",
+    "observing",
+    "reserved",
+    "admitted",
+    "quarantined"
+  ],
+  "FactKind": [
+    "operation",
+    "create_intent",
+    "approval_request",
+    "approval_vote",
+    "approval_granted",
+    "approval_consumed",
+    "approval_invalidated",
+    "release",
+    "receipt",
+    "acknowledgement",
+    "break_glass",
+    "recovery"
+  ],
+  "FactStatus": [
+    "requested",
+    "preimage_captured",
+    "apply_attempted",
+    "applied_unverified",
+    "applied_partial",
+    "confirmed",
+    "conflicted",
+    "quarantined",
+    "failed",
+    "compensation_attempted",
+    "compensated",
+    "noop",
+    "approved",
+    "consumed",
+    "invalidated",
+    "acknowledged"
+  ]
+}
