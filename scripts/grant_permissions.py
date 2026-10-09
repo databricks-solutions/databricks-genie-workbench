@@ -97,7 +97,7 @@ def _await_sql(result: dict, *, profile: str, label: str, timeout: int = 30) -> 
 
 def _ensure_schema(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
     """Create the optimization schema if it doesn't exist."""
-    schema_fqn = f"{catalog}.{schema}"
+    schema_fqn = f"`{catalog}`.`{schema}`"
     stmt = (
         f"CREATE SCHEMA IF NOT EXISTS {schema_fqn} "
         f"COMMENT 'Genie Space Optimizer state tables, prompts, and benchmarks'"
@@ -122,7 +122,7 @@ def _ensure_schema(*, profile: str, catalog: str, schema: str, warehouse_id: str
 
 def _ensure_volume(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
     """Create the managed artifact volume if it doesn't exist."""
-    vol_fqn = f"{catalog}.{schema}.app_artifacts"
+    vol_fqn = f"`{catalog}`.`{schema}`.app_artifacts"
     stmt = f"CREATE VOLUME IF NOT EXISTS {vol_fqn}"
     payload = json.dumps({
         "warehouse_id": warehouse_id,
@@ -176,7 +176,7 @@ def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str
 
     failed: list[str] = []
     for table_name, ddl_template in _ALL_DDL.items():
-        stmt = ddl_template.replace("{catalog}", catalog).replace("{schema}", schema)
+        stmt = ddl_template.replace("{catalog}", f"`{catalog}`").replace("{schema}", f"`{schema}`")
         result = _sql_exec(
             profile=profile, warehouse_id=warehouse_id, statement=stmt,
         )
@@ -192,7 +192,7 @@ def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str
         else:
             print(f"[grant-permissions] Table ensured: {catalog}.{schema}.{table_name}")
             cdf_stmt = (
-                f"ALTER TABLE {catalog}.{schema}.{table_name} "
+                f"ALTER TABLE `{catalog}`.`{schema}`.{table_name} "
                 f"SET TBLPROPERTIES (delta.enableChangeDataFeed = true)"
             )
             cdf_result = _sql_exec(
