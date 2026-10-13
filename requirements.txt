@@ -551,7 +551,7 @@ wcwidth==0.6.0
     # via prettytable
 websockets==16.0
     # via uvicorn
-werkzeug==3.1.7
+werkzeug==3.1.9
     # via
     #   flask
     #   flask-cors
