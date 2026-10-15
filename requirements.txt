@@ -236,7 +236,7 @@ litellm==1.82.6
     # via
     #   databricks-agents
     #   genie-space-optimizer
-mako==1.3.10
+mako==1.4.2
     # via alembic
 markdown-it-py==4.0.0
     # via rich
