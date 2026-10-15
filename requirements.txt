@@ -262,7 +262,7 @@ mlflow-skinny==3.11.1
     #   mlflow
 mlflow-tracing==3.11.1
     # via mlflow
-multidict==6.7.1
+multidict==6.9.1
     # via
     #   aiohttp
     #   yarl
