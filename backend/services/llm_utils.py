@@ -13,8 +13,7 @@ from genie_space_optimizer.common.ai_gateway import (
     DEFAULT_CHAT_MODEL,
     SCOPE_MISSING,
     chat_completions_url,
-    classify_gateway_failure,
-    format_gateway_error,
+    describe_gateway_failure,
     normalize_model_name,
     scope_missing_message,
 )
@@ -47,9 +46,10 @@ def probe_chat_model(client, model: str, *, timeout: float = 30) -> tuple[int, s
 
 def gateway_error_message(status: int, text: str, model: str) -> str:
     """User-facing error for a failed Unity Gateway call."""
-    if classify_gateway_failure(status, text, model) == SCOPE_MISSING:
+    failure = describe_gateway_failure(status, text, model)
+    if failure.kind == SCOPE_MISSING:
         return scope_missing_message(model)
-    return format_gateway_error(status, text, model)
+    return failure.detail
 
 
 def normalize_message_content(content: Any) -> str:

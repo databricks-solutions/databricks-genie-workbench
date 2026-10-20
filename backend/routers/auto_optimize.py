@@ -29,7 +29,7 @@ from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
-from backend.services.llm_utils import get_llm_model, normalize_model_name, probe_chat_model
+from backend.services.llm_utils import get_llm_model, probe_chat_model
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
@@ -1239,8 +1239,7 @@ def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
         MODEL_MISSING,
         PERMISSION_DENIED,
         SCOPE_MISSING,
-        classify_gateway_failure,
-        format_gateway_error,
+        describe_gateway_failure,
         grant_hint,
     )
 
@@ -1252,8 +1251,8 @@ def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
     try:
         status, body = probe_chat_model(sp_ws, model)
         if status != 200:
-            kind = classify_gateway_failure(status, body, model)
-            detail = format_gateway_error(status, body, model)
+            failure = describe_gateway_failure(status, body, model)
+            kind, detail = failure.kind, failure.detail
             if kind in (PERMISSION_DENIED, SCOPE_MISSING, AUTH):
                 error = f"GSO service principal cannot query {model}: {detail}\n{grant_hint(model, sp_principal)}"
             elif kind == MODEL_MISSING:
@@ -1360,15 +1359,19 @@ async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read
 
+    # Only curated models are probed (the trigger rejects others), which keeps the
+    # probe cache bounded.
     try:
-        probe_model = validate_chat_model(llm_model) if llm_model else get_llm_model()
-    except ModelValidationError:
-        probe_model = normalize_model_name(llm_model)
-    llm_error = _probe_sp_llm_access(
-        sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
-    )
-    if llm_error:
-        errors.append(llm_error)
+        probe_model = validate_chat_model(llm_model) or get_llm_model()
+    except ModelValidationError as exc:
+        errors.append(str(exc))
+    else:
+        llm_error = await asyncio.to_thread(
+            _probe_sp_llm_access,
+            sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
+        )
+        if llm_error:
+            errors.append(llm_error)
 
     system_history_available = False
     try:

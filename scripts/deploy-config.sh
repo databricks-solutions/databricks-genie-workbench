@@ -35,13 +35,8 @@ CATALOG="${GENIE_CATALOG:-}"
 GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
+# Legacy databricks-<model> values are mapped to system.ai.<model> at runtime.
 LLM_MODEL="${GENIE_LLM_MODEL:-system.ai.claude-sonnet-4-6}"
-# Legacy AI Gateway v1 endpoint names (databricks-<model>) map to Unity Gateway
-# model services (system.ai.<model>).
-if [[ "$LLM_MODEL" == databricks-* ]]; then
-    echo "  ℹ Mapping legacy GENIE_LLM_MODEL=$LLM_MODEL to system.ai.${LLM_MODEL#databricks-}"
-    LLM_MODEL="system.ai.${LLM_MODEL#databricks-}"
-fi
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 

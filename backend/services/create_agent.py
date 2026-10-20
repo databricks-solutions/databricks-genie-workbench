@@ -105,7 +105,7 @@ class CreateGenieAgent:
 
     @staticmethod
     def _effective_model(session: AgentSession) -> str:
-        return normalize_model_name(session.llm_model) or get_llm_model()
+        return session.llm_model or get_llm_model()
 
     def _get_schema_content(self) -> str:
         if self._schema_content is None:

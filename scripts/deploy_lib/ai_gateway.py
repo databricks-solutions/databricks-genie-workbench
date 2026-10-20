@@ -24,9 +24,8 @@ from genie_space_optimizer.common.ai_gateway import (
     SCOPE_MISSING,
     TRANSIENT,
     chat_completions_url,
-    classify_gateway_failure,
+    describe_gateway_failure,
     embeddings_url,
-    format_gateway_error,
     grant_hint,
     normalize_model_name,
 )
@@ -85,11 +84,9 @@ def _post(w, url: str, body: dict[str, Any], model: str) -> ProbeResult:
         else:
             if resp.status_code == 200:
                 return ProbeResult(model=model, status=200)
+            failure = describe_gateway_failure(resp.status_code, resp.text, model)
             last = ProbeResult(
-                model=model,
-                status=resp.status_code,
-                kind=classify_gateway_failure(resp.status_code, resp.text, model),
-                detail=format_gateway_error(resp.status_code, resp.text, model),
+                model=model, status=resp.status_code, kind=failure.kind, detail=failure.detail,
             )
             if last.kind != TRANSIENT:
                 return last

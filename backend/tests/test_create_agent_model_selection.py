@@ -41,6 +41,8 @@ def test_agent_chat_request_model_is_saved_on_session(monkeypatch):
 
 
 def _fake_pool_with_row(llm_model):
+    """Fake asyncpg pool whose single connection records executes and returns one session row."""
+
     class FakeConn:
         def __init__(self):
             self.execute_calls = []
@@ -76,8 +78,11 @@ def _fake_pool_with_row(llm_model):
             return False
 
     class FakePool:
+        def __init__(self):
+            self.conn = FakeConn()
+
         def acquire(self):
-            return Acquire(FakeConn())
+            return Acquire(self.conn)
 
     return FakePool()
 
@@ -92,49 +97,9 @@ def test_agent_session_load_normalizes_legacy_llm_model(monkeypatch):
 
 
 def test_agent_session_persistence_round_trips_llm_model(monkeypatch):
-    class FakeConn:
-        def __init__(self):
-            self.execute_calls = []
-
-        async def execute(self, sql, *args):
-            self.execute_calls.append((sql, args))
-
-        async def fetchrow(self, sql, session_id):
-            now = time.time()
-            return {
-                "session_id": session_id,
-                "history": json.dumps([]),
-                "space_config": None,
-                "space_id": None,
-                "space_url": None,
-                "selected_catalogs": json.dumps([]),
-                "selected_schemas": json.dumps([]),
-                "selected_tables": json.dumps([]),
-                "feasibility_confirmed": False,
-                "llm_model": "persisted-chat",
-                "created_at": now,
-                "last_active": now,
-            }
-
-    class Acquire:
-        def __init__(self, conn):
-            self.conn = conn
-
-        async def __aenter__(self):
-            return self.conn
-
-        async def __aexit__(self, *args):
-            return False
-
-    class FakePool:
-        def __init__(self, conn):
-            self.conn = conn
-
-        def acquire(self):
-            return Acquire(self.conn)
-
-    conn = FakeConn()
-    monkeypatch.setattr(create_agent_session, "_get_pool", lambda: FakePool(conn))
+    pool = _fake_pool_with_row("persisted-chat")
+    conn = pool.conn
+    monkeypatch.setattr(create_agent_session, "_get_pool", lambda: pool)
 
     async def run():
         await create_agent_session._ensure_table()

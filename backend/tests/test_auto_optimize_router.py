@@ -2578,3 +2578,15 @@ def test_permissions_ignores_transient_probe_failures(
     )
 
     assert data["errors"] == []
+
+
+def test_permissions_rejects_non_curated_model_without_probing(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch,
+        status=200, body="{}", query="?llm_model=not-a-real-model",
+    )
+
+    assert seen == []
+    assert any("curated list" in e for e in data["errors"])

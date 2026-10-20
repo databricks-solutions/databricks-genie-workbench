@@ -214,8 +214,7 @@ def test_stream_llm_posts_to_unity_gateway(monkeypatch):
     assert [c["choices"][0]["delta"]["content"] for c in chunks] == ["a", "b"]
 
 
-def test_effective_model_normalizes_legacy_session_model(monkeypatch):
+def test_effective_model_defaults_to_configured_model(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
 
-    assert CreateGenieAgent._effective_model(AgentSession(session_id="s", llm_model="databricks-gpt-5-4")) == "system.ai.gpt-5-4"
     assert CreateGenieAgent._effective_model(AgentSession(session_id="s")) == "system.ai.claude-sonnet-4-6"

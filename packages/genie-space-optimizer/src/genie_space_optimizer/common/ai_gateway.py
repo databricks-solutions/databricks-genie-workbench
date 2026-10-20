@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +94,34 @@ def parse_gateway_error(text: str | None) -> tuple[str | None, str]:
     return (str(code) if code else None), str(message)[:500]
 
 
+@dataclass(frozen=True)
+class GatewayFailure:
+    kind: str
+    detail: str
+
+
+def describe_gateway_failure(status: int, text: str | None, model: str | None) -> GatewayFailure:
+    """Classify a failed Unity Gateway response and format it, parsing the body once."""
+    code, message = parse_gateway_error(text)
+    detail = f"{status} {code}" if code else f"{status}"
+    return GatewayFailure(
+        kind=_classify(status, code, message, model),
+        detail=f"Unity Gateway returned {detail} for model={model}: {message}",
+    )
+
+
 def classify_gateway_failure(status: int, text: str | None, model: str | None = None) -> str:
     """Bucket a failed Unity Gateway response into an actionable failure kind."""
     code, message = parse_gateway_error(text)
+    return _classify(status, code, message, model)
+
+
+def format_gateway_error(status: int, text: str | None, model: str | None) -> str:
+    """One-line error for logs and exceptions."""
+    return describe_gateway_failure(status, text, model).detail
+
+
+def _classify(status: int, code: str | None, message: str, model: str | None) -> str:
     lowered = message.lower()
     if status == 404:
         if code == "NOT_FOUND" and (
@@ -114,13 +140,6 @@ def classify_gateway_failure(status: int, text: str | None, model: str | None = 
     if status == 400:
         return BAD_REQUEST
     return UNKNOWN
-
-
-def format_gateway_error(status: int, text: str | None, model: str | None) -> str:
-    """One-line error for logs and exceptions."""
-    code, message = parse_gateway_error(text)
-    detail = f"{status} {code}" if code else f"{status}"
-    return f"Unity Gateway returned {detail} for model={model}: {message}"
 
 
 def scope_missing_message(model: str | None) -> str:
