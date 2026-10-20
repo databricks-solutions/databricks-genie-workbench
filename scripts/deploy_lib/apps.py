@@ -13,6 +13,8 @@ from .config import InstallConfig, LakebaseInfo
 APP_SCOPES = [
     "sql",
     "dashboards.genie",
+    "ai-gateway",
+    # TODO: remove serving.serving-endpoints next release (legacy AI Gateway v1 scope)
     "serving.serving-endpoints",
     "catalog.catalogs:read",
     "catalog.schemas:read",

@@ -36,7 +36,7 @@ flowchart TB
             direction TB
             subgraph eRow1[" "]
                 direction LR
-                genie["Genie API"] ~~~ uc["Unity Catalog"] ~~~ wh["SQL Warehouse"] ~~~ ms["Model Serving"]
+                genie["Genie API"] ~~~ uc["Unity Catalog"] ~~~ wh["SQL Warehouse"] ~~~ ms["Unity Gateway"]
             end
             subgraph eRow2[" "]
                 direction LR
@@ -114,11 +114,11 @@ See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint l
 | Create Agent Tools | `services/create_agent_tools.py` | Tool definitions: UC discovery, SQL, config generation |
 | Create Agent Session | `services/create_agent_session.py` | Session persistence (L1 in-memory + L2 Lakebase) |
 | Plan Builder | `services/plan_builder.py` | Parallel LLM plan generation across 5 sections |
-| LLM Utils | `services/llm_utils.py` | OpenAI-compatible LLM client via Databricks model serving |
+| LLM Utils | `services/llm_utils.py` | OpenAI-compatible LLM client via Unity Gateway (`/ai-gateway/mlflow/v1`) |
 | UC Client | `services/uc_client.py` | Unity Catalog browsing (catalogs, schemas, tables) |
 | Lakebase | `services/lakebase.py` | PostgreSQL persistence with in-memory fallback |
 | GSO Lakebase | `services/gso_lakebase.py` | GSO synced table reads from Lakebase |
-| Model Catalog | `services/model_catalog.py` | Curated chat serving endpoints exposed via `/api/models`; `validate_chat_model()` guards per-run overrides |
+| Model Catalog | `services/model_catalog.py` | Curated `system.ai` chat models exposed via `/api/models` (filtered by workspace availability); `validate_chat_model()` normalizes and guards per-run overrides |
 | SQL Executor | `sql_executor.py` | SQL execution via the Databricks SQL warehouse |
 
 ### Prompt Templates
@@ -197,7 +197,7 @@ Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is n
 
 ## Key Design Decisions
 
-1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and model serving endpoints that are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
+1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and Unity Gateway model services that are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
 
 2. **Two install paths** — the recommended notebook path (`notebooks/install.py`) provisions the app and the GSO job entirely through the SDK/Jobs API, deploying from a generated workspace source folder. The local terminal path uses `deploy.sh` for the app (create, sync, `databricks apps deploy`) with the GSO job managed by DABs (`databricks bundle deploy -t app`). Do not mix the two paths for one app instance. See the [Deployment Guide](/docs/getting-started/deployment-guide).
 

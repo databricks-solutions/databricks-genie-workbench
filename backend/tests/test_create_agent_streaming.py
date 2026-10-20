@@ -164,3 +164,58 @@ def test_existing_space_autochain_sends_explicit_description(monkeypatch):
 
     assert update_calls == [({"space_id": "s1", "description": "Edited wording"}, updated_config)]
     assert any(event["event"] == "updated" for event in events)
+
+
+class _FakeStreamResponse:
+    status_code = 200
+    ok = True
+    headers: dict = {}
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.encoding = None
+
+    def iter_lines(self, decode_unicode=True):
+        return iter(self._lines)
+
+    def close(self):
+        pass
+
+
+def test_stream_llm_posts_to_unity_gateway(monkeypatch):
+    captured = {}
+
+    class FakeSession:
+        def post(self, url, *, json, stream, timeout):
+            captured.update(url=url, body=json)
+            return _FakeStreamResponse([
+                'data:{"choices":[{"delta":{"content":"a"}}]}',
+                'data: {"choices":[{"delta":{"content":"b"}}]}',
+                "",
+                "data: [DONE]",
+            ])
+
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(
+        config=SimpleNamespace(host="https://example.databricks.com/"),
+        api_client=SimpleNamespace(_api_client=SimpleNamespace(_session=FakeSession())),
+    )
+    monkeypatch.setattr(create_agent_module, "get_workspace_client", lambda: client)
+
+    chunks = list(CreateGenieAgent()._stream_llm(
+        [{"role": "user", "content": "hi"}], tools=[], model="databricks-claude-opus-4-7",
+    ))
+
+    assert captured["url"] == "https://example.databricks.com/ai-gateway/mlflow/v1/chat/completions"
+    assert captured["body"]["model"] == "system.ai.claude-opus-4-7"
+    assert captured["body"]["stream"] is True
+    assert "tools" not in captured["body"]
+    assert [c["choices"][0]["delta"]["content"] for c in chunks] == ["a", "b"]
+
+
+def test_effective_model_normalizes_legacy_session_model(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    assert CreateGenieAgent._effective_model(AgentSession(session_id="s", llm_model="databricks-gpt-5-4")) == "system.ai.gpt-5-4"
+    assert CreateGenieAgent._effective_model(AgentSession(session_id="s")) == "system.ai.claude-sonnet-4-6"

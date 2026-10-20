@@ -1,4 +1,4 @@
-"""Shared LLM utilities for calling serving endpoints and parsing responses."""
+"""Shared LLM utilities for calling Unity Gateway model services and parsing responses."""
 
 import json
 import logging
@@ -9,6 +9,15 @@ from typing import Any
 import httpx
 
 from backend.services.auth import get_workspace_client
+from genie_space_optimizer.common.ai_gateway import (
+    DEFAULT_CHAT_MODEL,
+    SCOPE_MISSING,
+    chat_completions_url,
+    classify_gateway_failure,
+    format_gateway_error,
+    normalize_model_name,
+    scope_missing_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +27,35 @@ _RETRYABLE_STATUSES = {429, 502, 503}
 
 
 def get_llm_model() -> str:
-    """Get the configured LLM model name."""
-    return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    """Get the configured LLM model service name (``system.ai.<model>``)."""
+    return normalize_model_name(os.environ.get("LLM_MODEL") or DEFAULT_CHAT_MODEL) or DEFAULT_CHAT_MODEL
+
+
+def probe_chat_model(client, model: str, *, timeout: float = 30) -> tuple[int, str]:
+    """Send a tiny chat request to ``model`` as ``client``; returns ``(status, body)``.
+
+    ``max_tokens=16``: reasoning models reject 1-token completions with a 400.
+    """
+    resp = httpx.post(
+        chat_completions_url(client.config.host),
+        json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 16},
+        headers=client.config.authenticate(),
+        timeout=timeout,
+    )
+    return resp.status_code, resp.text
+
+
+def gateway_error_message(status: int, text: str, model: str) -> str:
+    """User-facing error for a failed Unity Gateway call."""
+    if classify_gateway_failure(status, text, model) == SCOPE_MISSING:
+        return scope_missing_message(model)
+    return format_gateway_error(status, text, model)
 
 
 def normalize_message_content(content: Any) -> str:
     """Normalize OpenAI-compatible message content into plain text.
 
-    Databricks serving endpoints can return either a string or structured
+    Databricks model services can return either a string or structured
     content blocks. Claude 5 models may use the structured form for both
     streaming deltas and complete messages. Only known text-bearing fields are
     retained so unrelated block metadata is not rendered to users.
@@ -55,7 +85,7 @@ def call_serving_endpoint(
     max_tokens: int | None = None,
     timeout: float = 600,
 ) -> str:
-    """Call the LLM serving endpoint using httpx with explicit timeout.
+    """Call a Unity Gateway chat model service using httpx with explicit timeout.
 
     Uses httpx instead of the SDK's api_client.do() to avoid opaque retry
     behavior on 429 (rate limit) responses that can cause silent 5-minute hangs.
@@ -73,8 +103,7 @@ def call_serving_endpoint(
         RuntimeError: If rate limited (429) or other HTTP error
         ValueError: If response format is unexpected or content is empty
     """
-    if model is None:
-        model = get_llm_model()
+    model = normalize_model_name(model) or get_llm_model()
 
     client = get_workspace_client()
     host = client.config.host.rstrip("/")
@@ -83,12 +112,12 @@ def call_serving_endpoint(
     # (PAT, oauth-m2m service principal, OBO user token, etc.)
     auth_headers = client.config.authenticate()
 
-    url = f"{host}/serving-endpoints/{model}/invocations"
-    body: dict = {"messages": messages}
+    url = chat_completions_url(host)
+    body: dict = {"model": model, "messages": messages}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 
-    logger.info(f"Calling serving endpoint: {model}")
+    logger.info("Calling Unity Gateway model: %s", model)
 
     for attempt in range(_MAX_RETRIES + 1):
         resp = httpx.post(
@@ -100,19 +129,17 @@ def call_serving_endpoint(
 
         if resp.status_code in _RETRYABLE_STATUSES:
             if attempt >= _MAX_RETRIES:
-                logger.error("Serving endpoint returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
-                raise RuntimeError(f"Serving endpoint returned {resp.status_code} after {_MAX_RETRIES} retries.")
+                logger.error("Unity Gateway returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
+                raise RuntimeError(f"Unity Gateway returned {resp.status_code} after {_MAX_RETRIES} retries.")
             retry_after = resp.headers.get("Retry-After")
             delay = float(retry_after) if retry_after else _RETRY_BACKOFF_BASE * (2 ** attempt)
-            logger.warning("%d from serving endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
+            logger.warning("%d from Unity Gateway, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
             time.sleep(delay)
             continue
         break
 
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"Serving endpoint returned {resp.status_code}: {resp.text[:500]}"
-        )
+        raise RuntimeError(gateway_error_message(resp.status_code, resp.text, model))
 
     response = resp.json()
 

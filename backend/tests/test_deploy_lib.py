@@ -156,7 +156,7 @@ def test_all_current_app_yaml_placeholders_are_covered():
             "GSO_CATALOG": "main",
             "GSO_JOB_ID": "123",
             "LAKEBASE_INSTANCE": "genie-workbench-lakebase",
-            "LLM_MODEL": "databricks-claude-sonnet-4-6",
+            "LLM_MODEL": "system.ai.claude-sonnet-4-6",
             "MLFLOW_EXPERIMENT_ID": "",
         },
     )
@@ -355,6 +355,8 @@ def test_patch_app_resources_preserves_existing_and_adds_postgres():
     assert resources["postgres"]["postgres"]["permission"] == "CAN_CONNECT_AND_CREATE"
     assert "keep-me" in resources
     assert "iam.access-control:read" not in payload["user_api_scopes"]
+    assert "ai-gateway" in payload["user_api_scopes"]
+    assert "serving.serving-endpoints" in payload["user_api_scopes"]
     assert any(call[0] == "PATCH" and call[1] == "/api/2.0/apps/genie-workbench" for call in w.api_client.calls)
 
 

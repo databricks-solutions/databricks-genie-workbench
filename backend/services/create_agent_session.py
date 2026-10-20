@@ -11,6 +11,8 @@ import logging
 import secrets
 from dataclasses import dataclass, field
 
+from genie_space_optimizer.common.ai_gateway import normalize_model_name
+
 logger = logging.getLogger(__name__)
 
 SESSION_TTL_SECONDS = 3600  # 1 hour
@@ -176,7 +178,7 @@ async def _load(session_id: str) -> AgentSession | None:
         if row is None:
             return None
         try:
-            llm_model = row["llm_model"]
+            llm_model = normalize_model_name(row["llm_model"]) or None
         except (KeyError, IndexError):
             llm_model = None
 

@@ -124,11 +124,30 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 |-------|---------|
 | `sql` | Execute SQL queries via warehouses |
 | `dashboards.genie` | Access Genie Agent API |
-| `serving.serving-endpoints` | Call model serving endpoints (LLM) |
+| `ai-gateway` | Call Unity Gateway model services (`system.ai.*`) for the Create Agent and plan builder |
+| `serving.serving-endpoints` | Legacy AI Gateway v1 scope — kept for one release during the Unity Gateway migration, then removed |
 | `catalog.catalogs:read` | Browse Unity Catalog catalogs |
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
 | `catalog.tables:read` | Browse Unity Catalog tables |
 | `files.files` | Access workspace files |
+
+:::note
+Users who consented before the `ai-gateway` scope was added must sign out and back in to grant it. Until they do, Create Agent calls fail with a message telling them to re-consent; the app does not fall back to the service principal for LLM calls.
+:::
+
+### Unity Gateway model access
+
+LLM calls require `EXECUTE` on the `system.ai` model service plus `USE CATALOG system` and `USE SCHEMA system.ai`. All account users have these by default, so a `403` usually means an admin added a `DENY`. The deploy preflight (as the deployer) and the Auto-Optimize permission check (as the app service principal) print the exact fix:
+
+```sql
+GRANT USE CATALOG ON CATALOG system TO `<principal>`;
+GRANT USE SCHEMA ON SCHEMA system.ai TO `<principal>`;
+```
+
+```bash
+databricks grants update model_service system.ai.claude-sonnet-4-6 \
+  --json '{"changes":[{"principal":"<principal>","add":["EXECUTE"]}]}'
+```
 
 If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
 

@@ -409,9 +409,12 @@ fi
 _ok "Selected warehouse: $WAREHOUSE_ID"
 
 # ══════════════════════════════════════════════════════════════════════════
-LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
+LLM_MODEL="${GENIE_LLM_MODEL:-system.ai.claude-sonnet-4-6}"
+if [[ "$LLM_MODEL" == databricks-* ]]; then
+    LLM_MODEL="system.ai.${LLM_MODEL#databricks-}"
+fi
 _ok "Default LLM model: $LLM_MODEL"
-_info "Users can choose other READY chat serving endpoints inside the app."
+_info "Users can choose other curated system.ai chat models inside the app."
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 5: MLflow Tracing (optional)

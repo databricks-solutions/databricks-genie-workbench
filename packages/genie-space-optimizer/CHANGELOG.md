@@ -7,6 +7,18 @@ here group by release rather than by explicit version number.
 
 ## [Unreleased]
 
+### Changed — Unity Gateway (AI Gateway v3)
+
+- **LLM and embedding calls route through Unity Gateway.** `optimization/llm_client.py`
+  points the OpenAI client at `{host}/ai-gateway/mlflow/v1`, and the leakage firewall's
+  `get_embedding` posts to `/ai-gateway/mlflow/v1/embeddings` instead of
+  `serving_endpoints.query`. Legacy v1 serving endpoints retire in Mar 2027.
+- **New `common/ai_gateway.py`** — shared URL builders, error classification, grant hints,
+  and `normalize_model_name()` (legacy `databricks-X` → `system.ai.X`). `get_llm_endpoint()`
+  and `GSO_FIREWALL_EMBEDDING_ENDPOINT` are normalized, so old job parameters keep working.
+- **Defaults** are now `system.ai.claude-sonnet-4-6` (chat) and `system.ai.bge-large-en`
+  (embeddings).
+
 ### Added — IQ Scan integration (Epic #179)
 
 - **`iq_scan/` sub-package** — moves `calculate_score` and helpers

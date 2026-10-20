@@ -29,6 +29,7 @@ from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
+from backend.services.llm_utils import get_llm_model, normalize_model_name, probe_chat_model
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
@@ -547,7 +548,7 @@ def _build_gso_config(llm_model_override: str | None = None) -> IntegrationConfi
         schema_name=os.environ.get("GSO_SCHEMA", "genie_space_optimizer"),
         warehouse_id=os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", ""),
         job_id=int(os.environ["GSO_JOB_ID"]) if os.environ.get("GSO_JOB_ID", "").isdigit() else None,
-        llm_model=llm_model_override or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
+        llm_model=llm_model_override or get_llm_model(),
     )
 
 
@@ -1222,8 +1223,55 @@ async def health():
     return {"configured": True, "issues": issues}
 
 
+_SP_LLM_PROBE_TTL_SECONDS = 600
+_sp_llm_probe_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
+    """Return an error if the GSO SP cannot query ``model`` through Unity Gateway.
+
+    The optimization job runs as the app SP, so a missing EXECUTE on the
+    system.ai model service only surfaces mid-run. Cached per model.
+    """
+    from genie_space_optimizer.common.ai_gateway import (
+        AUTH,
+        GATEWAY_NOT_ENABLED,
+        MODEL_MISSING,
+        PERMISSION_DENIED,
+        SCOPE_MISSING,
+        classify_gateway_failure,
+        format_gateway_error,
+        grant_hint,
+    )
+
+    cached = _sp_llm_probe_cache.get(model)
+    if cached and time.monotonic() - cached[0] < _SP_LLM_PROBE_TTL_SECONDS:
+        return cached[1]
+
+    error: str | None = None
+    try:
+        status, body = probe_chat_model(sp_ws, model)
+        if status != 200:
+            kind = classify_gateway_failure(status, body, model)
+            detail = format_gateway_error(status, body, model)
+            if kind in (PERMISSION_DENIED, SCOPE_MISSING, AUTH):
+                error = f"GSO service principal cannot query {model}: {detail}\n{grant_hint(model, sp_principal)}"
+            elif kind == MODEL_MISSING:
+                error = f"{model} is not available in this workspace's system.ai catalog: {detail}"
+            elif kind == GATEWAY_NOT_ENABLED:
+                error = f"Unity Gateway is not reachable for {model}; it may not be enabled for this workspace: {detail}"
+            else:
+                logger.info("SP LLM probe for %s returned non-blocking status: %s", model, detail)
+    except Exception:
+        logger.info("SP LLM probe for %s failed", model, exc_info=True)
+        return None
+
+    _sp_llm_probe_cache[model] = (time.monotonic(), error)
+    return error
+
+
 @router.get("/permissions/{space_id}")
-async def check_permissions(space_id: SpaceId):
+async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
     """Pre-check SP and UC permissions for a Genie Agent before optimization."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
@@ -1311,6 +1359,16 @@ async def check_permissions(space_id: SpaceId):
 
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read
+
+    try:
+        probe_model = validate_chat_model(llm_model) if llm_model else get_llm_model()
+    except ModelValidationError:
+        probe_model = normalize_model_name(llm_model)
+    llm_error = _probe_sp_llm_access(
+        sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
+    )
+    if llm_error:
+        errors.append(llm_error)
 
     system_history_available = False
     try:

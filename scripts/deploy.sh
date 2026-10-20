@@ -187,6 +187,7 @@ WS_PATH="/Workspace/Users/$DEPLOYER/$APP_NAME"
 
 _preflight_check_warehouse "$WAREHOUSE_ID" "$PROFILE"
 _preflight_check_catalog "$CATALOG" "$PROFILE"
+_preflight_check_ai_gateway "$LLM_MODEL" "$PROFILE"
 _preflight_check_app_state "$APP_NAME" "$PROFILE"
 echo "  ✓ All pre-flight checks passed"
 
@@ -559,7 +560,9 @@ EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o jso
 PATCH_PAYLOAD=$(python3 -c "
 import json
 
-scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
+# Keep in sync with app.yaml user_api_scopes and scripts/deploy_lib/apps.py APP_SCOPES.
+# TODO: remove serving.serving-endpoints next release (legacy AI Gateway v1 scope)
+scopes = ['sql', 'dashboards.genie', 'ai-gateway', 'serving.serving-endpoints',
           'catalog.catalogs:read', 'catalog.schemas:read',
           'catalog.tables:read', 'files.files']
 

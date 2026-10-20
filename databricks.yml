@@ -11,8 +11,8 @@ variables:
   warehouse_id:
     description: "SQL Warehouse ID for query execution"
   llm_model:
-    description: "LLM serving endpoint name"
-    default: "databricks-claude-sonnet-4-6"
+    description: "Unity Gateway model service name (system.ai.*)"
+    default: "system.ai.claude-sonnet-4-6"
 
 sync:
   include:
@@ -67,7 +67,7 @@ resources:
       # Parameter set mirrors the package bundle
       # (packages/genie-space-optimizer/databricks.yml) 4-task job. `llm_model`
       # is the Workbench-specific extra: deploy.sh passes it via
-      # `--var llm_model` so the operator-selected serving endpoint reaches each
+      # `--var llm_model` so the operator-selected model service reaches each
       # task (every v2 entrypoint honors the llm_model widget). MLflow was
       # decommissioned (Phase 5) so `experiment_name` is gone, and `deploy` is
       # out of scope (D7) so `deploy_target` is gone.

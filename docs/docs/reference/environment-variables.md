@@ -20,7 +20,7 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `LLM_MODEL` | `__LLM_MODEL__` | Databricks model serving endpoint for analysis and the create agent. Default: `databricks-claude-sonnet-4-6` |
+| `LLM_MODEL` | `__LLM_MODEL__` | Unity Gateway model service (`system.ai.*`) for the create agent and Auto-Optimize. Default: `system.ai.claude-sonnet-4-6`; legacy `databricks-*` names are mapped automatically |
 
 ### SQL Warehouse
 
@@ -70,7 +70,7 @@ On the recommended notebook path there is no `.env.deploy` file. The equivalent 
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
+| `GENIE_LLM_MODEL` | No | `system.ai.claude-sonnet-4-6` | Default Unity Gateway model service |
 | `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
 
 ## How Variables Flow

@@ -90,10 +90,6 @@ def mock_ws():
     run_mock.run_id = 67890
     ws.jobs.run_now.return_value = run_mock
 
-    ws.serving_endpoints.query.return_value = MagicMock(
-        choices=[MagicMock(message=MagicMock(content='{"proposed_value": "test", "rationale": "test"}'))]
-    )
-
     return ws
 
 

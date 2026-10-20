@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .ai_gateway import run_ai_gateway_preflight
 from .app_yaml import render_app_yaml
 from .apps import (
     deploy_app_from_workspace,
@@ -41,6 +42,14 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status = status_fn or _default_status
     cfg = cfg.normalized()
     cfg.validate()
+
+    status(f"Probing Unity Gateway access for {cfg.llm_model}...")
+    gateway = run_ai_gateway_preflight(w, cfg.llm_model)
+    for warning in gateway.warnings:
+        status(f"Warning: {warning}")
+    if not gateway.ok:
+        raise RuntimeError("Unity Gateway preflight failed:\n" + "\n".join(gateway.errors))
+    status("Unity Gateway preflight passed.")
 
     status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
@@ -104,6 +113,7 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
 
     status("Verifying deployment...")
     verification = verify_app_deployment(w, cfg.app_name, source_path)
+    verification["ai_gateway"] = gateway.as_dict()
     verification["uc_grants"] = uc_verification
     verification["app_resources"] = resources_payload
 

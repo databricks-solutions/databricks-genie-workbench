@@ -5,6 +5,7 @@ functions, no mocking required.
 """
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +75,80 @@ def test_call_serving_endpoint_normalizes_structured_content(monkeypatch):
     )
 
     assert result == '{"findings": []}'
+
+
+def _gateway_client():
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            host="https://example.databricks.com/",
+            authenticate=lambda: {"Authorization": "Bearer test"},
+        )
+    )
+
+
+def test_call_serving_endpoint_posts_to_unity_gateway(monkeypatch):
+    captured = {}
+
+    def fake_post(url, *, json, headers, timeout):
+        captured.update(url=url, json=json, headers=headers)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    monkeypatch.setenv("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    monkeypatch.setattr(llm_utils, "get_workspace_client", _gateway_client)
+    monkeypatch.setattr(llm_utils.httpx, "post", fake_post)
+
+    assert llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}], max_tokens=5) == "ok"
+    assert captured["url"] == "https://example.databricks.com/ai-gateway/mlflow/v1/chat/completions"
+    assert captured["json"] == {
+        "model": "system.ai.claude-sonnet-4-6",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 5,
+    }
+
+
+def test_call_serving_endpoint_normalizes_explicit_legacy_model(monkeypatch):
+    captured = {}
+
+    def fake_post(url, *, json, headers, timeout):
+        captured["model"] = json["model"]
+        return SimpleNamespace(status_code=200, json=lambda: {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(llm_utils, "get_workspace_client", _gateway_client)
+    monkeypatch.setattr(llm_utils.httpx, "post", fake_post)
+
+    llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}], model="databricks-gpt-5-4")
+
+    assert captured["model"] == "system.ai.gpt-5-4"
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (404, '{"error_code":"NOT_FOUND","message":"\'system.ai.x\' does not exist."}',
+         "Unity Gateway returned 404 NOT_FOUND for model=system.ai.x: 'system.ai.x' does not exist."),
+        (403, '{"error_code":"PERMISSION_DENIED","message":"required scopes: ai-gateway"}',
+         "missing the 'ai-gateway' permission"),
+    ],
+)
+def test_call_serving_endpoint_gateway_errors(monkeypatch, status, body, expected):
+    monkeypatch.setattr(llm_utils, "get_workspace_client", _gateway_client)
+    monkeypatch.setattr(
+        llm_utils.httpx, "post",
+        lambda *a, **k: SimpleNamespace(status_code=status, text=body, headers={}),
+    )
+
+    with pytest.raises(RuntimeError, match=re.escape(expected)):
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}], model="system.ai.x")
+
+
+def test_get_llm_model_defaults_and_normalizes(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    assert llm_utils.get_llm_model() == "system.ai.claude-sonnet-4-6"
+    monkeypatch.setenv("LLM_MODEL", "databricks-claude-opus-5")
+    assert llm_utils.get_llm_model() == "system.ai.claude-opus-5"
 
 
 # ---------------------------------------------------------------------------

@@ -4,9 +4,9 @@ All LLM calls in the optimization pipeline should go through this module
 so that ``mlflow.openai.autolog()`` can instrument them uniformly —
 capturing token usage, cost, and latency on every span.
 
-The ``openai.OpenAI`` client is configured to point at the Databricks
-serving-endpoints URL and uses bearer-token auth extracted from
-``WorkspaceClient``.
+The ``openai.OpenAI`` client is configured to point at the workspace Unity
+Gateway route (``/ai-gateway/mlflow/v1``) and uses bearer-token auth
+extracted from ``WorkspaceClient``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from genie_space_optimizer.common.ai_gateway import ai_gateway_base_url
 from genie_space_optimizer.common.config import (
     LLM_MAX_RETRIES,
     LLM_TEMPERATURE,
@@ -108,7 +109,7 @@ def _resolve_bearer_token(wc: "WorkspaceClient") -> str:
 
 
 def get_openai_client(w: "WorkspaceClient | None") -> Any:
-    """Return an OpenAI client pointing at the Databricks FMAPI endpoint.
+    """Return an OpenAI client pointing at the workspace Unity Gateway route.
 
     Caches the client by host but **refreshes the bearer token on every
     call** so that OAuth token rotation is handled transparently.
@@ -126,7 +127,7 @@ def get_openai_client(w: "WorkspaceClient | None") -> Any:
     if host not in _openai_client_cache:
         _openai_client_cache[host] = OpenAI(
             api_key=token,
-            base_url=f"{host}/serving-endpoints",
+            base_url=ai_gateway_base_url(host),
         )
     else:
         _openai_client_cache[host].api_key = token
