@@ -179,7 +179,7 @@ class AgentChatRequest(BaseModel):
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
     space_id: str | None = Field(None, description="Pre-seed session with existing space ID for fix/update flows")
-    model: str | None = Field(None, max_length=256, description="Optional serving endpoint name for this session.")
+    model: str | None = Field(None, max_length=256, description="Optional Unity Gateway model service name (system.ai.*) for this session.")
 
 
 @router.post("/agent/chat")
@@ -237,7 +237,7 @@ async def agent_chat(body: AgentChatRequest, request: Request):
             raise HTTPException(status_code=400, detail=str(exc))
     elif session.llm_model:
         try:
-            validate_chat_model(session.llm_model, client=get_workspace_client())
+            session.llm_model = validate_chat_model(session.llm_model, client=get_workspace_client())
         except ModelValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

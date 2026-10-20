@@ -4,11 +4,11 @@ Databricks App for creating, scoring, and optimizing Genie Agents. FastAPI backe
 
 ## Critical Rules
 
-- **DO NOT run `uvicorn` locally.** The app requires Databricks OBO auth, Lakebase PostgreSQL, and model-serving endpoints that are only available inside a Databricks App.
+- **DO NOT run `uvicorn` locally.** The app requires Databricks OBO auth, Lakebase PostgreSQL, and Unity Gateway model services that are only available inside a Databricks App.
 - **DO NOT run `databricks bundle init`.** It overwrites the project's `databricks.yml` and destroys the existing configuration.
 - **DO NOT use `npm install` in build or deploy scripts** — always use `npm ci`. `npm install` can silently upgrade packages within `^` ranges; `npm ci` enforces the exact lockfile.
 - **DO NOT edit `requirements.txt` manually.** It is generated from `uv.lock` as a pip-compatible reference but is excluded from deployment via `.databricksignore`. The platform uses `uv sync` (pyproject.toml + uv.lock) for hash-verified installs.
-- **Backend logic has offline unit tests** in `backend/tests/` (`./scripts/test.sh`) — run these locally. But integration/E2E testing (auth, Lakebase, serving endpoints) is done by deploying to a real Databricks workspace, not by running the server locally.
+- **Backend logic has offline unit tests** in `backend/tests/` (`./scripts/test.sh`) — run these locally. But integration/E2E testing (auth, Lakebase, Unity Gateway models) is done by deploying to a real Databricks workspace, not by running the server locally.
 
 ## Commands
 
@@ -77,8 +77,8 @@ backend/
     plan_builder.py        # Parallel plan generation — builds Genie Agent plans via concurrent LLM calls
     gso_lakebase.py        # GSO synced table reads from Lakebase PostgreSQL
     lakebase.py            # PostgreSQL persistence (asyncpg pool, in-memory fallback)
-    llm_utils.py           # OpenAI-compatible LLM client via Databricks serving endpoints
-    model_catalog.py       # Curated list + validation of user-selectable chat serving endpoints (/api/models)
+    llm_utils.py           # OpenAI-compatible LLM client via Unity Gateway (/ai-gateway/mlflow/v1)
+    model_catalog.py       # Curated system.ai chat models, filtered by workspace availability (/api/models)
     uc_client.py           # Unity Catalog browsing (catalogs, schemas, tables)
   watch/                   # GenieWatch observability surface (see Key Patterns) — all routes under /api/watch/*
     routers/               # spaces, cost, usage, feedback, resources, settings, admin
@@ -131,7 +131,7 @@ The frontend consumes it via manual `fetch` + `ReadableStream` in `lib/api.ts` (
 `services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py` for the local terminal path and by `scripts.deploy_lib.lakebase` for the notebook path.
 
 ### LLM Calls
-All LLM calls go through Databricks model serving endpoints using OpenAI-compatible API. Model configured via `LLM_MODEL` env var (default: `databricks-claude-sonnet-4-6`). `services/model_catalog.py` exposes a curated set of chat-compatible endpoints via `/api/models` so the UI can let users override the model per Create Agent / Auto-Optimize run; `validate_chat_model()` guards those overrides. MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.
+All LLM and embedding calls go through **Unity Gateway (AI Gateway v3)** on the workspace route `/ai-gateway/mlflow/v1` (`/chat/completions`, `/embeddings`), addressing models by Unity Catalog model service name (`system.ai.<model>`). The legacy pay-per-token serving endpoints (`/serving-endpoints/databricks-<model>`, "v1") are retiring (target Mar 2027) and are rejected in workspaces with "Enforce Unity Gateway" on — do not add new calls to them. URL builders, error classification, and `normalize_model_name()` (maps legacy `databricks-X` → `system.ai.X` for old sessions, run rows, and `.env.deploy` values) live in `packages/genie-space-optimizer/src/genie_space_optimizer/common/ai_gateway.py` and are shared by the backend, the GSO job, and `scripts/deploy_lib`. Model configured via `LLM_MODEL` env var (default: `system.ai.claude-sonnet-4-6`). `services/model_catalog.py` exposes a curated set of chat models via `/api/models`, filtered against the workspace's `system.ai` model services (listed as the SP, cached, fails open to the full curated list) so the UI can let users override the model per Create Agent / Auto-Optimize run; `validate_chat_model()` normalizes and guards those overrides. Both install paths run a Unity Gateway preflight (`scripts/deploy_lib/ai_gateway.py`, `scripts/check_ai_gateway.py`) that sends a tiny real inference request and fails the deploy if the default model is unusable. MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.
 
 ### GenieWatch (observability surface)
 `backend/watch/` is a self-contained subsystem mounted under `/api/watch/*` (registered separately in `main.py`), surfaced in the frontend as lazy-loaded sub-tabs inside `AdminDashboard` (Spaces / Cost / Resources / Feedback / Settings). It reports per-space cost, usage, feedback, and executed-resource lineage by querying Databricks **system tables** (`system.query.history`, `system.billing.usage`, `system.access.audit`, `system.access.table_lineage`). System tables are **not OBO-readable**, so `watch/services/system_tables.py` always runs as the **service principal** (`get_service_principal_client()`) and caches results in an in-process TTL cache. The SP needs `USE CATALOG system` + schema/SELECT grants — `scripts/grant_permissions.py` is the source of truth for that grant list. The watch frontend lives in `frontend/src/watch/` with its own `api.ts` (base `/api/watch`) and types, kept namespaced to avoid colliding with the workbench API surface.
@@ -146,7 +146,8 @@ IQ Scan (`scanner.py`) is the only analysis path — rule-based, instant, 0-12 s
 
 Defined in `app.yaml`. Key ones:
 - `SQL_WAREHOUSE_ID` — from app resource `sql-warehouse`
-- `LLM_MODEL` — serving endpoint name
+- `LLM_MODEL` — Unity Gateway model service name (e.g. `system.ai.claude-sonnet-4-6`; legacy `databricks-*` names are auto-mapped)
+- `GSO_LLM_ENDPOINT`, `GSO_FIREWALL_EMBEDDING_ENDPOINT` — optional GSO-only overrides for the optimizer chat model and the leakage-firewall embedding model (default `system.ai.bge-large-en`)
 - `LAKEBASE_HOST`, `LAKEBASE_PORT`, `LAKEBASE_DATABASE`, `LAKEBASE_INSTANCE_NAME` — Lakebase config
 - `MLFLOW_EXPERIMENT_ID` — enables MLflow tracing (validated at startup, cleared if invalid)
 - `GENIE_TARGET_DIRECTORY` — where new spaces are created (default `/Shared/`)
@@ -165,7 +166,7 @@ There is no local dev server — all testing is done by syncing code to Databric
 2. Run `./scripts/deploy.sh --update` for local terminal installs, or rerun `notebooks/install.py` for notebook installs
 3. Test in the deployed Databricks App
 
-Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Databricks-managed resources (OBO auth, Lakebase, serving endpoints) that aren't available outside a Databricks App environment.
+Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Databricks-managed resources (OBO auth, Lakebase, Unity Gateway models) that aren't available outside a Databricks App environment.
 
 ## Dependency Security Policy
 
@@ -236,6 +237,8 @@ git add package.json package-lock.json
 ## Gotchas
 
 - **`CLAUDE.md` is a symlink to `AGENTS.md`** — one source of truth shared by Claude Code and other agent tools. Edit `AGENTS.md`; never replace the symlink with a separate file.
+- **Unity Gateway, not serving endpoints** — call models via `/ai-gateway/mlflow/v1` with `system.ai.*` names (see LLM Calls). `system.ai` being visible in Catalog Explorer does not prove the route is enabled for a workspace; only a real inference request does (the deploy preflight does this). Non-`databricks-` custom endpoint names pass through `normalize_model_name()` unchanged and will 404 on Unity Gateway.
+- **OAuth scopes are listed in three places** — `app.yaml` `user_api_scopes`, `scripts/deploy.sh`, and `scripts/deploy_lib/apps.py` `APP_SCOPES`; `backend/tests/test_ai_gateway_preflight.py` fails if they drift. `ai-gateway` is required for OBO LLM calls; `serving.serving-endpoints` is kept one release for transition.
 - **frontend/dist/ is gitignored but NOT databricksignored** — the built React app must be synced to workspace for deployment. Build before `databricks sync`.
 - **`.databricksignore` excludes `*.md`** but explicitly re-includes `backend/references/schema.md` (needed at runtime by create agent and analysis prompts).
 - **OBO ContextVar and streaming** — for SSE endpoints, the ContextVar is NOT cleared after `call_next` because the response streams lazily. Streaming handlers stash the token on `request.state` and re-set it inside the generator.

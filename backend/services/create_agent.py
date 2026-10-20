@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import AsyncGenerator, Generator
 
 from backend.models import MAX_DESCRIPTION_CHARS
-from backend.services.llm_utils import get_llm_model, normalize_message_content
+from backend.services.llm_utils import (
+    chat_completions_url,
+    gateway_error_message,
+    get_llm_model,
+    normalize_message_content,
+    normalize_model_name,
+)
 from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
@@ -1093,7 +1099,7 @@ class CreateGenieAgent:
         tools: list[dict] | None = None,
         model: str | None = None,
     ) -> Generator[dict, None, None]:
-        """Stream LLM response chunks from the serving endpoint (sync).
+        """Stream LLM response chunks from a Unity Gateway model service (sync).
 
         Uses the SDK's pre-authenticated requests.Session so auth works
         across all methods (PAT, OAuth/M2M, CLI profile).
@@ -1103,7 +1109,9 @@ class CreateGenieAgent:
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
 
+        effective_model = normalize_model_name(model) or get_llm_model()
         body = {
+            "model": effective_model,
             "messages": messages,
             "max_tokens": 16384,
             "stream": True,
@@ -1113,8 +1121,7 @@ class CreateGenieAgent:
         if effective_tools:
             body["tools"] = effective_tools
 
-        effective_model = model or get_llm_model()
-        url = f"{host}/serving-endpoints/{effective_model}/invocations"
+        url = chat_completions_url(host)
         logger.info("Streaming LLM call to %s with %d messages", effective_model, len(messages))
         if logger.isEnabledFor(logging.DEBUG):
             for i, m in enumerate(messages):
@@ -1134,8 +1141,8 @@ class CreateGenieAgent:
             if resp.status_code in _RETRYABLE_STATUSES:
                 resp.close()
                 if attempt >= self._MAX_LLM_RETRIES:
-                    logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
-                    raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
+                    logger.error("Unity Gateway returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
+                    raise RuntimeError(f"Unity Gateway returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
                 retry_after = resp.headers.get("Retry-After")
                 delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
                 logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
@@ -1146,16 +1153,16 @@ class CreateGenieAgent:
         try:
             if not resp.ok:
                 error_body = resp.text[:1000]
-                logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
+                logger.error("Unity Gateway returned %s: %s", resp.status_code, error_body)
                 raise RuntimeError(
-                    f"LLM endpoint returned {resp.status_code}: {error_body[:300]}"
+                    gateway_error_message(resp.status_code, error_body, effective_model)
                 )
 
             resp.encoding = "utf-8"
             for line in resp.iter_lines(decode_unicode=True):
-                if not line or not line.startswith("data: "):
+                if not line or not line.startswith("data:"):
                     continue
-                data = line[6:].strip()
+                data = line[5:].strip()
                 if data == "[DONE]":
                     break
                 try:

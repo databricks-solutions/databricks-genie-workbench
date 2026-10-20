@@ -29,6 +29,7 @@ from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
+from backend.services.llm_utils import get_llm_model, probe_chat_model
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
@@ -547,7 +548,7 @@ def _build_gso_config(llm_model_override: str | None = None) -> IntegrationConfi
         schema_name=os.environ.get("GSO_SCHEMA", "genie_space_optimizer"),
         warehouse_id=os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", ""),
         job_id=int(os.environ["GSO_JOB_ID"]) if os.environ.get("GSO_JOB_ID", "").isdigit() else None,
-        llm_model=llm_model_override or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
+        llm_model=llm_model_override or get_llm_model(),
     )
 
 
@@ -1222,8 +1223,56 @@ async def health():
     return {"configured": True, "issues": issues}
 
 
+_SP_LLM_PROBE_TTL_SECONDS = 600
+_sp_llm_probe_cache: dict[str, float] = {}
+
+
+def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
+    """Return an error if the GSO SP cannot query ``model`` through Unity Gateway.
+
+    The optimization job runs as the app SP, so a missing EXECUTE on the
+    system.ai model service only surfaces mid-run. Only a 200 is cached, so
+    Re-check reflects a grant as soon as it is applied.
+    """
+    from genie_space_optimizer.common.ai_gateway import (
+        AUTH,
+        GATEWAY_NOT_ENABLED,
+        MODEL_MISSING,
+        PERMISSION_DENIED,
+        SCOPE_MISSING,
+        describe_gateway_failure,
+        grant_hint,
+    )
+
+    cached_at = _sp_llm_probe_cache.get(model)
+    if cached_at is not None and time.monotonic() - cached_at < _SP_LLM_PROBE_TTL_SECONDS:
+        return None
+
+    error: str | None = None
+    try:
+        status, body = probe_chat_model(sp_ws, model)
+        if status == 200:
+            _sp_llm_probe_cache[model] = time.monotonic()
+        else:
+            failure = describe_gateway_failure(status, body, model)
+            kind, detail = failure.kind, failure.detail
+            if kind in (PERMISSION_DENIED, SCOPE_MISSING, AUTH):
+                error = f"GSO service principal cannot query {model}: {detail}\n{grant_hint(model, sp_principal)}"
+            elif kind == MODEL_MISSING:
+                error = f"{model} is not available in this workspace's system.ai catalog: {detail}"
+            elif kind == GATEWAY_NOT_ENABLED:
+                error = f"Unity Gateway is not reachable for {model}; it may not be enabled for this workspace: {detail}"
+            else:
+                logger.info("SP LLM probe for %s returned non-blocking status: %s", model, detail)
+    except Exception:
+        logger.info("SP LLM probe for %s failed", model, exc_info=True)
+        return None
+
+    return error
+
+
 @router.get("/permissions/{space_id}")
-async def check_permissions(space_id: SpaceId):
+async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
     """Pre-check SP and UC permissions for a Genie Agent before optimization."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
@@ -1250,6 +1299,24 @@ async def check_permissions(space_id: SpaceId):
             "Grant SQL may not work. Set DATABRICKS_CLIENT_ID to the SP's application_id."
         )
         logger.warning("SP application_id %r doesn't look like a UUID", sp_application_id)
+
+    # Only curated models are probed (the trigger rejects others), which keeps the
+    # probe cache bounded. The GSO job calls the model as the SP, so a failed probe
+    # blocks the start instead of letting the run fail mid-way. Submitted to the
+    # executor now (not to_thread, which would not start until this handler yields)
+    # so the probe overlaps the synchronous Genie and UC checks below.
+    llm_access_error: str | None = None
+    llm_probe: asyncio.Future[str | None] | None = None
+    try:
+        probe_model = validate_chat_model(llm_model) or get_llm_model()
+    except ModelValidationError as exc:
+        llm_access_error = str(exc)
+    else:
+        llm_probe = asyncio.get_running_loop().run_in_executor(
+            None,
+            _probe_sp_llm_access,
+            sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
+        )
 
     # Check SP CAN_MANAGE on the space
     sp_has_manage = False
@@ -1309,8 +1376,11 @@ async def check_permissions(space_id: SpaceId):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
+    if llm_probe is not None:
+        llm_access_error = await llm_probe
+
     all_read = all(s.read_granted for s in schemas) if schemas else True
-    can_start = sp_has_manage and all_read
+    can_start = sp_has_manage and all_read and llm_access_error is None
 
     system_history_available = False
     try:
@@ -1394,6 +1464,7 @@ async def check_permissions(space_id: SpaceId):
         schemas=schemas,
         can_start=can_start,
         errors=errors,
+        llm_access_error=llm_access_error,
         query_usage_signal=query_signal,
     )
 

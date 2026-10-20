@@ -214,6 +214,17 @@ export function AutoOptimizeTab({
       .catch(() => setConfigured(false))
   }, [])
 
+  // The model picker re-checks permissions on every change, so drop responses
+  // that a newer request has superseded.
+  const permsRequestRef = useRef(0)
+  const loadPermissions = useCallback((llmModel?: string | null) => {
+    const requestId = ++permsRequestRef.current
+    getAutoOptimizePermissions(spaceId, llmModel)
+      .then((res) => { if (requestId === permsRequestRef.current) setPermissions(res) })
+      .catch(() => { if (requestId === permsRequestRef.current) setPermissions(null) })
+      .finally(() => { if (requestId === permsRequestRef.current) setPermsLoading(false) })
+  }, [spaceId])
+
   // Check for active runs (authoritative Delta table) and permissions on mount
   useEffect(() => {
     if (configured !== true) return
@@ -222,18 +233,12 @@ export function AutoOptimizeTab({
         setActiveRunId(res.hasActiveRun ? res.activeRunId : null)
       }
     })
-    getAutoOptimizePermissions(spaceId)
-      .then(setPermissions)
-      .catch(() => setPermissions(null))
-      .finally(() => setPermsLoading(false))
-  }, [spaceId, configured, requestedRunId])
+    loadPermissions()
+  }, [spaceId, configured, requestedRunId, loadPermissions])
 
-  function refreshPermissions() {
+  function refreshPermissions(llmModel?: string | null) {
     setPermsLoading(true)
-    getAutoOptimizePermissions(spaceId)
-      .then(setPermissions)
-      .catch(() => setPermissions(null))
-      .finally(() => setPermsLoading(false))
+    loadPermissions(llmModel)
   }
 
   // Polling for active run status + ASI results

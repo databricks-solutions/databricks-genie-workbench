@@ -27,6 +27,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from genie_space_optimizer.common.ai_gateway import (
+    AI_GATEWAY_BASE_PATH,
+    DEFAULT_EMBEDDING_MODEL,
+    normalize_model_name,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,11 +54,10 @@ EMBEDDING_SIMILARITY_THRESHOLD = 0.85
 Chosen empirically for paraphrase detection: 0.85 flags clear rephrasings
 without triggering on "same domain, different question"."""
 
-EMBEDDING_ENDPOINT = os.environ.get(
-    "GSO_FIREWALL_EMBEDDING_ENDPOINT",
-    "databricks-bge-large-en",
+EMBEDDING_ENDPOINT = normalize_model_name(
+    os.environ.get("GSO_FIREWALL_EMBEDDING_ENDPOINT") or DEFAULT_EMBEDDING_MODEL
 )
-"""Databricks Foundation Model endpoint used by the firewall for paraphrase
+"""Unity Gateway embedding model service used by the firewall for paraphrase
 detection. Override via ``GSO_FIREWALL_EMBEDDING_ENDPOINT`` to point at
 alternate models during evaluation."""
 
@@ -180,22 +185,26 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float] | None:
-    """Return an embedding for ``text`` via Databricks Foundation Model API.
+    """Return an embedding for ``text`` via the Unity Gateway embeddings route.
 
     Returns ``None`` on any failure so callers fall back to the n-gram +
     SQL-fingerprint layer. This keeps the firewall usable in workspaces
-    where the embedding endpoint is unavailable.
+    where the embedding model service is unavailable.
     """
     if not text or not text.strip() or w is None:
         return None
-    ep = endpoint or EMBEDDING_ENDPOINT
+    ep = normalize_model_name(endpoint or EMBEDDING_ENDPOINT)
     try:
-        resp = w.serving_endpoints.query(name=ep, input=[text])
+        resp = w.api_client.do(
+            "POST",
+            f"{AI_GATEWAY_BASE_PATH}/embeddings",
+            body={"model": ep, "input": [text]},
+        )
     except Exception as exc:
-        logger.debug("get_embedding failed for endpoint=%s: %s", ep, exc)
+        logger.warning("get_embedding failed for model=%s: %s", ep, exc)
         return None
-    # Databricks serving endpoints return either OpenAI-compatible shape
-    # (data[0].embedding) or a raw list. Handle both defensively.
+    # The gateway returns the OpenAI-compatible shape (data[0].embedding);
+    # accept attribute- or dict-style access defensively.
     try:
         data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
         if data and isinstance(data, list):
@@ -222,7 +231,7 @@ def precompute_benchmark_embeddings(
     """
     if w is None or len(corpus) == 0:
         return False
-    ep = endpoint or EMBEDDING_ENDPOINT
+    ep = normalize_model_name(endpoint or EMBEDDING_ENDPOINT)
     q_emb: list[list[float]] = []
     s_emb: list[list[float]] = []
     for q, s in zip(corpus.questions, corpus.expected_sqls):

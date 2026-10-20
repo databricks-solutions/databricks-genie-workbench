@@ -285,6 +285,21 @@ _preflight_check_catalog() {
     echo "  ✓ Catalog exists"
 }
 
+_preflight_check_ai_gateway() {
+    local model="$1"
+    local profile="$2"
+    echo "  Checking Unity Gateway access for '$model'..."
+    if ! uv run python "$SCRIPT_DIR/check_ai_gateway.py" --profile "$profile" --model "$model"; then
+        echo ""
+        echo "  ✗ Unity Gateway (AI Gateway v3) is not usable for '$model'."
+        echo ""
+        echo "  Remediation: see the error above. Set GENIE_LLM_MODEL to an available"
+        echo "  system.ai chat model, or ask an admin to enable Unity Gateway / grant EXECUTE."
+        echo ""
+        exit 1
+    fi
+}
+
 _preflight_check_app_state() {
     local app_name="$1"
     local profile="$2"

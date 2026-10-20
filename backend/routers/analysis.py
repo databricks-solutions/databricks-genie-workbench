@@ -4,6 +4,7 @@ REST API endpoints for Genie Agent operations.
 Provides endpoints for fetching/parsing spaces and application settings.
 """
 
+import asyncio
 import json
 
 import logging
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 from backend.services.genie_client import get_serialized_space, normalize_metric_view_sources
+from backend.services.llm_utils import get_llm_model
 from backend.services.model_catalog import ModelCatalogError, list_chat_models
 from backend.models import LLMModelInfo
 
@@ -193,7 +195,7 @@ async def get_settings():
 
     return SettingsResponse(
         genie_space_id=None,  # This is session-specific, passed from frontend
-        llm_model=os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
+        llm_model=get_llm_model(),
         sql_warehouse_id=get_sql_warehouse_id(),
         databricks_host=get_databricks_host(),
         workspace_directory=os.environ.get("GENIE_TARGET_DIRECTORY", "").strip() or None,
@@ -204,6 +206,6 @@ async def get_settings():
 async def get_models():
     """List curated chat models for user selection."""
     try:
-        return list_chat_models(allow_sp_fallback=True)
+        return await asyncio.to_thread(list_chat_models, allow_sp_fallback=True)
     except ModelCatalogError as exc:
         raise HTTPException(status_code=503, detail=str(exc))

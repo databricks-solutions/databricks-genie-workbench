@@ -156,7 +156,7 @@ class PermissionCheckResponse(BaseModel):
     """Payload for ``GET /auto-optimize/permissions``.
 
     Shape contract for the Auto-Optimize permissions preflight. The UI's
-    PermissionAlert consumes the SP and schema access fields to show
+    PermissionAlert consumes the SP, schema, and model access fields to show
     grant-based remediation."""
 
     sp_display_name: str
@@ -165,6 +165,9 @@ class PermissionCheckResponse(BaseModel):
     schemas: list[SchemaAccessStatus]
     can_start: bool
     errors: list[str] = []
+    # Why the SP cannot call the run's chat model on Unity Gateway (None = OK or
+    # transient probe failure). Blocks can_start.
+    llm_access_error: str | None = None
     query_usage_signal: QueryUsageSignal | None = None
 
 

@@ -438,9 +438,11 @@ export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; is
 
 export async function getAutoOptimizePermissions(
   spaceId: string,
+  llmModel?: string | null,
 ): Promise<GSOPermissionCheck> {
+  const query = llmModel ? `?llm_model=${encodeURIComponent(llmModel)}` : ""
   return fetchWithTimeout<GSOPermissionCheck>(
-    `${API_BASE}/auto-optimize/permissions/${spaceId}`,
+    `${API_BASE}/auto-optimize/permissions/${spaceId}${query}`,
   )
 }
 

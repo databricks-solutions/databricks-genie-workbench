@@ -11,6 +11,8 @@ import os
 import re
 from typing import Any
 
+from genie_space_optimizer.common.ai_gateway import DEFAULT_CHAT_MODEL, normalize_model_name
+
 
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
@@ -241,20 +243,21 @@ def apply_quality_instructions_is_on() -> bool:
 
 # ── 4. LLM Configuration ──────────────────────────────────────────────
 
-DEFAULT_LLM_ENDPOINT = "databricks-claude-sonnet-4-6"
+DEFAULT_LLM_ENDPOINT = DEFAULT_CHAT_MODEL
 
 
 def get_llm_endpoint() -> str:
-    """Return the Databricks model serving endpoint used by GSO LLM calls.
+    """Return the Unity Gateway model service used by GSO LLM calls.
 
     ``LLM_MODEL`` is the app-wide source of truth. ``GSO_LLM_ENDPOINT`` is an
-    explicit GSO-only override for emergency/debug use.
+    explicit GSO-only override for emergency/debug use. Legacy
+    ``databricks-<model>`` names are mapped to ``system.ai.<model>``.
     """
-    return (
+    return normalize_model_name(
         os.environ.get("GSO_LLM_ENDPOINT")
         or os.environ.get("LLM_MODEL")
         or DEFAULT_LLM_ENDPOINT
-    ).strip() or DEFAULT_LLM_ENDPOINT
+    ) or DEFAULT_LLM_ENDPOINT
 
 
 LLM_TEMPERATURE = 0

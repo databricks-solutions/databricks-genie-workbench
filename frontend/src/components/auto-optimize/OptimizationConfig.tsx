@@ -22,7 +22,7 @@ interface OptimizationConfigProps {
   permissions: GSOPermissionCheck | null
   permsLoading: boolean
   healthIssues?: string[]
-  onRefreshPermissions?: () => void
+  onRefreshPermissions?: (llmModel: string | null) => void
 }
 
 // Levers 1–6 scope the bounded native patch/eval attempts. There is no
@@ -66,7 +66,12 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const targetAccuracy = parseTargetAccuracy(targetPercent)
   const maxAttempts = parseMaxAttempts(maxAttemptsInput)
   const knobsValid = targetAccuracy !== null && maxAttempts !== null
-  const canStart = permissions?.can_start === true && !hasHealthIssues
+  const canStart = permissions?.can_start === true && !permsLoading && !hasHealthIssues
+
+  function handleModelChange(model: string | null) {
+    setSelectedModel(model)
+    onRefreshPermissions?.(model)
+  }
 
   function toggleLever(id: number) {
     setSelectedLevers((prev) => {
@@ -174,7 +179,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
 
             <ModelPicker
               value={selectedModel}
-              onChange={setSelectedModel}
+              onChange={handleModelChange}
               disabled={loading || hasActiveRun}
               label="Model selection"
               className="w-full"
@@ -329,7 +334,11 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
 
           {/* Permission Alert */}
           {permissions && (
-            <PermissionAlert permissions={permissions} loading={permsLoading} onRefresh={onRefreshPermissions} />
+            <PermissionAlert
+              permissions={permissions}
+              loading={permsLoading}
+              onRefresh={onRefreshPermissions && (() => onRefreshPermissions(selectedModel))}
+            />
           )}
 
           {/* Error */}

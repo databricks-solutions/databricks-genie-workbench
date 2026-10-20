@@ -36,6 +36,20 @@ def client(monkeypatch) -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def stub_sp_llm_probe(monkeypatch):
+    """Keep tests hermetic: the SP Unity Gateway probe succeeds unless overridden."""
+    calls: list[str] = []
+
+    def fake_probe(client, model, **kwargs):
+        calls.append(model)
+        return 200, "{}"
+
+    monkeypatch.setattr(auto_optimize, "probe_chat_model", fake_probe)
+    monkeypatch.setattr(auto_optimize, "_sp_llm_probe_cache", {})
+    return calls
+
+
 @pytest.fixture
 def mock_sp_ws() -> MagicMock:
     ws = MagicMock()
@@ -2487,3 +2501,119 @@ def test_revert_options_returns_preview(
     assert stub.call_args.args[0] == run_id
     assert stub.call_args.args[1] is mock_user_ws
     assert stub.call_args.args[2] is mock_sp_ws
+
+
+# ── /permissions — Unity Gateway SP probe ───────────────────────────────
+
+
+def _permissions_with_probe(client, mock_sp_ws, mock_user_ws, monkeypatch, *, status, body, query=""):
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    seen: list[str] = []
+
+    def fake_probe(client_, model, **kwargs):
+        seen.append(model)
+        return status, body
+
+    monkeypatch.setattr(auto_optimize, "probe_chat_model", fake_probe)
+    with patch(
+        "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
+        return_value=["sp-alias"],
+    ), patch(
+        "genie_space_optimizer.common.genie_client.sp_can_manage_space",
+        return_value=True,
+    ), patch(
+        "genie_space_optimizer.common.genie_client.fetch_space_config",
+        return_value={},
+    ), patch(
+        "genie_space_optimizer.common.uc_metadata.extract_genie_space_table_refs",
+        return_value=[],
+    ), patch(
+        "genie_space_optimizer.common.uc_metadata.get_unique_schemas",
+        return_value=set(),
+    ):
+        resp = client.get(f"/api/auto-optimize/permissions/space-abc{query}")
+    assert resp.status_code == 200
+    return resp.json(), seen
+
+
+def test_permissions_reports_sp_model_service_denied_with_grant_hint(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch,
+        status=403,
+        body='{"error_code":"PERMISSION_DENIED","message":"User does not have EXECUTE on model service"}',
+    )
+
+    assert seen == ["system.ai.claude-sonnet-4-6"]
+    assert data["can_start"] is False
+    assert data["errors"] == []
+    error = data["llm_access_error"]
+    assert "cannot query system.ai.claude-sonnet-4-6" in error
+    assert "databricks grants update model_service system.ai.claude-sonnet-4-6" in error
+    assert "11111111-2222-3333-4444-555555555555" in error
+
+
+def test_permissions_probes_requested_model_normalized(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch,
+        status=404,
+        body='{"error_code":"NOT_FOUND","message":"\'system.ai.gpt-5-4\' does not exist."}',
+        query="?llm_model=databricks-gpt-5-4",
+    )
+
+    assert seen == ["system.ai.gpt-5-4"]
+    assert data["can_start"] is False
+    assert "not available in this workspace" in data["llm_access_error"]
+
+
+def test_permissions_ignores_transient_probe_failures(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    data, _ = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=429, body="",
+    )
+
+    assert data["can_start"] is True
+    assert data["llm_access_error"] is None
+    assert auto_optimize._sp_llm_probe_cache == {}
+
+
+def test_permissions_rejects_non_curated_model_without_probing(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch,
+        status=200, body="{}", query="?llm_model=not-a-real-model",
+    )
+
+    assert seen == []
+    assert data["can_start"] is False
+    assert "curated list" in data["llm_access_error"]
+
+
+def test_permissions_rechecks_after_failure_but_caches_success(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    """A failed probe is not cached, so Re-check sees a grant applied in between."""
+    denied = '{"error_code":"PERMISSION_DENIED","message":"no EXECUTE"}'
+    data, _ = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=403, body=denied,
+    )
+    assert data["can_start"] is False
+
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=200, body="{}",
+    )
+    assert seen == ["system.ai.claude-sonnet-4-6"]
+    assert data["can_start"] is True
+
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=403, body=denied,
+    )
+    assert seen == []
+    assert data["can_start"] is True

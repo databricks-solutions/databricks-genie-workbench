@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 import re
 from typing import Any, Literal
 
+from genie_space_optimizer.common.ai_gateway import DEFAULT_CHAT_MODEL, normalize_model_name
+
 
 LakebaseMode = Literal["create", "existing", "skip"]
 
@@ -42,7 +44,7 @@ class InstallConfig:
     app_name: str
     catalog: str
     warehouse_id: str
-    llm_model: str = "databricks-claude-sonnet-4-6"
+    llm_model: str = DEFAULT_CHAT_MODEL
     mlflow_experiment_id: str | None = None
     lakebase_mode: LakebaseMode = "create"
     lakebase_instance: str | None = None
@@ -66,7 +68,7 @@ class InstallConfig:
             app_name=app_name,
             catalog=self.catalog.strip(),
             warehouse_id=self.warehouse_id.strip(),
-            llm_model=(self.llm_model or "databricks-claude-sonnet-4-6").strip(),
+            llm_model=normalize_model_name(self.llm_model) or DEFAULT_CHAT_MODEL,
             mlflow_experiment_id=(self.mlflow_experiment_id or "").strip() or None,
             lakebase_mode=self.lakebase_mode,
             lakebase_instance=lakebase_instance,

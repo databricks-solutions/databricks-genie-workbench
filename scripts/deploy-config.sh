@@ -11,7 +11,7 @@
 #   GENIE_CATALOG            (required)  Unity Catalog name (must have CREATE SCHEMA permission)
 #   GENIE_APP_NAME           (optional)  Databricks App name          [default: genie-workbench]
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
-#   GENIE_LLM_MODEL          (optional)  Default LLM serving endpoint [default: databricks-claude-sonnet-4-6]
+#   GENIE_LLM_MODEL          (optional)  Default Unity Gateway model  [default: system.ai.claude-sonnet-4-6]
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
 #
@@ -35,7 +35,8 @@ CATALOG="${GENIE_CATALOG:-}"
 GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
-LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
+# Legacy databricks-<model> values are mapped to system.ai.<model> at runtime.
+LLM_MODEL="${GENIE_LLM_MODEL:-system.ai.claude-sonnet-4-6}"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 

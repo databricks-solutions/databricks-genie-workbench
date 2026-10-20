@@ -22,7 +22,7 @@ A Databricks workspace with:
 - A SQL Warehouse (Serverless recommended)
 - A Unity Catalog with CREATE SCHEMA permission
 - Lakebase Autoscaling available (optional but recommended for persistent scan history, starred agents, and agent sessions)
-- Databricks Foundation Model APIs enabled for the curated Create Agent and Auto-Optimize model list
+- Unity Gateway (AI Gateway v3) enabled, with the curated `system.ai` chat models available in the workspace region (the deploy preflight verifies the default model with a real request)
 
 ### Enable required preview features
 
@@ -80,6 +80,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `warehouse_id` | Yes | Serverless SQL Warehouse ID used by the app and GSO |
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
+| `llm_model` | No | Unity Gateway chat model for the app and GSO job (e.g. `system.ai.claude-opus-4-8`). Blank uses `system.ai.claude-sonnet-4-6`. Set it when the installer's Unity Gateway preflight reports the default model is unavailable |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
@@ -172,7 +173,7 @@ This applies to **Method 2 (local terminal)**. The notebook installer runs the e
 
 ### Full Deploy (8 steps)
 
-1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
+1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, Unity Gateway access for the default model, app state
 2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
@@ -220,8 +221,20 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (needs CREATE SCHEMA) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (unique in workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint |
+| `GENIE_LLM_MODEL` | No | `system.ai.claude-sonnet-4-6` | Default Unity Gateway model service (legacy `databricks-*` values are mapped automatically) |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project name (auto-provisioned by deploy); installer suggests `<app-name>-lakebase` |
+
+### Unity Gateway preflight failures
+
+Both install paths send a tiny chat request to the default model (and an embeddings request) through `/ai-gateway/mlflow/v1` before creating or updating the app. Run it on its own with `uv run python scripts/check_ai_gateway.py --profile <profile> --model <model>`.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `Model service ... does not exist in this workspace's system.ai catalog` | The model isn't offered in this cloud/region | Set `GENIE_LLM_MODEL` to an available `system.ai` chat model |
+| `... may not be enabled for this workspace` | The Unity Gateway route returns 404; `system.ai` being visible in Catalog Explorer is not enough | Ask your Databricks account team to enable Unity Gateway |
+| `403 PERMISSION_DENIED` with grant commands | An admin removed the default `EXECUTE` on `system.ai` | Run the printed `GRANT` / `databricks grants update model_service` commands |
+| `lacks the 'ai-gateway' scope` | The CLI credential's token scopes exclude Unity Gateway | `databricks auth login` again, or use a token with `ai-gateway` or `all-apis` |
+| Embedding probe warning | `system.ai.bge-large-en` unavailable | Non-blocking; the Auto-Optimize leakage firewall falls back to n-gram matching |
 
 ## Manual Setup (Method 2, without installer)
 
@@ -235,7 +248,7 @@ GENIE_WAREHOUSE_ID=<your-sql-warehouse-id>
 GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
 GENIE_DEPLOY_PROFILE=genie-workbench
-GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
+GENIE_LLM_MODEL=system.ai.claude-sonnet-4-6
 GENIE_LAKEBASE_INSTANCE=genie-workbench
 EOF
 ```
