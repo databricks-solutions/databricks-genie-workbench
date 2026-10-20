@@ -848,6 +848,7 @@ export interface GSOPermissionCheck {
   schemas: GSOSchemaAccessStatus[]
   can_start: boolean
   errors: string[]
+  llm_access_error?: string | null
   query_usage_signal?: GSOQueryUsageSignal | null
 }
 

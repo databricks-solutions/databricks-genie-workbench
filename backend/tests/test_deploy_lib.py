@@ -216,6 +216,20 @@ def test_notebook_installer_uses_streamlined_widgets_and_defaults():
     assert 'dbutils.widgets.get("grant_genie_spaces")' not in notebook_source
     assert "grant_genie_spaces=True" in notebook_source
 
+    # The Unity Gateway preflight's MODEL_MISSING hint points at this widget.
+    assert 'dbutils.widgets.text("llm_model", "")' in notebook_source
+    assert 'llm_model=dbutils.widgets.get("llm_model").strip()' in notebook_source
+
+
+def test_blank_llm_model_falls_back_to_default_chat_model():
+    from genie_space_optimizer.common.ai_gateway import DEFAULT_CHAT_MODEL
+
+    cfg = InstallConfig(
+        app_name="genie-workbench", catalog="main", warehouse_id="abc", llm_model="",
+    ).normalized()
+
+    assert cfg.llm_model == DEFAULT_CHAT_MODEL
+
 
 def test_workspace_source_inclusion_rules(tmp_path):
     repo = tmp_path / "repo"

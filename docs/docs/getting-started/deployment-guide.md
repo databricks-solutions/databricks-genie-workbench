@@ -80,6 +80,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `warehouse_id` | Yes | Serverless SQL Warehouse ID used by the app and GSO |
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
+| `llm_model` | No | Unity Gateway chat model for the app and GSO job (e.g. `system.ai.claude-opus-4-8`). Blank uses `system.ai.claude-sonnet-4-6`. Set it when the installer's Unity Gateway preflight reports the default model is unavailable |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.

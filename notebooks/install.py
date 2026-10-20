@@ -63,6 +63,9 @@ dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
 dbutils.widgets.text("lakebase_project_name", "")
+# Blank = system.ai.claude-sonnet-4-6. Override when that model is not offered in
+# this workspace's region; the installer probes it on Unity Gateway before deploying.
+dbutils.widgets.text("llm_model", "")
 
 # COMMAND ----------
 # MAGIC %md
@@ -132,6 +135,7 @@ cfg = InstallConfig(
     app_name=app_name,
     catalog=dbutils.widgets.get("catalog").strip(),
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
+    llm_model=dbutils.widgets.get("llm_model").strip(),
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,

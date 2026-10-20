@@ -150,6 +150,16 @@ export function PermissionAlert({ permissions, loading, onRefresh }: PermissionA
             code={allGrantSql || undefined}
           />
         )}
+
+        {permissions.llm_access_error && (
+          <PermissionStep
+            step={permissions.schemas.length > 0 ? 3 : 2}
+            title="Grant model access"
+            description="The optimization job calls the selected model as the service principal through Unity Gateway:"
+            granted={false}
+            code={permissions.llm_access_error}
+          />
+        )}
       </div>
     </div>
   )

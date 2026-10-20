@@ -62,7 +62,7 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 
 These variables apply to the **local terminal path only** — they are read by `deploy.sh` and written by `install.sh`. They are **not** injected into the app runtime directly; the deploy scripts use them to patch `app.yaml` placeholders and configure resources.
 
-On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`).
+On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_model`).
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|

@@ -1356,22 +1356,22 @@ async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
-    all_read = all(s.read_granted for s in schemas) if schemas else True
-    can_start = sp_has_manage and all_read
-
     # Only curated models are probed (the trigger rejects others), which keeps the
-    # probe cache bounded.
+    # probe cache bounded. The GSO job calls the model as the SP, so a failed probe
+    # blocks the start instead of letting the run fail mid-way.
+    llm_access_error: str | None = None
     try:
         probe_model = validate_chat_model(llm_model) or get_llm_model()
     except ModelValidationError as exc:
-        errors.append(str(exc))
+        llm_access_error = str(exc)
     else:
-        llm_error = await asyncio.to_thread(
+        llm_access_error = await asyncio.to_thread(
             _probe_sp_llm_access,
             sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
         )
-        if llm_error:
-            errors.append(llm_error)
+
+    all_read = all(s.read_granted for s in schemas) if schemas else True
+    can_start = sp_has_manage and all_read and llm_access_error is None
 
     system_history_available = False
     try:
@@ -1455,6 +1455,7 @@ async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
         schemas=schemas,
         can_start=can_start,
         errors=errors,
+        llm_access_error=llm_access_error,
         query_usage_signal=query_signal,
     )
 

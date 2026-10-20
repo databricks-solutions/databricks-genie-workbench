@@ -2548,9 +2548,9 @@ def test_permissions_reports_sp_model_service_denied_with_grant_hint(
     )
 
     assert seen == ["system.ai.claude-sonnet-4-6"]
-    assert data["can_start"] is True
-    assert len(data["errors"]) == 1
-    error = data["errors"][0]
+    assert data["can_start"] is False
+    assert data["errors"] == []
+    error = data["llm_access_error"]
     assert "cannot query system.ai.claude-sonnet-4-6" in error
     assert "databricks grants update model_service system.ai.claude-sonnet-4-6" in error
     assert "11111111-2222-3333-4444-555555555555" in error
@@ -2567,7 +2567,8 @@ def test_permissions_probes_requested_model_normalized(
     )
 
     assert seen == ["system.ai.gpt-5-4"]
-    assert any("not available in this workspace" in e for e in data["errors"])
+    assert data["can_start"] is False
+    assert "not available in this workspace" in data["llm_access_error"]
 
 
 def test_permissions_ignores_transient_probe_failures(
@@ -2577,7 +2578,8 @@ def test_permissions_ignores_transient_probe_failures(
         client, mock_sp_ws, mock_user_ws, monkeypatch, status=429, body="",
     )
 
-    assert data["errors"] == []
+    assert data["can_start"] is True
+    assert data["llm_access_error"] is None
 
 
 def test_permissions_rejects_non_curated_model_without_probing(
@@ -2589,4 +2591,5 @@ def test_permissions_rejects_non_curated_model_without_probing(
     )
 
     assert seen == []
-    assert any("curated list" in e for e in data["errors"])
+    assert data["can_start"] is False
+    assert "curated list" in data["llm_access_error"]
