@@ -16,6 +16,8 @@
 docs/superpowers/
 context/
 .env.deploy
+.env.deploy.*
+!.env.deploy.template
 *.bak
 /.pi
 /.polly
