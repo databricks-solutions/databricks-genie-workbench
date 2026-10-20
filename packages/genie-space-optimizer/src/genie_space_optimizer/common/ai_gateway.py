@@ -39,6 +39,9 @@ TRANSIENT = "TRANSIENT"
 BAD_REQUEST = "BAD_REQUEST"
 UNKNOWN = "UNKNOWN"
 
+# Log each legacy mapping once. Capped because request-supplied model names reach
+# normalize_model_name before validation rejects them.
+_MAX_LOGGED_LEGACY_NAMES = 256
 _logged_legacy_names: set[str] = set()
 
 
@@ -52,7 +55,7 @@ def normalize_model_name(name: str | None) -> str:
     if not value.startswith(LEGACY_PREFIX):
         return value
     normalized = SYSTEM_AI_PREFIX + value[len(LEGACY_PREFIX):]
-    if value not in _logged_legacy_names:
+    if value not in _logged_legacy_names and len(_logged_legacy_names) < _MAX_LOGGED_LEGACY_NAMES:
         _logged_legacy_names.add(value)
         logger.info("Mapped legacy model name %s -> %s", value, normalized)
     return normalized

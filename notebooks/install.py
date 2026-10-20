@@ -86,6 +86,8 @@ import importlib
 
 from databricks.sdk import WorkspaceClient
 
+import genie_space_optimizer.common.ai_gateway
+import scripts.deploy_lib.ai_gateway
 import scripts.deploy_lib.app_yaml
 import scripts.deploy_lib.apps
 import scripts.deploy_lib.config
@@ -97,7 +99,10 @@ import scripts.deploy_lib.uc
 import scripts.deploy_lib.verify
 import scripts.deploy_lib.workspace_source
 
+# Reload dependencies before the modules that import from them.
 for module in [
+    genie_space_optimizer.common.ai_gateway,
+    scripts.deploy_lib.ai_gateway,
     scripts.deploy_lib.workspace_source,
     scripts.deploy_lib.app_yaml,
     scripts.deploy_lib.apps,

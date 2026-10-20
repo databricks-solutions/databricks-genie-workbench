@@ -23,6 +23,13 @@ def test_normalize_model_name(raw, expected):
     assert ag.normalize_model_name(raw) == expected
 
 
+def test_legacy_name_log_set_is_bounded(monkeypatch):
+    monkeypatch.setattr(ag, "_logged_legacy_names", set())
+    for i in range(ag._MAX_LOGGED_LEGACY_NAMES + 50):
+        assert ag.normalize_model_name(f"databricks-x{i}") == f"system.ai.x{i}"
+    assert len(ag._logged_legacy_names) == ag._MAX_LOGGED_LEGACY_NAMES
+
+
 def test_normalize_model_name_is_idempotent():
     once = ag.normalize_model_name("databricks-claude-opus-4-7")
     assert ag.normalize_model_name(once) == once
