@@ -1224,14 +1224,15 @@ async def health():
 
 
 _SP_LLM_PROBE_TTL_SECONDS = 600
-_sp_llm_probe_cache: dict[str, tuple[float, str | None]] = {}
+_sp_llm_probe_cache: dict[str, float] = {}
 
 
 def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
     """Return an error if the GSO SP cannot query ``model`` through Unity Gateway.
 
     The optimization job runs as the app SP, so a missing EXECUTE on the
-    system.ai model service only surfaces mid-run. Cached per model.
+    system.ai model service only surfaces mid-run. Only a 200 is cached, so
+    Re-check reflects a grant as soon as it is applied.
     """
     from genie_space_optimizer.common.ai_gateway import (
         AUTH,
@@ -1243,14 +1244,16 @@ def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
         grant_hint,
     )
 
-    cached = _sp_llm_probe_cache.get(model)
-    if cached and time.monotonic() - cached[0] < _SP_LLM_PROBE_TTL_SECONDS:
-        return cached[1]
+    cached_at = _sp_llm_probe_cache.get(model)
+    if cached_at is not None and time.monotonic() - cached_at < _SP_LLM_PROBE_TTL_SECONDS:
+        return None
 
     error: str | None = None
     try:
         status, body = probe_chat_model(sp_ws, model)
-        if status != 200:
+        if status == 200:
+            _sp_llm_probe_cache[model] = time.monotonic()
+        else:
             failure = describe_gateway_failure(status, body, model)
             kind, detail = failure.kind, failure.detail
             if kind in (PERMISSION_DENIED, SCOPE_MISSING, AUTH):
@@ -1265,7 +1268,6 @@ def _probe_sp_llm_access(sp_ws, model: str, sp_principal: str) -> str | None:
         logger.info("SP LLM probe for %s failed", model, exc_info=True)
         return None
 
-    _sp_llm_probe_cache[model] = (time.monotonic(), error)
     return error
 
 

@@ -2580,6 +2580,7 @@ def test_permissions_ignores_transient_probe_failures(
 
     assert data["can_start"] is True
     assert data["llm_access_error"] is None
+    assert auto_optimize._sp_llm_probe_cache == {}
 
 
 def test_permissions_rejects_non_curated_model_without_probing(
@@ -2593,3 +2594,26 @@ def test_permissions_rejects_non_curated_model_without_probing(
     assert seen == []
     assert data["can_start"] is False
     assert "curated list" in data["llm_access_error"]
+
+
+def test_permissions_rechecks_after_failure_but_caches_success(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    """A failed probe is not cached, so Re-check sees a grant applied in between."""
+    denied = '{"error_code":"PERMISSION_DENIED","message":"no EXECUTE"}'
+    data, _ = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=403, body=denied,
+    )
+    assert data["can_start"] is False
+
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=200, body="{}",
+    )
+    assert seen == ["system.ai.claude-sonnet-4-6"]
+    assert data["can_start"] is True
+
+    data, seen = _permissions_with_probe(
+        client, mock_sp_ws, mock_user_ws, monkeypatch, status=403, body=denied,
+    )
+    assert seen == []
+    assert data["can_start"] is True
