@@ -24,6 +24,7 @@ from genie_space_optimizer.common.ai_gateway import (
     SCOPE_MISSING,
     TRANSIENT,
     chat_completions_url,
+    chat_probe_body,
     describe_gateway_failure,
     embeddings_url,
     grant_hint,
@@ -97,9 +98,7 @@ def _post(w, url: str, body: dict[str, Any], model: str) -> ProbeResult:
 
 
 def probe_chat(w, model: str) -> ProbeResult:
-    # 16 tokens: reasoning models reject 1-token completions with a 400.
-    body = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 16}
-    return _post(w, chat_completions_url(w.config.host), body, model)
+    return _post(w, chat_completions_url(w.config.host), chat_probe_body(model), model)
 
 
 def probe_embeddings(w, model: str) -> ProbeResult:

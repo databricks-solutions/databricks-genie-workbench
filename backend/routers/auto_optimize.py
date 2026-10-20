@@ -1300,6 +1300,24 @@ async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
         )
         logger.warning("SP application_id %r doesn't look like a UUID", sp_application_id)
 
+    # Only curated models are probed (the trigger rejects others), which keeps the
+    # probe cache bounded. The GSO job calls the model as the SP, so a failed probe
+    # blocks the start instead of letting the run fail mid-way. Submitted to the
+    # executor now (not to_thread, which would not start until this handler yields)
+    # so the probe overlaps the synchronous Genie and UC checks below.
+    llm_access_error: str | None = None
+    llm_probe: asyncio.Future[str | None] | None = None
+    try:
+        probe_model = validate_chat_model(llm_model) or get_llm_model()
+    except ModelValidationError as exc:
+        llm_access_error = str(exc)
+    else:
+        llm_probe = asyncio.get_running_loop().run_in_executor(
+            None,
+            _probe_sp_llm_access,
+            sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
+        )
+
     # Check SP CAN_MANAGE on the space
     sp_has_manage = False
     try:
@@ -1358,19 +1376,8 @@ async def check_permissions(space_id: SpaceId, llm_model: str | None = None):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
-    # Only curated models are probed (the trigger rejects others), which keeps the
-    # probe cache bounded. The GSO job calls the model as the SP, so a failed probe
-    # blocks the start instead of letting the run fail mid-way.
-    llm_access_error: str | None = None
-    try:
-        probe_model = validate_chat_model(llm_model) or get_llm_model()
-    except ModelValidationError as exc:
-        llm_access_error = str(exc)
-    else:
-        llm_access_error = await asyncio.to_thread(
-            _probe_sp_llm_access,
-            sp_ws, probe_model, sp_application_id or sp_display_name or "<gso-service-principal>",
-        )
+    if llm_probe is not None:
+        llm_access_error = await llm_probe
 
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read and llm_access_error is None

@@ -13,6 +13,7 @@ from genie_space_optimizer.common.ai_gateway import (
     DEFAULT_CHAT_MODEL,
     SCOPE_MISSING,
     chat_completions_url,
+    chat_probe_body,
     describe_gateway_failure,
     normalize_model_name,
     scope_missing_message,
@@ -31,13 +32,10 @@ def get_llm_model() -> str:
 
 
 def probe_chat_model(client, model: str, *, timeout: float = 30) -> tuple[int, str]:
-    """Send a tiny chat request to ``model`` as ``client``; returns ``(status, body)``.
-
-    ``max_tokens=16``: reasoning models reject 1-token completions with a 400.
-    """
+    """Send a tiny chat request to ``model`` as ``client``; returns ``(status, body)``."""
     resp = httpx.post(
         chat_completions_url(client.config.host),
-        json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 16},
+        json=chat_probe_body(model),
         headers=client.config.authenticate(),
         timeout=timeout,
     )

@@ -71,6 +71,14 @@ def embeddings_url(host: str) -> str:
     return f"{ai_gateway_base_url(host)}/embeddings"
 
 
+def chat_probe_body(model: str) -> dict:
+    """Smallest chat request that proves ``model`` is callable.
+
+    ``max_tokens=16``: reasoning models reject 1-token completions with a 400.
+    """
+    return {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 16}
+
+
 def parse_gateway_error(text: str | None) -> tuple[str | None, str]:
     """Return ``(error_code, message)`` from a gateway error body.
 
@@ -108,17 +116,6 @@ def describe_gateway_failure(status: int, text: str | None, model: str | None) -
         kind=_classify(status, code, message, model),
         detail=f"Unity Gateway returned {detail} for model={model}: {message}",
     )
-
-
-def classify_gateway_failure(status: int, text: str | None, model: str | None = None) -> str:
-    """Bucket a failed Unity Gateway response into an actionable failure kind."""
-    code, message = parse_gateway_error(text)
-    return _classify(status, code, message, model)
-
-
-def format_gateway_error(status: int, text: str | None, model: str | None) -> str:
-    """One-line error for logs and exceptions."""
-    return describe_gateway_failure(status, text, model).detail
 
 
 def _classify(status: int, code: str | None, message: str, model: str | None) -> str:

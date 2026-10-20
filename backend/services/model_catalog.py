@@ -105,7 +105,11 @@ def _list_system_ai_chat_models(client: WorkspaceClient) -> set[str]:
 
 
 def _available_system_ai_models(client: WorkspaceClient | None) -> set[str] | None:
-    """Cached chat model service names, or ``None`` if listing failed."""
+    """Cached chat model service names, or ``None`` if listing failed.
+
+    The lock is held across the listing so concurrent cold-cache requests wait
+    for one fetch instead of each listing every model service.
+    """
     global _AVAILABILITY_CACHE
     with _AVAILABILITY_LOCK:
         if _AVAILABILITY_CACHE is not None:
@@ -113,21 +117,20 @@ def _available_system_ai_models(client: WorkspaceClient | None) -> set[str] | No
             if time.monotonic() - ts < ttl:
                 return cached
 
-    try:
-        if client is None:
-            from backend.services.auth import get_service_principal_client
+        try:
+            if client is None:
+                from backend.services.auth import get_service_principal_client
 
-            client = get_service_principal_client()
-        result: set[str] | None = _list_system_ai_chat_models(client)
-        ttl = _AVAILABILITY_TTL_SECONDS
-    except Exception as exc:
-        logger.warning("Could not list system.ai model services; showing full curated list: %s", exc)
-        result = None
-        ttl = _AVAILABILITY_FAILURE_TTL_SECONDS
+                client = get_service_principal_client()
+            result: set[str] | None = _list_system_ai_chat_models(client)
+            ttl = _AVAILABILITY_TTL_SECONDS
+        except Exception as exc:
+            logger.warning("Could not list system.ai model services; showing full curated list: %s", exc)
+            result = None
+            ttl = _AVAILABILITY_FAILURE_TTL_SECONDS
 
-    with _AVAILABILITY_LOCK:
         _AVAILABILITY_CACHE = (time.monotonic(), ttl, result)
-    return result
+        return result
 
 
 def _reset_availability_cache() -> None:

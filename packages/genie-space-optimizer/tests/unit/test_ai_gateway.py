@@ -61,14 +61,14 @@ def test_parse_gateway_error_json_and_text():
         (418, "", ag.UNKNOWN),
     ],
 )
-def test_classify_gateway_failure(status, body, expected):
-    assert ag.classify_gateway_failure(status, body, "system.ai.nope") == expected
+def test_describe_gateway_failure_kind(status, body, expected):
+    assert ag.describe_gateway_failure(status, body, "system.ai.nope").kind == expected
 
 
-def test_format_gateway_error_includes_code_and_model():
-    msg = ag.format_gateway_error(404, NOT_FOUND_BODY, "system.ai.nope")
-    assert msg == "Unity Gateway returned 404 NOT_FOUND for model=system.ai.nope: 'system.ai.nope' does not exist."
-    assert ag.format_gateway_error(502, "bad gateway", "m") == "Unity Gateway returned 502 for model=m: bad gateway"
+def test_describe_gateway_failure_detail_includes_code_and_model():
+    detail = ag.describe_gateway_failure(404, NOT_FOUND_BODY, "system.ai.nope").detail
+    assert detail == "Unity Gateway returned 404 NOT_FOUND for model=system.ai.nope: 'system.ai.nope' does not exist."
+    assert ag.describe_gateway_failure(502, "bad gateway", "m").detail == "Unity Gateway returned 502 for model=m: bad gateway"
 
 
 def test_grant_hint_mentions_catalog_schema_and_model_service():
