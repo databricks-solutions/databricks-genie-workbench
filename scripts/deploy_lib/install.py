@@ -18,13 +18,20 @@ from .genie_spaces import optionally_grant_genie_spaces
 from .gso_job import ensure_gso_job
 from .lakebase import ensure_lakebase
 from .uc import ensure_uc_objects_and_grants
-from .verify import verify_app_deployment
+from .verify import verify_ai_gateway, verify_app_deployment
 from .workspace_source import prepare_workspace_source
 from backend.services.version_control.platform.bundles import preflight_deployment
 
 
 def _default_status(message: str) -> None:
     print(f"[genie-workbench install] {message}", flush=True)
+
+
+def llm_route_replacements(cfg: InstallConfig) -> dict[str, str]:
+    return {
+        "GENIE_LLM_ROUTE": cfg.llm_route,
+        "GENIE_BYOK_ENABLED": "true" if cfg.byok_enabled else "false",
+    }
 
 
 def get_deployer_user(w) -> str:
@@ -47,6 +54,13 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
     status(f"Using deployer: {deployer_user}")
+
+    if cfg.llm_route == "gateway":
+        status(f"Checking Unity AI Gateway with model {cfg.llm_model}...")
+        verify_ai_gateway(w, cfg.llm_model)
+        status("AI Gateway reachable.")
+    else:
+        status("LLM route: classic serving endpoints (AI Gateway check skipped).")
 
     status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
     ensure_app(w, cfg)
@@ -98,6 +112,7 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "GSO_JOB_ID": str(gso_job.job_id),
             "LAKEBASE_INSTANCE": cfg.lakebase_instance or "",
             "LLM_MODEL": cfg.llm_model,
+            **llm_route_replacements(cfg),
             "MLFLOW_EXPERIMENT_ID": cfg.mlflow_experiment_id or "",
             "VC_OBSERVE_WORKSPACE_ID": vc_observe_workspace_id,
             "VC_OBSERVE_HOST": vc_observe_host,

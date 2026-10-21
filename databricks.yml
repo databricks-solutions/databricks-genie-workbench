@@ -19,6 +19,9 @@ variables:
   llm_model:
     description: "LLM serving endpoint name"
     default: "databricks-claude-sonnet-4-6"
+  genie_llm_route:
+    description: "LLM route for optimization runs: gateway (Unity AI Gateway) or classic (serving endpoints)"
+    default: "classic"
 
 sync:
   include:
@@ -111,9 +114,10 @@ resources:
           default: ${var.llm_model}
         # AI Gateway route (spec §4). Workbench-only extra, like llm_model:
         # declared here + gso_job.py + job_launcher, absent from the package bundle.
-        # Default-off ("classic"); consumed only from Phase 1.
+        # deploy.sh passes --var genie_llm_route; each run overrides it with the
+        # app's GENIE_LLM_ROUTE.
         - name: genie_llm_route
-          default: "classic"
+          default: ${var.genie_llm_route}
         # Metric view advisor parameters (MV-D5 four-place lockstep). Only the
         # optimize task consumes them (run_optimize.py). enable_metric_view_suggestions
         # gates the advisor phase; mv_attach_views / mv_consent_id drive the MV-D16

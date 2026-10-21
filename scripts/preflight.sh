@@ -343,3 +343,34 @@ print(status)
         echo "  ✓ App does not exist yet — deploy will create it"
     fi
 }
+
+_preflight_check_ai_gateway() {
+    local route="$1"
+    local llm_model="$2"
+    local profile="$3"
+    if [ "$route" != "gateway" ]; then
+        echo "  ✓ LLM route: classic serving endpoints (AI Gateway check skipped)"
+        return
+    fi
+    # Same name mapping as backend/services/llm_route.py gateway_model_name.
+    local model="$llm_model"
+    if [[ "$model" != *.* ]]; then
+        model="system.ai.${model#databricks-}"
+    fi
+    echo "  Checking Unity AI Gateway with model '$model'..."
+    local gw_output
+    if ! gw_output=$(databricks api post /ai-gateway/mlflow/v1/chat/completions --profile "$profile" \
+        --json "{\"model\": \"$model\", \"max_tokens\": 8, \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}]}" 2>&1); then
+        echo ""
+        echo "  ✗ Unity AI Gateway check failed for model '$model':"
+        echo "$gw_output" | head -5 | sed 's/^/      /'
+        echo ""
+        echo "  The Workbench sends LLM calls through AI Gateway by default."
+        echo "  Remediation:"
+        echo "    1. Set GENIE_LLM_MODEL to a model available on the gateway, or"
+        echo "    2. Set GENIE_LLM_ROUTE=classic to use serving endpoints instead"
+        echo ""
+        exit 1
+    fi
+    echo "  ✓ AI Gateway reachable"
+}

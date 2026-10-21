@@ -33,7 +33,9 @@ from .workspace_source import (
 # the local-terminal deploy passes it via `--var llm_model` (deploy.sh) and the
 # notebook installer defaults it to cfg.llm_model, so the operator-selected
 # serving endpoint reaches each task (every v2 entrypoint honors the llm_model
-# widget). See build_job_settings for the parameter declarations.
+# widget). `genie_llm_route` is the second such extra: deploy.sh passes
+# `--var genie_llm_route` and the installer defaults it to cfg.llm_route.
+# See build_job_settings for the parameter declarations.
 TASKS = [
     (
         "intake_and_snapshot",
@@ -250,6 +252,7 @@ def build_job_settings(
 ) -> dict[str, Any]:
     cfg = cfg.normalized()
     tasks = [_task_payload(*task, notebooks_path) for task in TASKS]
+    cfg_defaults = {"llm_model": cfg.llm_model, "genie_llm_route": cfg.llm_route}
     return {
         "name": cfg.gso_job_name,
         "description": (
@@ -269,7 +272,7 @@ def build_job_settings(
         "parameters": [
             {
                 "name": name,
-                "default": cfg.llm_model if name == "llm_model" else default,
+                "default": cfg_defaults.get(name, default),
             }
             for name, default in JOB_PARAMETERS.items()
         ],

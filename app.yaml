@@ -91,21 +91,24 @@ env:
     value: "__LLM_MODEL__"
 
   # ---------------------------------------------------------------------------
-  # AI Gateway route (spec §0). Default-off: "classic" keeps the app on the
-  # /serving-endpoints/{name}/invocations path. Flip to "gateway" only after the
-  # soak criteria in spec §9 Decision 4. Consumed by backend/services/llm_route.py.
+  # AI Gateway route (spec §0): "gateway" sends LLM calls to
+  # /ai-gateway/mlflow/v1 with cost-attribution tags; "classic" keeps
+  # /serving-endpoints/{name}/invocations. Set by the installer (notebook
+  # llm_route widget / deploy.sh GENIE_LLM_ROUTE, default gateway). Consumed by
+  # backend/services/llm_route.py and forwarded to every optimization run.
   # ---------------------------------------------------------------------------
   - name: GENIE_LLM_ROUTE
-    value: "classic"
+    value: "__GENIE_LLM_ROUTE__"
 
   # ---------------------------------------------------------------------------
-  # BYOK (bring-your-own-model) acceptance (spec §2, §9 Decision 2). Default-off:
-  # only when "true" AND GENIE_LLM_ROUTE=gateway does validate_chat_model also
-  # accept a full 3-level UC model id (catalog.schema.name). Consumed by
+  # BYOK (bring-your-own-model) acceptance (spec §2, §9 Decision 2): only when
+  # "true" AND GENIE_LLM_ROUTE=gateway does validate_chat_model also accept a
+  # full 3-level UC model id (catalog.schema.name). Set by the installer
+  # (byok_enabled / GENIE_BYOK_ENABLED, default false). Consumed by
   # backend/services/model_catalog.py.
   # ---------------------------------------------------------------------------
   - name: GENIE_BYOK_ENABLED
-    value: "false"
+    value: "__GENIE_BYOK_ENABLED__"
 
   # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".

@@ -191,6 +191,7 @@ WS_PATH="/Workspace/Users/$DEPLOYER/$APP_NAME"
 _preflight_check_warehouse "$WAREHOUSE_ID" "$PROFILE"
 _preflight_check_catalog "$CATALOG" "$PROFILE"
 _preflight_check_app_state "$APP_NAME" "$PROFILE"
+_preflight_check_ai_gateway "$LLM_ROUTE" "$LLM_MODEL" "$PROFILE"
 echo "  ✓ All pre-flight checks passed"
 
 # ── Step 2: Build frontend ─────────────────────────────────────────────
@@ -327,6 +328,7 @@ BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
     --var="catalog=$CATALOG" \
     --var="warehouse_id=$WAREHOUSE_ID" \
     --var="llm_model=$LLM_MODEL" \
+    --var="genie_llm_route=$LLM_ROUTE" \
     --profile "$PROFILE" 2>&1)
 BUNDLE_EXIT=$?
 set -e
@@ -474,6 +476,8 @@ sed -i.bak "s|__WAREHOUSE_ID__|$WAREHOUSE_ID|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__LAKEBASE_INSTANCE__|$LAKEBASE_INSTANCE|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__LLM_MODEL__|$LLM_MODEL|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__GENIE_LLM_ROUTE__|$LLM_ROUTE|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__GENIE_BYOK_ENABLED__|$BYOK_ENABLED|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__MLFLOW_EXPERIMENT_ID__|$MLFLOW_EXPERIMENT_ID|" "$PATCHED_APP_YAML"
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
@@ -503,10 +507,10 @@ rm -f "${PATCHED_APP_YAML}.bak"
 # unresolved __GSO_JOB_ID__) must NEVER be imported to the workspace — abort the
 # deploy non-zero instead of only warning. This is the root cause of the total
 # app-boot failure the identity guard defends in depth against.
-UNRESOLVED=$(grep -c '__[A-Z_]*__' "$PATCHED_APP_YAML" || true)
+UNRESOLVED=$(grep -cE '__[A-Z0-9_]+__' "$PATCHED_APP_YAML" || true)
 if [ "$UNRESOLVED" -gt 0 ]; then
     echo "  ✗ app.yaml has $UNRESOLVED unresolved placeholder(s):"
-    grep '__[A-Z_]*__' "$PATCHED_APP_YAML" | sed 's/^/      /'
+    grep -E '__[A-Z0-9_]+__' "$PATCHED_APP_YAML" | sed 's/^/      /'
     echo "  ✗ Refusing to import a half-configured app.yaml; deploy aborted."
     rm -f "$PATCHED_APP_YAML"
     exit 1
@@ -514,7 +518,7 @@ fi
 
 databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
-echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>}, VC_OBSERVE=${VC_WS_ID:+enabled}${VC_WS_ID:-fail-closed}@${CATALOG}.${GSO_SCHEMA})" || \
+echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, LLM_ROUTE=$LLM_ROUTE, BYOK=$BYOK_ENABLED, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>}, VC_OBSERVE=${VC_WS_ID:+enabled}${VC_WS_ID:-fail-closed}@${CATALOG}.${GSO_SCHEMA})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Ensure app compute is running before deploying

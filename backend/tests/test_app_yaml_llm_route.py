@@ -1,9 +1,9 @@
-"""Pin the AI Gateway route flag default-off in app.yaml (Phase 0).
+"""Pin how app.yaml carries the AI Gateway route.
 
-The backend reads GENIE_LLM_ROUTE from its environment (Appendix A.1
-get_llm_route). app.yaml MUST ship it as "classic" so the deployed app stays
-on the classic path until the flag is deliberately flipped (spec §0, §9
-Decision 4).
+The backend reads GENIE_LLM_ROUTE from its environment (llm_route.get_llm_route).
+app.yaml ships it as an installer placeholder, so the operator's choice
+(notebook llm_route widget / deploy.sh GENIE_LLM_ROUTE) is what the deployed app
+runs with; an unfilled placeholder fails the install.
 """
 
 from pathlib import Path
@@ -19,7 +19,6 @@ def _app_env() -> dict[str, str]:
     return {e["name"]: e.get("value") for e in doc["env"] if "name" in e}
 
 
-def test_genie_llm_route_declared_default_off():
+def test_genie_llm_route_is_an_installer_placeholder():
     env = _app_env()
-    assert "GENIE_LLM_ROUTE" in env, "app.yaml must declare GENIE_LLM_ROUTE"
-    assert env["GENIE_LLM_ROUTE"] == "classic"
+    assert env.get("GENIE_LLM_ROUTE") == "__GENIE_LLM_ROUTE__"

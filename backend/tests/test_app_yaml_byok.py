@@ -1,7 +1,8 @@
-"""Pin the BYOK flag default-off in app.yaml (Phase 2).
+"""Pin how app.yaml carries the BYOK flag (Phase 2).
 
-validate_chat_model reads GENIE_BYOK_ENABLED; app.yaml MUST ship it as
-"false" so BYOK acceptance stays off until deliberately enabled
+validate_chat_model reads GENIE_BYOK_ENABLED. app.yaml ships it as an installer
+placeholder (notebook byok_enabled widget / deploy.sh GENIE_BYOK_ENABLED, both
+default "false"), so BYOK acceptance stays off unless the operator enables it
 (spec §2, §9 Decision 2).
 """
 
@@ -18,7 +19,6 @@ def _app_env() -> dict[str, str]:
     return {e["name"]: e.get("value") for e in doc["env"] if "name" in e}
 
 
-def test_genie_byok_enabled_declared_default_off():
+def test_genie_byok_enabled_is_an_installer_placeholder():
     env = _app_env()
-    assert "GENIE_BYOK_ENABLED" in env, "app.yaml must declare GENIE_BYOK_ENABLED"
-    assert env["GENIE_BYOK_ENABLED"] == "false"
+    assert env.get("GENIE_BYOK_ENABLED") == "__GENIE_BYOK_ENABLED__"
