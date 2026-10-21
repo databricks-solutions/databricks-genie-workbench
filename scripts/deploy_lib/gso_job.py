@@ -111,7 +111,7 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
-    "genie_llm_route": "classic",  # AI Gateway route (spec §4); default-off, consumed from Phase 1
+    "genie_llm_route": "gateway",  # AI Gateway route (spec §4); build_job_settings uses cfg.llm_route
     # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
     # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
     # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).

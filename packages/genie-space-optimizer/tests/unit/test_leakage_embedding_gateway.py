@@ -15,7 +15,7 @@ def _wc():
 
 
 def test_classic_uses_sdk_query_verbatim(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     called = {}
 
     def fake_post(*a, **k):

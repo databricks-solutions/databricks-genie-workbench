@@ -10,9 +10,17 @@ import json
 from genie_space_optimizer.optimization import llm_route as lr
 
 
-def test_get_llm_route_defaults_classic(monkeypatch):
+def test_get_llm_route_defaults_gateway(monkeypatch):
     monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
+
+
+def test_get_llm_route_classic_only_when_explicit(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     assert lr.get_llm_route() is lr.LLMRoute.CLASSIC
+    monkeypatch.setattr(lr, "_warned_routes", set())
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "clasic")
+    assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
 
 
 def test_get_llm_route_gateway_exact(monkeypatch):

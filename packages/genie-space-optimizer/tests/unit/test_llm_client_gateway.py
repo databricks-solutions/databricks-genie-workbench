@@ -45,7 +45,7 @@ def test_get_openai_client_base_url_by_route(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(llm_client, "_resolve_bearer_token", lambda wc: "tok")
 
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     llm_client.get_openai_client(_fake_wc())
     assert seen["base_url"] == "https://example.databricks.com/serving-endpoints"
 
@@ -55,7 +55,7 @@ def test_get_openai_client_base_url_by_route(monkeypatch):
 
 
 def test_call_llm_classic_no_headers_unmapped_model(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     completions = _fake_openai_client(monkeypatch)
     llm_client.call_llm(_fake_wc(), messages=[{"role": "user", "content": "hi"}])
     kwargs = completions.create.call_args.kwargs
@@ -116,7 +116,7 @@ def test_call_llm_gateway_404_downgrades(monkeypatch):
 
 def test_call_llm_classic_404_raises_original(monkeypatch):
     """Classic route: a 404 keeps its original error, not the clean message."""
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     _fake_404_client(monkeypatch)
     with pytest.raises(_FakeNotFound) as ei:
         llm_client.call_llm(

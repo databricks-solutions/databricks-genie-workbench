@@ -13,13 +13,34 @@ from backend.services import llm_route as lr
 
 
 class TestGetLlmRoute:
-    def test_unset_defaults_classic(self, monkeypatch):
+    def test_unset_defaults_gateway(self, monkeypatch):
         monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+        assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
+
+    def test_empty_defaults_gateway(self, monkeypatch):
+        monkeypatch.setenv("GENIE_LLM_ROUTE", "  ")
+        assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
+
+    def test_classic_only_when_explicit(self, monkeypatch):
+        monkeypatch.setenv("GENIE_LLM_ROUTE", " Classic ")
         assert lr.get_llm_route() is lr.LLMRoute.CLASSIC
 
-    def test_typo_defaults_classic(self, monkeypatch):
-        monkeypatch.setenv("GENIE_LLM_ROUTE", "gatway")
-        assert lr.get_llm_route() is lr.LLMRoute.CLASSIC
+    def test_typo_uses_gateway_and_warns_once(self, monkeypatch, caplog):
+        monkeypatch.setattr(lr, "_warned_routes", set())
+        monkeypatch.setenv("GENIE_LLM_ROUTE", "clasic")
+        with caplog.at_level("WARNING", logger=lr.__name__):
+            assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
+            assert lr.get_llm_route() is lr.LLMRoute.GATEWAY
+        warnings = [r for r in caplog.records if "GENIE_LLM_ROUTE" in r.getMessage()]
+        assert len(warnings) == 1 and "clasic" in warnings[0].getMessage()
+
+    def test_known_values_do_not_warn(self, monkeypatch, caplog):
+        monkeypatch.setattr(lr, "_warned_routes", set())
+        with caplog.at_level("WARNING", logger=lr.__name__):
+            for value in ("", "gateway", "classic"):
+                monkeypatch.setenv("GENIE_LLM_ROUTE", value)
+                lr.get_llm_route()
+        assert not caplog.records
 
     def test_gateway_exact(self, monkeypatch):
         monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os
+import json, logging, os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -15,10 +15,19 @@ _TAG_HEADER    = "Databricks-Ai-Gateway-Request-Tags"
 _APPLICATION   = "genie-workbench"
 
 
+_warned_routes: set[str] = set()
+
+
 def get_llm_route() -> LLMRoute:
-    """GENIE_LLM_ROUTE env; anything but 'gateway' (incl. unset/typo) -> CLASSIC (fail-safe)."""
-    return LLMRoute.GATEWAY if (os.environ.get("GENIE_LLM_ROUTE") or "").strip().lower() == "gateway" \
-        else LLMRoute.CLASSIC
+    """GENIE_LLM_ROUTE env; only an explicit 'classic' -> CLASSIC. Unset/empty -> GATEWAY (the default);
+       an unknown value -> GATEWAY with a one-time warning, never a silent fall back to classic."""
+    raw = (os.environ.get("GENIE_LLM_ROUTE") or "").strip().lower()
+    if raw == "classic":
+        return LLMRoute.CLASSIC
+    if raw not in ("", "gateway") and raw not in _warned_routes:
+        _warned_routes.add(raw)
+        logging.getLogger(__name__).warning("Unknown GENIE_LLM_ROUTE %r; using the gateway route", raw)
+    return LLMRoute.GATEWAY
 
 
 def gateway_model_name(endpoint: str) -> str:

@@ -1428,9 +1428,9 @@ def test_lakebase_existing_mode_rejects_soft_deleted_project():
     assert w.postgres.purged_projects == []
 
 
-def test_genie_llm_route_declared_default_off_across_workbench_mirrors():
-    """AI Gateway Phase 0 (spec §4): genie_llm_route is a second Workbench-only
-    extra, declared "classic" in root databricks.yml (through the
+def test_genie_llm_route_declared_gateway_across_workbench_mirrors():
+    """AI Gateway (spec §4): genie_llm_route is a second Workbench-only
+    extra, declared "gateway" in root databricks.yml (through the
     genie_llm_route bundle variable deploy.sh sets, like llm_model) and
     gso_job.JOB_PARAMETERS; intentionally absent from the package bundle. The
     launcher sends the app's own GENIE_LLM_ROUTE instead of a pinned value
@@ -1451,8 +1451,8 @@ def test_genie_llm_route_declared_default_off_across_workbench_mirrors():
     }
 
     assert root_params.get("genie_llm_route") == "${var.genie_llm_route}"
-    assert root_vars["genie_llm_route"]["default"] == "classic"
-    assert JOB_PARAMETERS.get("genie_llm_route") == "classic"
+    assert root_vars["genie_llm_route"]["default"] == "gateway"
+    assert JOB_PARAMETERS.get("genie_llm_route") == "gateway"
     assert "genie_llm_route" in _launcher_run_now_params()
     assert "genie_llm_route" not in pkg_params  # package bundle omits it, like llm_model
 

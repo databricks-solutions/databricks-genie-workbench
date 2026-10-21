@@ -21,7 +21,7 @@ variables:
     default: "databricks-claude-sonnet-4-6"
   genie_llm_route:
     description: "LLM route for optimization runs: gateway (Unity AI Gateway) or classic (serving endpoints)"
-    default: "classic"
+    default: "gateway"
 
 sync:
   include:

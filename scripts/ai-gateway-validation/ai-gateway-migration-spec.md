@@ -1,14 +1,16 @@
 # AI Gateway migration — implementation spec
 
-- **Status:** Implemented on `feature/ai-gateway-migration` behind default-off flags — Phases 0, 1, 1b,
-  2 and 3 have landed (§6); not yet merged. This spec describes the **as-built** design; where a phase
+- **Status:** Implemented on `feature/ai-gateway-migration`, built on PR #332
+  (`feature/metric-view-advisor`) and reviewed as the stacked PR #400; not yet merged. Phases 0, 1, 1b,
+  2 and 3 landed default-off (§6); the gateway is now the **default from the start** (Decision 4), the
+  GSO job follows the app's route (§4), and both installers carry the route and BYOK settings plus an
+  install-time gateway check (§4.1). This spec describes the **as-built** design; where a phase
   plan's recorded ruling changed the original proposal, the change is stated in place (rulings R1–R10
-  live in the per-phase plans in this folder). What remains before merge and before the default flip
-  is in §10 — including an open gap: the GSO job cannot run on the gateway route, because the run-now
-  value is always `classic` and the job never reads the parameter anyway (§4).
-- **Evidence:** pre-implementation validation (all gates PASS or a decided design choice) is in
-  `report-20260913-175958.md` in this folder. It predates the code; a post-deploy re-run is still owed
-  (§10).
+  live in the per-phase plans in this folder). What remains is the fevm-serverless smoke test (§10).
+- **Evidence:** pre-implementation validation is in `report-20260913-175958.md`; the re-run on
+  fevm-serverless on 2026-10-20, which decided the default (GO: 18 pass, 0 fail, the two known
+  `response_format` warnings), is in `report-20261020-191745.md`. Both predate a deployment of the
+  branch; the deployed-app run is the smoke test (§10).
 - **Reproduce the evidence:** `probe.sh --profile <P> [--warehouse-id <id>]` (full suite),
   `probe.sh --profile <P> --byok <catalog.schema.name>` (BYOK / S9).
 - **Placement note:** kept next to its validation artifacts on purpose. This is an implementation spec
@@ -19,18 +21,21 @@
 ## 0. Decision (TL;DR)
 
 Route Workbench + GSO LLM/embedding traffic through the **Unity AI Gateway** unified path
-(`/ai-gateway/mlflow/v1/...`) with a per-request cost-attribution tag, behind a single flag
-`GENIE_LLM_ROUTE={classic|gateway}` that **defaults to `classic`**. The classic
-`/serving-endpoints/{name}/invocations` path stays as the flag-off fallback.
+(`/ai-gateway/mlflow/v1/...`) with a per-request cost-attribution tag, selected by a single setting
+`GENIE_LLM_ROUTE={gateway|classic}` that **defaults to `gateway`**. The classic
+`/serving-endpoints/{name}/invocations` path stays available, but only as an explicit operator
+setting (`llm_route=classic` at install); nothing falls back to it automatically.
 
 **Why now:** the only mechanism that records Workbench spend for attribution
 (`system.ai_gateway.usage.request_tags`) captures **gateway traffic only** — the classic
 `/invocations` path is *not* recorded (validated: 3,110 gateway rows vs 0 `/invocations` rows over 2h).
 So "tag the current path, migrate later" is impossible; the route swap and the tag ship together.
 
-**Why it's safe:** default-off flag → zero behavior change until flipped; one seam → one place to reason
-about; classic path proven still-green (S7); every request shape the app makes was validated on the
-gateway first (streaming+tools on Claude *and* GPT, embeddings, JSON, 429, BYOK).
+**Why it's safe:** Unity AI Gateway is GA; every request shape the app makes was validated on the
+gateway (streaming+tools on Claude *and* GPT, embeddings, JSON, 429, BYOK), most recently on
+2026-10-20; one seam → one place to reason about; the install fails up front, with a pointer to
+`llm_route=classic`, when the workspace cannot reach the gateway (§4.1); and the classic path is
+proven still-green (S7) for operators who choose it.
 
 ---
 
@@ -43,7 +48,7 @@ byte-identical twins — Appendix A) consumed by all five.
 
 ### 1.1 The five call sites (as built)
 
-| # | Surface | Classic branch (flag-off, unchanged) | Auth mechanism | Gateway branch (as built) |
+| # | Surface | Classic branch (`llm_route=classic`, unchanged) | Auth mechanism | Gateway branch (as built) |
 |---|---|---|---|---|
 | 1 | `backend/services/llm_utils.py:59` `call_serving_endpoint` | `httpx.post` → `{host}/serving-endpoints/{model}/invocations` | `client.config.authenticate()` headers | `resolve_chat(host, model, component)` (`:94`); tag merged into the `headers` dict; new `component` param, default `"workbench"` |
 | 2 | `backend/services/create_agent.py:1118` `_stream_llm` (streaming + tools; `_async_stream_llm` at `:1222` wraps it) | SDK `session.post` → `.../invocations` | SDK pre-auth `requests.Session` | `resolve_chat(..., "create-agent", space_id=...)` (`:1146`); tag via `headers=` on `session.post` |
@@ -60,7 +65,7 @@ byte-identical twins — Appendix A) consumed by all five.
 ### 1.2 Route resolution
 
 ```
-GENIE_LLM_ROUTE = classic (default) | gateway
+GENIE_LLM_ROUTE = gateway (default; unset, empty or unknown) | classic (explicit only)
 
 base(classic) = {host}/serving-endpoints/{model}/invocations      # model in the URL path
 base(gateway) = {host}/ai-gateway/mlflow/v1/{chat|embeddings}      # model in the body
@@ -102,7 +107,7 @@ cardinality (`run_id` / `space_id`) is settled in §9 Decision 1.
   first, and additionally accepts a well-formed `catalog.schema.name` only when **both**
   `GENIE_LLM_ROUTE=gateway` and `GENIE_BYOK_ENABLED` is truthy (`:124-129`). "Well-formed" is
   `^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){2}$` (`:42`, ruling R5), which rejects the entity_name trap,
-  2-level and 4-level ids. `GENIE_BYOK_ENABLED` (`app.yaml:107`, default `"false"`; truthy =
+  2-level and 4-level ids. `GENIE_BYOK_ENABLED` (`app.yaml:111-112`, installer default `"false"`; truthy =
   `1/true/yes/on`, `model_catalog.py:46`) is an app-env gate only, not a job parameter (ruling R7).
   `list_chat_models` is unchanged: the dropdown stays curated-only (ruling R6).
 
@@ -191,42 +196,57 @@ A param present in fewer than all its places is a bug.
 
 | # | File | As built (`genie_llm_route`, mirroring `llm_model`) |
 |---|---|---|
-| 1. Root bundle | `databricks.yml` | job param declared (`:115`, beside `llm_model` at `:110`) and passed through on every task's `base_parameters` (`:157/177/199/229`) |
-| 2. Deploy lib | `scripts/deploy_lib/gso_job.py` | in all four per-task param lists (`:47/57/69/84`); default `"classic"` in the default map (`:112`). Unlike `llm_model`, it has no `cfg` override (`:272`), so a deployed job defaults to classic |
-| 3. Run-now map | `packages/…/backend/job_launcher.py` `submit_optimization` | `genie_llm_route` kwarg, default `"classic"` (`:78`); `job_parameters` value is `genie_llm_route or os.getenv("GENIE_LLM_ROUTE", "classic")` (`:132`). The original spec named `trigger.py` here; the launcher is where `run_now` parameters are actually assembled. **Defect:** the only caller, `integration/trigger.py:396`, passes no route, and the kwarg default `"classic"` is truthy, so the app-env fallback is unreachable and every run is sent `classic` (see open gap below). `llm_model` avoids this because its default is `""` (`:77`) |
-| 4. App env (non-job surfaces) | `app.yaml` | `GENIE_LLM_ROUTE`, value `"classic"` (`:98`). `GENIE_BYOK_ENABLED` (`:107`) sits beside it but is app-only, not a job param (§1.4) |
+| 1. Root bundle | `databricks.yml` | bundle variable `genie_llm_route`, default `"gateway"` (`:22-24`), set by `deploy.sh --var` (`scripts/deploy.sh`); job param `default: ${var.genie_llm_route}` (`:119-120`, beside `llm_model` at `:113-114`) and passed through on every task's `base_parameters` (`:161/181/203/233`) |
+| 2. Deploy lib | `scripts/deploy_lib/gso_job.py` | in all four per-task param lists (`:49/59/71/86`); default `"gateway"` in the default map (`:114`), overridden with `cfg.llm_route` by `build_job_settings` (`:255`), so the notebook-installed job carries the operator's choice |
+| 3. Run-now map | `packages/…/backend/job_launcher.py` `submit_optimization` | `genie_llm_route` kwarg, default `""` (`:78`, the `llm_model` shape at `:77`); `job_parameters` value is `genie_llm_route or os.getenv("GENIE_LLM_ROUTE") or "gateway"` (`:132`). The only caller, `integration/trigger.py:384`, passes no route, so every run is sent the app's own `GENIE_LLM_ROUTE` |
+| 4. App env (non-job surfaces) | `app.yaml` | `GENIE_LLM_ROUTE`, value `"__GENIE_LLM_ROUTE__"` (`:101-102`), filled by both installers (§4.1). `GENIE_BYOK_ENABLED` (`:111-112`) sits beside it, filled the same way, but is app-only, not a job param (§1.4) |
 
-> **Note (verified):** `llm_model` is intentionally **NOT** in `packages/genie-space-optimizer/databricks.yml`
-> — `gso_job.py:32` documents it as "a Workbench-specific extra beyond the package bundle's params."
-> So a new app-selected route param follows the `llm_model` set above, **not** the generic four-mirror
-> list in the mv-advisor rule (which governs mv-advisor's own params). **Still open:** if the
-> notebook-install path deploys the job from the package bundle, confirm whether the package
-> `databricks.yml` also needs the param before turning the flag on for that path. Today it has
-> neither `llm_model` nor `genie_llm_route`.
+**Job-side consumption.** Each task notebook declares a `genie_llm_route` widget and, when it is
+non-empty, exports it to `GENIE_LLM_ROUTE` before any LLM call, the same way `llm_model` becomes
+`LLM_MODEL`: `jobs/run_intake_and_snapshot.py:95,123`, `jobs/run_benchmark_qc_and_repair.py:143,158`,
+`jobs/run_optimize.py:143-146` and `jobs/run_publish_and_audit.py:81,98` (publish also gained the
+`llm_model` widget it lacked). An empty widget leaves the env unset, which the seam reads as
+`gateway`. `test_phase7_job_dag.py` pins the export in every notebook and the launcher following the
+app env.
 
-> **OPEN GAP — the GSO job can never run on the gateway route.** Two independent breaks, both
-> needed fixes:
->
-> **(a) The run-now value is always `classic`.** As row 3 shows, `submit_optimization` sends
-> `"classic"` unless a caller passes the kwarg, and none does. `backend/tests/test_deploy_lib.py:1331`
-> pins `launcher_params.get("genie_llm_route") == "classic"`, so the test enshrines the default
-> rather than catching it. Fix: default the kwarg to `""` (the `llm_model` shape) so the app's
-> `GENIE_LLM_ROUTE` reaches the run, and add a test that sets the app env to `gateway` and asserts
-> the run parameter follows.
->
-> **(b) The job never consumes the parameter.** Even when delivered, no job notebook reads
-> `genie_llm_route`. `llm_model` works because each
-> notebook does `dbutils.widgets.text("llm_model", "")` and then sets `os.environ["LLM_MODEL"]`
-> (`jobs/run_intake_and_snapshot.py:94,111,121`, `jobs/run_benchmark_qc_and_repair.py:142,154,156`,
-> `jobs/run_optimize.py:96,114,138`). The seam's `get_llm_route()` reads only
-> `os.environ["GENIE_LLM_ROUTE"]` (`llm_route.py:18`), and no notebook sets it. Fix: the `llm_model`
-> pattern, meaning a `genie_llm_route` widget in every notebook that calls an LLM, exported to
-> `GENIE_LLM_ROUTE`, plus a test pinning it.
->
-> **Result today:** inside the GSO job, sites 3 and 4 always take the classic route, so
-> `gso-optimize`, `leakage-embed` and `mv-suggest` traffic from the job is never tagged. The
-> Workbench-side sites (1, 2, 5) are unaffected because they read the app env directly. No phase plan
-> scheduled either fix; both must land before the flag is turned on for the job (§10).
+> **Note (verified):** `llm_model` and `genie_llm_route` are intentionally **NOT** in
+> `packages/genie-space-optimizer/databricks.yml` — `gso_job.py:32-37` documents them as
+> Workbench-specific extras beyond the package bundle's params, and
+> `test_gso_job_settings_mirror_package_bundle_4task` pins exactly these two as the difference. So the
+> route param follows the `llm_model` set above, **not** the generic four-mirror list in the
+> mv-advisor rule (which governs mv-advisor's own params). **Closed:** the notebook installer does
+> not deploy the package bundle; it creates the job through the Jobs API from
+> `gso_job.build_job_settings` (`scripts/deploy_lib/install.py` → `gso_job.py`), so the package
+> bundle needs neither param.
+
+### 4.1 Install-time settings and the gateway check
+
+- **Settings.** `InstallConfig.llm_route` (`gateway` default, validated against `gateway|classic`) and
+  `InstallConfig.byok_enabled` (default `false`) (`scripts/deploy_lib/config.py:47-48`, `:99-100`).
+  The install notebook exposes both as dropdowns (`notebooks/install.py:66-67`, passed at
+  `:140-141`); `install.py`'s `llm_route_replacements` (`:30`) fills the two `app.yaml` placeholders.
+  The `deploy.sh` path reads `GENIE_LLM_ROUTE` / `GENIE_BYOK_ENABLED` from `.env.deploy`
+  (`scripts/deploy-config.sh`, validated, documented in `.env.deploy.template`), seds the same
+  placeholders and passes `--var genie_llm_route`. Its leftover-placeholder check matches digits too,
+  so an unfilled placeholder stops the deploy.
+- **Gateway check.** On the gateway route both installers send one 8-token chat request to
+  `/ai-gateway/mlflow/v1/chat/completions` with the mapped model and fail the install on any error,
+  pointing at `llm_route=classic`: `verify_ai_gateway` (`scripts/deploy_lib/verify.py:26`, called at
+  `install.py:60`) and `_preflight_check_ai_gateway` (`scripts/preflight.sh:347`, called at
+  `scripts/deploy.sh:194`). On classic the check is skipped. **Deviation from the plan:** the check
+  runs as the installing user, not the app SP — the installer holds no credentials for the app SP. It
+  proves the workspace and model are reachable on the gateway; the SP leg is proven in the smoke test
+  (§10).
+- **User scope.** `serving.serving-endpoints` maps to `model-serving` and does not cover the gateway,
+  so the app requests the documented `ai-gateway` user scope beside it in `app.yaml`,
+  `scripts/deploy_lib/apps.py` `APP_SCOPES` and `scripts/deploy.sh`, pinned identical by
+  `test_user_api_scopes_identical_in_all_three_lists`. Adding a scope makes each existing user
+  consent once more. If the deployed app's scoped token is still refused on the gateway, the decided
+  fallback is to send user-identity LLM calls (Create Agent, plan builder) as the app SP.
+- **Non-`databricks-*` models.** `gateway_model_name` maps `databricks-<x>` to `system.ai.<x>` and
+  passes dotted UC names through. Any other `LLM_MODEL` (a custom serving endpoint name) maps to a
+  `system.ai.*` name that does not exist, the install check fails, and at run time the gateway 404
+  surfaces as `MODEL_UNAVAILABLE_MESSAGE`. Operators on such an endpoint set `llm_route=classic`.
 
 ---
 
@@ -250,12 +270,14 @@ A param present in fewer than all its places is a bug.
 > shippable, default-off until the flag flips, and gated by re-running `probe.sh` + the unit suites.
 > Every phase below has **landed** on `feature/ai-gateway-migration`; each carries a **Status** line
 > with its commits and per-phase plan. The plans' checkboxes were not ticked as work landed, so the
-> commits are the record.
+> commits are the record. The phases shipped default-off; the "default `classic`" wording inside
+> them is the history of that cut. After them, the job path, installer settings, user scope and
+> default commits made `gateway` the default (§4, §4.1, Decision 4).
 
 ### Phase 0 — Seam scaffold (no behavior change)  → concrete signatures in **Appendix A.1**
 - **Status:** landed 2026-09-14 — `b19e4b58`, `db2bbd27`, `add2f557`, `573127b0`
-  (`ai-gateway-phase0-plan.md`). Parameter declared in every mirror, but the run-now value is stuck
-  at `classic` and the job never reads it (§4 open gap).
+  (`ai-gateway-phase0-plan.md`). Parameter declared in every mirror; the job did not read it until
+  the job-path commit (§4).
 - **What:** add `GENIE_LLM_ROUTE` (default `classic`) and the `resolve_chat` / `resolve_embeddings`
   factory returning a `ResolvedCall(url, model, extra_headers)`. Nothing calls it yet.
 - **Why:** land the decision point in one place before touching hot paths.
@@ -302,7 +324,7 @@ A param present in fewer than all its places is a bug.
   `model_catalog`. No `reasoning_effort` change here: that is the Phase 1 retry (§2), never
   always-send.
 - **Why:** the real "can the customer use their own model?" answer.
-- **Surfaces:** `model_catalog.py:42/46/108`; `app.yaml:107`. Backend only: no frontend entry field,
+- **Surfaces:** `model_catalog.py:42/46/108`; `app.yaml:111-112`. Backend only: no frontend entry field,
   and `list_chat_models` is unchanged (R6).
 - **Regression guard:** curated-list behavior on the classic route is unchanged; BYOK acceptance is
   strictly additive and gated on route=gateway **and** the BYOK flag. Unit tests for strip-rule,
@@ -311,7 +333,8 @@ A param present in fewer than all its places is a bug.
 ### Phase 3 — Clean 404 downgrade (governance UX)
 - **Status:** landed 2026-09-25 — `40b41c69`, `eaf75349`, `02c0ed33` (`ai-gateway-phase3-plan.md`,
   rulings R8–R10). The plan's Task 4 verification (full suite, contract greps, untouched-surface diff)
-  has no recorded result. Run it for the PR (§10).
+  has no recorded result of its own; the full suite now runs at every commit on the stacked branch,
+  and `test_llm_route_contract.py` turns the contract greps into a test (§7).
 - **What:** on the gateway route, a **404 on a configured model** raises the single standardized
   `MODEL_UNAVAILABLE_MESSAGE` in place of the raw provider body, at sites 1, 2 and 3 (§3). Scope
   decision 2026-09-25: **messaging only**. There is no automatic classic fallback and no
@@ -329,29 +352,31 @@ A param present in fewer than all its places is a bug.
 
 | Surface | Risk if wrong | Guard | Acceptance probe |
 |---|---|---|---|
-| Create Agent streaming+tools | broken agent loop | default-off flag; provider-agnostic terminator | `probe.sh` S4 (Claude+GPT) + multi-turn |
+| Create Agent streaming+tools | broken agent loop | provider-agnostic terminator; validated on Claude and GPT before the default | `probe.sh` S4 (Claude+GPT) + multi-turn |
 | GSO `call_llm` JSON output | optimizer stalls | keep `response_format` strip-retry (`llm_client.py:218-226`) | S3 + S3c |
 | Embeddings firewall | leakage check silently off | classic SDK path retained; degrade path intact | S3b + preflight |
 | Cost attribution | no spend visibility (the whole point) | tag at every site; grep contract | S5 + `--requery` |
 | Entitlement | raw provider error instead of a clean message | gateway-gated 404 → `MODEL_UNAVAILABLE_MESSAGE` (§3) | `--leg403` (404 shape) |
 | BYOK reasoning model | 400 on tools | one-shot `reasoning_effort:"none"` retry on the create-agent tool path (§2) | `--byok` |
-| Classic fallback | can't roll back | classic path untouched, flag-selected | S7 |
-| Job param drift | run uses wrong route | mirror lockstep (§4) **plus** a job-side widget → `GENIE_LLM_ROUTE` export (not yet built, §4 open gap) | grep all mirrors present **and** every LLM-calling job notebook reads the widget |
+| Classic route | can't roll back | classic path untouched, selected by `llm_route=classic` | S7 |
+| Job param drift | run uses wrong route | mirror lockstep (§4) **plus** the job-side widget → `GENIE_LLM_ROUTE` export in every task notebook | `test_phase7_job_dag.py` export and launcher pins |
+| Gateway unreachable | every LLM call fails after install | install-time gateway check fails the install with the classic remedy (§4.1) | `verify_ai_gateway` / `_preflight_check_ai_gateway` tests |
+| Raw LLM call outside the seam | untagged or wrong-route traffic | `test_llm_route_contract.py` scans `backend/` and the GSO source for raw call shapes | the contract test |
 
 ## 8. Test plan
 
-- **Probe suite is the integration gate.** Re-run `probe.sh` (full) + `--byok` before flipping the flag
-  in any environment; attach the report to the PR.
+- **Probe suite is the integration gate.** Re-run `probe.sh` (full) + `--byok` against each deployment
+  of the branch; attach the report to the PR.
 - **Unit tests (shipped in the same commit as each phase):** route factory (classic byte-identical +
   gateway shape) and twin parity, model mapping (strip rule, entity_name-trap, BYOK passthrough, BYOK
   flag variants), tag header presence at the three chat sites and the embeddings site, streaming
   terminator (both `[DONE]` and `finish_reason` endings), the `reasoning_effort` retry, and
   gateway-404 → `MODEL_UNAVAILABLE_MESSAGE` (plus classic-404 / gateway-500 unchanged).
-- **Baseline:** `./scripts/test.sh` measured **4012 passed** on 2026-10-20 at the merge commit
-  `941aed5b`, which builds this branch on PR #332 (`feature/metric-view-advisor`, itself carrying
-  main). One combined run of both suites; before the merge the branch tip `12d574a8` measured 2818.
-  Below this is a regression. The mv-advisor rule's per-suite baseline line is not maintained by this
-  initiative (Phase 3 plan constraint).
+- **Baseline:** `./scripts/test.sh` measured **4033 passed** (1783 backend + 2250 GSO) on
+  2026-10-20 at the default commit. The merge commit `941aed5b`, which builds this branch on PR #332
+  (`feature/metric-view-advisor`, itself carrying main), measured 4012; before the merge the branch
+  tip `12d574a8` measured 2818. Below this is a regression. Because the branch now carries PR #332,
+  the mv-advisor rule's per-suite floor applies here too and is kept in step at each commit.
 - **Contract grep (per repo rule):** after each phase, a repo-wide grep proving (a) no chat call site
   still hard-codes `/serving-endpoints/{...}/invocations` outside the classic branch of the seam, and
   (b) the tag header string appears at every gateway call site — pasted into the PR.
@@ -372,11 +397,15 @@ A param present in fewer than all its places is a bug.
    `registered-models`; `ai-gateway/model-services` 404s). Tracked as a follow-up probe, not a blocker.
 3. **SP-row confirmation — RESOLVED: DONE.** Requery confirmed the SP row as
    `requester_type=SERVICE_PRINCIPAL` (`leg403-1789344730`, `mlflow/v1/chat/completions`). No residual.
-4. **Default flip — RESOLVED: stays `classic` until soak criteria met.** `GENIE_LLM_ROUTE` defaults
-   `classic`. Flipping the default to `gateway` is its **own later PR** (changing only the default + the
-   baseline note), gated on ALL of: (i) one environment soaked ≥7 days on `gateway` with attribution
-   rows verified via `--requery`; (ii) full `probe.sh` + `--byok` green post-deploy in that env;
-   (iii) both the OBO-user and SP legs confirmed there; (iv) zero create/optimize regressions observed.
+4. **Default — RESOLVED 2026-10-20: `gateway` from the start.** Unity AI Gateway is GA, so the
+   earlier plan (default `classic`, flip in a later PR after a 7-day soak) is withdrawn.
+   `get_llm_route()` returns `CLASSIC` only for an explicit `classic`; unset or empty means `gateway`,
+   and an unknown value means `gateway` with a one-time warning. Every default agrees: the root
+   bundle variable, `gso_job.JOB_PARAMETERS`, the launcher fallback, `InstallConfig`, the install
+   notebook and `deploy-config.sh`. `classic` is an explicit operator setting with no automatic
+   fallback. The fevm-serverless smoke test (§10) replaces the soak as acceptance: both installers,
+   Create Agent, the plan builder and a full optimization on the gateway, with attribution rows for
+   both the user and SP requesters. BYOK stays default-off.
 5. **Phase 3 scope — RESOLVED 2026-09-25: clean-downgrade messaging only.** AI Gateway stays the
    primary path. A gateway 404 shows `MODEL_UNAVAILABLE_MESSAGE`. There is no automatic classic
    fallback and no coupling to the metric-view advisor's `suggest_only` governance (§3).
@@ -385,32 +414,39 @@ A param present in fewer than all its places is a bug.
 
 ## 10. Remaining work
 
-**Before merge**
+**Done on the stacked branch (PR #400)**
 
-1. **Make the GSO job able to use the gateway (§4 open gap, both parts).** (a) Default
-   `submit_optimization`'s `genie_llm_route` to `""` so the app's `GENIE_LLM_ROUTE` reaches the run,
-   and update the `test_deploy_lib.py` assertion that pins `"classic"`. (b) Add a `genie_llm_route`
-   widget to every job notebook that calls an LLM and export it to `GENIE_LLM_ROUTE`, with a test.
-   Until both land, no job traffic is routed or tagged.
-2. **Package bundle question (§4 note).** Decide whether `packages/genie-space-optimizer/databricks.yml`
-   needs `genie_llm_route` for the notebook-install path.
-3. **Phase 3 Task 4 verification.** Full `./scripts/test.sh`, the two contract greps (§8), and an
-   empty diff on the untouched surfaces. Paste the results into the PR.
-4. **Bring in `main` and open the PR.** No PR exists yet. `main` has moved since the branch point,
-   and the files changed on both sides include `create_agent.py` (site 2) and the job-config files
-   that carry `genie_llm_route` (`databricks.yml`, the package `databricks.yml`, `gso_job.py`).
-5. **Post-deploy probe run.** Run `probe.sh` (full) + `--byok` against a deployment of this branch and
-   attach the report (§8). The only report on file predates the code.
+- PR #332 brought up to `main` and this branch built on it (`941aed5b`); stacked PR #400 opened.
+- The GSO job follows the app's route, and the optimizer's traced call goes through the seam (§4).
+- Installer route and BYOK settings, and the install-time gateway check (§4.1).
+- The `ai-gateway` user scope in all three scope lists (§4.1).
+- `gateway` as the default everywhere (Decision 4).
+- The fevm-serverless probe re-run: GO (`report-20261020-191745.md`).
 
-**After merge**
+**Before merge — the fevm-serverless smoke test (acceptance)**
 
-6. **Default flip** to `gateway`, as its own PR, once Decision 4's soak criteria are met.
+1. Re-run `probe.sh` (full) and `--byok`.
+2. Notebook install from a Git folder on the branch with default settings (gateway), then one
+   `deploy.sh` install from `.env.deploy.fevm-serverless`.
+3. A Create Agent session (streaming + tools), the plan builder, and a full four-task optimization
+   with metric-view suggestions on. This is where the deployed app's scoped token is proven on the
+   gateway; if it is refused, apply the SP fallback (§4.1).
+4. `system.ai_gateway.usage` rows for `create-agent` (with `space_id`), `plan-builder`,
+   `gso-optimize` (with `run_id`, from every task), `leakage-embed` and `mv-suggest`, from both the
+   user and SP requesters (allow about 22 minutes of ingestion lag).
+5. Negative checks: a made-up model shows `MODEL_UNAVAILABLE_MESSAGE`; a reinstall with
+   `llm_route=classic` still works.
+6. Attach the probe report and the query output to PR #400.
+
+**After PR #332 squash-merges**
+
+- Rebase only the gateway commits onto `main` and point PR #400 at `main`.
 
 **Deferred (not needed for v1)**
 
-7. Frontend BYOK entry field (settings / per-space).
-8. Auto-enumeration of BYOK Model Services, once a list API exists (Decision 2).
-9. `reasoning_effort` retry in GSO `call_llm`, only if it gains a `tools` parameter (§2, R1).
+- Frontend BYOK entry field (settings / per-space).
+- Auto-enumeration of BYOK Model Services, once a list API exists (Decision 2).
+- `reasoning_effort` retry in GSO `call_llm`, only if it gains a `tools` parameter (§2, R1).
 
 ---
 
@@ -426,7 +462,7 @@ with no network.
 
 ```python
 from __future__ import annotations
-import json, os
+import json, logging, os
 from dataclasses import dataclass
 from enum import Enum
 
@@ -439,10 +475,18 @@ _GATEWAY_EMBED = "/ai-gateway/mlflow/v1/embeddings"
 _TAG_HEADER    = "Databricks-Ai-Gateway-Request-Tags"
 _APPLICATION   = "genie-workbench"
 
+_warned_routes: set[str] = set()
+
 def get_llm_route() -> LLMRoute:
-    """GENIE_LLM_ROUTE env; anything but 'gateway' (incl. unset/typo) -> CLASSIC (fail-safe)."""
-    return LLMRoute.GATEWAY if (os.environ.get("GENIE_LLM_ROUTE") or "").strip().lower() == "gateway" \
-        else LLMRoute.CLASSIC
+    """GENIE_LLM_ROUTE env; only an explicit 'classic' -> CLASSIC. Unset/empty -> GATEWAY (the default);
+       an unknown value -> GATEWAY with a one-time warning, never a silent fall back to classic."""
+    raw = (os.environ.get("GENIE_LLM_ROUTE") or "").strip().lower()
+    if raw == "classic":
+        return LLMRoute.CLASSIC
+    if raw not in ("", "gateway") and raw not in _warned_routes:
+        _warned_routes.add(raw)
+        logging.getLogger(__name__).warning("Unknown GENIE_LLM_ROUTE %r; using the gateway route", raw)
+    return LLMRoute.GATEWAY
 
 def gateway_model_name(endpoint: str) -> str:
     """Classic endpoint name -> gateway model id.
@@ -503,7 +547,9 @@ def is_model_unavailable_404(status: int, body_text: str) -> bool:
 The block above matches `backend/services/llm_route.py` as built, apart from blank-line spacing.
 `backend/tests/test_llm_route_parity.py` keeps the GSO twin byte-identical to it.
 
-**Phase 0 tests (classic must be byte-identical to today):** `get_llm_route` default/typo → CLASSIC;
+**Phase 0 tests (classic must be byte-identical to today):** `get_llm_route` default/typo → CLASSIC
+(since Decision 4: unset/empty → GATEWAY, explicit `classic` → CLASSIC, typo → GATEWAY with one
+warning, known values silent);
 `resolve_chat(classic)` URL == the current `{host}/serving-endpoints/{model}/invocations` with `model
 is None` and `extra_headers == {}`; `gateway_model_name` for strip-rule, `system.ai.*` idempotence,
 and BYOK passthrough; `request_tags` drops empty scope.

@@ -101,7 +101,7 @@ def _capture_post(monkeypatch, status=200):
 
 
 def test_call_serving_endpoint_classic_is_unchanged(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     captured = _capture_post(monkeypatch)
     llm_utils.call_serving_endpoint(
         [{"role": "user", "content": "hi"}], model="databricks-claude-sonnet-4-6"
@@ -140,7 +140,7 @@ def test_call_serving_endpoint_gateway_404_downgrades(monkeypatch):
 
 
 def test_call_serving_endpoint_classic_404_keeps_raw_body(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)  # classic
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     _capture_post(monkeypatch, status=404)
     with pytest.raises(RuntimeError) as ei:
         llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])

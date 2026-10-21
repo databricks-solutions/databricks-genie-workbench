@@ -72,7 +72,7 @@ _LINE = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
 
 
 def test_stream_classic_is_unchanged(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     agent, session = _agent_with_session(monkeypatch, [_Resp(lines=[_LINE, "data: [DONE]"])])
     list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
                            model="databricks-claude-sonnet-4-6", space_id="sp1"))
@@ -95,7 +95,7 @@ def test_stream_gateway_tags_maps_and_scopes_space(monkeypatch):
 
 
 def test_stream_terminates_on_done(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     agent, _ = _agent_with_session(monkeypatch, [_Resp(lines=[
         _LINE, "data: [DONE]", 'data: {"choices":[{"delta":{"content":"AFTER"}}]}'])])
     chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
@@ -105,7 +105,7 @@ def test_stream_terminates_on_done(monkeypatch):
 
 def test_stream_terminates_on_iterlines_end_without_done(monkeypatch):
     """GPT-style ending: no [DONE], finish_reason line then the stream simply ends."""
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     fr = 'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}'
     agent, _ = _agent_with_session(monkeypatch, [_Resp(lines=[fr])])
     chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
@@ -148,7 +148,7 @@ def test_stream_gateway_404_downgrades(monkeypatch):
 
 
 def test_stream_classic_404_keeps_raw_body(monkeypatch):
-    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
     agent, _ = _agent_with_session(monkeypatch, [
         _Resp(status_code=404, text="raw provider body")])
     with pytest.raises(RuntimeError) as ei:
@@ -168,18 +168,15 @@ def test_stream_gateway_200_never_reads_text(monkeypatch):
     assert len(session.calls) == 1
 
 
-@pytest.mark.parametrize("route", [None, "gateway"])
+@pytest.mark.parametrize("route", ["classic", "gateway"])
 def test_stream_never_reads_text_on_200(monkeypatch, route):
     """SSE-streaming contract: a 200 streaming response must be consumed without
     ever reading ``.text`` (which forces ``.content`` and defeats streaming).
 
-    Runs under BOTH classic (route=None) and gateway env. ``_NoTextResp.text``
+    Runs under BOTH the classic and gateway env. ``_NoTextResp.text``
     raises AssertionError if the guard evaluates it on the 200 response.
     """
-    if route is None:
-        monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
-    else:
-        monkeypatch.setenv("GENIE_LLM_ROUTE", route)
+    monkeypatch.setenv("GENIE_LLM_ROUTE", route)
     agent, session = _agent_with_session(monkeypatch, [_NoTextResp(lines=[_LINE, "data: [DONE]"])])
     chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
                                     model="databricks-claude-sonnet-4-6"))
