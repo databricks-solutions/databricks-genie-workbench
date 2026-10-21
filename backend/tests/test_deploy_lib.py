@@ -1309,9 +1309,10 @@ def test_lakebase_existing_mode_rejects_soft_deleted_project():
 
 def test_genie_llm_route_declared_default_off_across_workbench_mirrors():
     """AI Gateway Phase 0 (spec §4): genie_llm_route is a second Workbench-only
-    extra, declared "classic" in root databricks.yml, gso_job.JOB_PARAMETERS,
-    and the launcher run_now map; intentionally absent from the package bundle
-    (mirrors llm_model)."""
+    extra, declared "classic" in root databricks.yml and gso_job.JOB_PARAMETERS;
+    intentionally absent from the package bundle (mirrors llm_model). The
+    launcher sends the app's own GENIE_LLM_ROUTE instead of a pinned value
+    (test_submit_optimization_route_follows_app_env)."""
     from scripts.deploy_lib.gso_job import JOB_PARAMETERS
 
     repo_root = _repo_root()
@@ -1324,11 +1325,10 @@ def test_genie_llm_route_declared_default_off_across_workbench_mirrors():
             repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
         )["parameters"]
     }
-    launcher_params = _launcher_run_now_params()
 
     assert root_params.get("genie_llm_route") == "classic"
     assert JOB_PARAMETERS.get("genie_llm_route") == "classic"
-    assert launcher_params.get("genie_llm_route") == "classic"
+    assert "genie_llm_route" in _launcher_run_now_params()
     assert "genie_llm_route" not in pkg_params  # package bundle omits it, like llm_model
 
 

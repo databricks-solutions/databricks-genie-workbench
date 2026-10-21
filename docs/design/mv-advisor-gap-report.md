@@ -223,7 +223,7 @@ Where the POV's stages went:
 | `preflight` | Split: snapshot + manifest → `intake_and_snapshot`; benchmark QC → `benchmark_qc_and_repair`. The module `optimization/preflight.py` still exists and is imported by both. |
 | `baseline` (eval task) | **In-process**, iteration 0 inside `optimize`. Not a task. See [§1.4](#14-genie-benchmark-eval-api). |
 | `enrichment` | Absorbed into `optimize` (lever 0, "Proactive Enrichment", always runs, not user-selectable — `integration/levers.py:20-21`). |
-| `lever_loop` | `run_unified_optimization_loop` in `optimization/unified_loop.py`, called in-process from `run_optimize.py:366`. |
+| `lever_loop` | `run_unified_optimization_loop` in `optimization/unified_loop.py`, called in-process from `run_optimize.py:370`. |
 | `finalize` | `publish_and_audit` |
 | `deploy` | **Removed — out of scope (D7).** No task, no `deploy_target` parameter. |
 
@@ -655,7 +655,7 @@ though the accuracy is *also* stored, in `overall_accuracy`.
     )
 ```
 
-reached from `jobs/run_optimize.py:366` → `run_unified_optimization_loop(...)`. Candidate
+reached from `jobs/run_optimize.py:370` → `run_unified_optimization_loop(...)`. Candidate
 evals run in the same loop at `unified_loop.py:3596-3601`.
 
 ---
@@ -1489,7 +1489,7 @@ provides `mock_ws`, `mock_spark`, `patch_llm_client`, `sample_run`, `sample_meta
 
 | Test | Guards |
 |---|---|
-| `test_phase7_job_dag.py` (477 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults (incl. the five MV advisor params, Prompt 8), launcher parameter threading |
+| `test_phase7_job_dag.py` (514 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults (incl. the five MV advisor params, Prompt 8), launcher parameter threading, every task notebook exporting the `genie_llm_route` / `llm_model` widgets (AI Gateway) |
 | `test_four_notebook_architecture.py` (85 L) | AST-walks the import closure of all four notebooks and fails on any import of 17 retired modules |
 | `test_debug_prompt_contract.py` | `docs/debug-prompt.md` SQL stays read-only and current |
 | `backend/tests/test_deploy_lib.py` | The installer mirrors the bundle |
@@ -1592,7 +1592,7 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 | `preflight` task | **CONFLICTS** | Split into `intake_and_snapshot` + `benchmark_qc_and_repair`; `test_phase7_job_dag.py:54-67` asserts `preflight` absent |
 | `baseline` task | **CONFLICTS** | In-process iteration 0 in `optimize` (`unified_loop.py:3080-3085`); `baseline_eval` asserted absent |
 | `enrichment` task | **CONFLICTS** | Absorbed into `optimize` as lever 0; asserted absent |
-| `lever_loop` task | **CONFLICTS** | `run_unified_optimization_loop` in-process (`run_optimize.py:366`); asserted absent |
+| `lever_loop` task | **CONFLICTS** | `run_unified_optimization_loop` in-process (`run_optimize.py:370`); asserted absent |
 | `finalize` task | **CONFLICTS** | Renamed `publish_and_audit`; asserted absent |
 | `deploy` task | **CONFLICTS** | Removed, out of scope (D7); asserted absent |
 | `mv_gate` (`condition_task`) | **CONFLICTS** | `test_no_condition_tasks` (`:70-76`) forbids all condition tasks |

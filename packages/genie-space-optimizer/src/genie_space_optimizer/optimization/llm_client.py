@@ -144,6 +144,29 @@ def get_openai_client(w: "WorkspaceClient | None") -> Any:
     return _openai_client_cache[cache_key]
 
 
+def resolve_gso_chat() -> tuple[str, dict[str, Any]]:
+    """Model id and route-specific request kwargs for one GSO chat completion.
+
+    Every ``chat.completions.create`` in GSO builds its request from this, so the
+    gateway route always gets the ``system.ai.*`` name and the cost-attribution
+    tag. Classic returns the endpoint name unchanged and no extra kwargs.
+    """
+    model = get_llm_endpoint()
+    if get_llm_route() is not LLMRoute.GATEWAY:
+        return model, {}
+    return gateway_model_name(model), {
+        "extra_headers": tag_header("gso-optimize", run_id=os.getenv("GSO_RUN_ID") or None),
+    }
+
+
+def raise_if_model_unavailable(err: BaseException | None) -> None:
+    """Re-raise a gateway 404 as ``MODEL_UNAVAILABLE_MESSAGE``; no-op otherwise."""
+    if err is None or get_llm_route() is not LLMRoute.GATEWAY:
+        return
+    if is_model_unavailable_404(getattr(err, "status_code", 0) or 0, str(err)):
+        raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE) from err
+
+
 def call_llm(
     w: "WorkspaceClient | None",
     *,
@@ -178,20 +201,14 @@ def call_llm(
     logger.info("GSO LLM request packed: %s", pack_stats)
 
     client = get_openai_client(w)
-    model = get_llm_endpoint()
-    route = get_llm_route()
-    if route is LLMRoute.GATEWAY:
-        model = gateway_model_name(model)
+    model, route_kwargs = resolve_gso_chat()
 
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": eval_llm_timeout_seconds(),
+        **route_kwargs,
     }
-    if route is LLMRoute.GATEWAY:
-        call_kwargs["extra_headers"] = tag_header(
-            "gso-optimize", run_id=os.getenv("GSO_RUN_ID") or None
-        )
     # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
@@ -229,8 +246,5 @@ def call_llm(
             if attempt < total_attempts - 1:
                 time.sleep(2**attempt)
 
-    if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(
-        getattr(last_err, "status_code", 0) or 0, str(last_err)
-    ):
-        raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE) from last_err
+    raise_if_model_unavailable(last_err)
     raise last_err  # type: ignore[misc]

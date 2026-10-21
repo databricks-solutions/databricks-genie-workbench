@@ -10,7 +10,11 @@ from typing import Any, Callable
 
 from databricks.sdk import WorkspaceClient
 
-from genie_space_optimizer.optimization.llm_client import get_openai_client as _get_openai_client
+from genie_space_optimizer.optimization.llm_client import (
+    get_openai_client as _get_openai_client,
+    raise_if_model_unavailable,
+    resolve_gso_chat,
+)
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
@@ -20,7 +24,6 @@ from genie_space_optimizer.common.config import (
     PROMPT_TOKEN_BUDGET,
     SPACE_DESCRIPTION_PROMPT,
     format_mlflow_template,
-    get_llm_endpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,7 +128,7 @@ def _traced_llm_call(
     from mlflow.entities import SpanEvent, SpanType
 
     with mlflow.start_span(name=span_name, span_type=SpanType.CHAIN) as span:
-        model = get_llm_endpoint()
+        model, route_kwargs = resolve_gso_chat()
         span.set_inputs({
             "model": model,
             "temperature_requested": temperature,
@@ -163,6 +166,7 @@ def _traced_llm_call(
                 call_kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
+                    **route_kwargs,
                 }
                 # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
                 if max_tokens is not None:
@@ -225,6 +229,7 @@ def _traced_llm_call(
         # path too (HTTP failures, empty-choice responses, etc.).
         if last_err is not None:
             _attach_last_response(last_err, last_response_text)
+        raise_if_model_unavailable(last_err)
         raise last_err
 
 def _log_token_usage(span: Any, response: Any) -> None:

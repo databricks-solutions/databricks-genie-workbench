@@ -123,3 +123,79 @@ def test_call_llm_classic_404_raises_original(monkeypatch):
             _fake_wc(), messages=[{"role": "user", "content": "hi"}], max_retries=1
         )
     assert str(ei.value) != llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+# --- optimizer_utils._traced_llm_call (space-description call) -------------------
+
+class _FakeSpan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def set_inputs(self, *_a, **_k):
+        pass
+
+    def set_outputs(self, *_a, **_k):
+        pass
+
+    def add_event(self, *_a, **_k):
+        pass
+
+    def set_attribute(self, *_a, **_k):
+        pass
+
+
+def _traced(monkeypatch, completions):
+    import mlflow
+
+    from genie_space_optimizer.optimization import optimizer_utils
+
+    monkeypatch.setattr(mlflow, "start_span", lambda **_k: _FakeSpan())
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), api_key="tok")
+    monkeypatch.setattr(optimizer_utils, "_get_openai_client", lambda w: client)
+    return lambda: optimizer_utils._traced_llm_call(
+        _fake_wc(), "system", "prompt", span_name="t", max_retries=1
+    )
+
+
+def test_traced_llm_call_gateway_maps_model_and_tags_with_run_id(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GSO_RUN_ID", "run-7")
+    completions = MagicMock()
+    completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    _traced(monkeypatch, completions)()
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "system.ai.claude-sonnet-4-6"
+    tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "gso-optimize", "run_id": "run-7"}
+
+
+def test_traced_llm_call_classic_unmapped_and_untagged(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    completions = MagicMock()
+    completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    _traced(monkeypatch, completions)()
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "databricks-claude-sonnet-4-6"
+    assert "extra_headers" not in kwargs
+
+
+def test_traced_llm_call_gateway_404_downgrades(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    with pytest.raises(RuntimeError) as ei:
+        _traced(monkeypatch, completions)()
+    assert str(ei.value) == llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_traced_llm_call_classic_404_raises_original(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    with pytest.raises(_FakeNotFound):
+        _traced(monkeypatch, completions)()
