@@ -46,9 +46,9 @@ byte-identical twins — Appendix A) consumed by all five.
 | # | Surface | Classic branch (flag-off, unchanged) | Auth mechanism | Gateway branch (as built) |
 |---|---|---|---|---|
 | 1 | `backend/services/llm_utils.py:59` `call_serving_endpoint` | `httpx.post` → `{host}/serving-endpoints/{model}/invocations` | `client.config.authenticate()` headers | `resolve_chat(host, model, component)` (`:94`); tag merged into the `headers` dict; new `component` param, default `"workbench"` |
-| 2 | `backend/services/create_agent.py:990` `_stream_llm` (streaming + tools; `_async_stream_llm` at `:1094` wraps it) | SDK `session.post` → `.../invocations` | SDK pre-auth `requests.Session` | `resolve_chat(..., "create-agent", space_id=...)` (`:1018`); tag via `headers=` on `session.post` |
+| 2 | `backend/services/create_agent.py:1118` `_stream_llm` (streaming + tools; `_async_stream_llm` at `:1222` wraps it) | SDK `session.post` → `.../invocations` | SDK pre-auth `requests.Session` | `resolve_chat(..., "create-agent", space_id=...)` (`:1146`); tag via `headers=` on `session.post` |
 | 3 | `packages/…/optimization/llm_client.py:118` `get_openai_client` + `call_llm` (`:147`) | `OpenAI(base_url=f"{host}/serving-endpoints")` | bearer token on the OpenAI client | `base_url={host}/ai-gateway/mlflow/v1` (`:135-141`, client cached per `host\|route`); model mapped (`:184`); tag sent **per request** as `extra_headers=` on `chat.completions.create` (`:192-193`), not `default_headers` on the cached client (ruling R2) |
-| 4 | `packages/…/optimization/leakage.py:197` `get_embedding` | SDK `w.serving_endpoints.query(name=ep, input=[text])` (`:223`) | SDK | raw `httpx.post` to `/ai-gateway/mlflow/v1/embeddings` (`:209-221`); branches on `get_llm_route()` so the classic path never reads `w.config` (ruling R3); new `component` kwarg, default `"leakage-embed"` |
+| 4 | `packages/…/optimization/leakage.py:207` `get_embedding` | SDK `w.serving_endpoints.query(name=ep, input=[text])` (`:233`) | SDK | raw `httpx.post` to `/ai-gateway/mlflow/v1/embeddings` (`:219-231`); branches on `get_llm_route()` so the classic path never reads `w.config` (ruling R3); new `component` kwarg, default `"leakage-embed"` |
 | 5 | `backend/services/model_catalog.py:17` curated list + `validate_chat_model` (`:108`) | curated endpoint names only | n/a (name resolution) | additionally accepts a 3-level UC id when route=gateway **and** `GENIE_BYOK_ENABLED` (`:124-129`) — see §1.4 |
 
 > Site 4 is the one behavioral nuance: the embeddings call goes through the SDK's typed
@@ -81,10 +81,10 @@ Databricks-Ai-Gateway-Request-Tags: {"application":"genie-workbench","component"
 
 | `component` | Emitted by | Scoped extra |
 |---|---|---|
-| `create-agent` | `_stream_llm` (`create_agent.py:1018`) and its repair call to site 1 (`create_agent.py:717`) | `space_id` on the stream |
+| `create-agent` | `_stream_llm` (`create_agent.py:1146`) and its repair call to site 1 (`create_agent.py:730`) | `space_id` on the stream |
 | `plan-builder` | `plan_builder.py:182` (site 1) | — |
 | `gso-optimize` | GSO `call_llm` (`llm_client.py:193`) | `run_id` from `GSO_RUN_ID`, which the job notebooks export |
-| `leakage-embed` | `get_embedding` default (`leakage.py:197`) | — |
+| `leakage-embed` | `get_embedding` default (`leakage.py:207`) | — |
 | `mv-suggest` | metric-view scoring embeddings (`mv_scoring.py:366`) | — |
 | `workbench` | `call_serving_endpoint` default, for any caller that doesn't pass one (`llm_utils.py:64`) | — |
 
@@ -134,7 +134,7 @@ Two BYOK rules the seam must encode:
    (`gpt-5-4`/`gpt-5-2` need neither), so never assume GPT-family uniformity and never hard-code the
    flag on.
 
-   **As built (ruling R1):** the retry exists **only at site 2** (`create_agent.py:1061-1067`), the one
+   **As built (ruling R1):** the retry exists **only at site 2** (`create_agent.py:1189-1195`), the one
    path that sends function tools. It is gated on route=gateway **and** `status_code == 400` *before*
    `resp.text` is read, so a 200 SSE stream is never buffered, and the retry POST sits outside the
    429/502/503 backoff loop. GSO `call_llm` does **not** carry it: it sends no `tools` (it uses
@@ -171,7 +171,7 @@ Contract for the app:
   raw-body error (ruling R9). A failed chat call has no answer to return. The existing failure
   surfaces render it unchanged in shape: the Create Agent SSE `error` event, any
   `call_serving_endpoint` caller, and the GSO optimize task's failed-phase status row.
-- Sites: `llm_utils.py:124-127`; `create_agent.py:1070-1073`, inside `if not resp.ok:` so a 200 is
+- Sites: `llm_utils.py:124-127`; `create_agent.py:1198-1201`, inside `if not resp.ok:` so a 200 is
   never read; GSO `call_llm`'s final raise at `llm_client.py:232-236`, which changes the message
   only, with no change to the retry loop (ruling R10). Embeddings (site 4) already return `None` on
   any failure and are unchanged.
@@ -192,7 +192,7 @@ A param present in fewer than all its places is a bug.
 | # | File | As built (`genie_llm_route`, mirroring `llm_model`) |
 |---|---|---|
 | 1. Root bundle | `databricks.yml` | job param declared (`:115`, beside `llm_model` at `:110`) and passed through on every task's `base_parameters` (`:157/177/199/229`) |
-| 2. Deploy lib | `scripts/deploy_lib/gso_job.py` | in all four per-task param lists (`:47/57/69/84`); default `"classic"` in the default map (`:112`). Unlike `llm_model`, it has no `cfg` override (`:248`), so a deployed job defaults to classic |
+| 2. Deploy lib | `scripts/deploy_lib/gso_job.py` | in all four per-task param lists (`:47/57/69/84`); default `"classic"` in the default map (`:112`). Unlike `llm_model`, it has no `cfg` override (`:272`), so a deployed job defaults to classic |
 | 3. Run-now map | `packages/…/backend/job_launcher.py` `submit_optimization` | `genie_llm_route` kwarg, default `"classic"` (`:78`); `job_parameters` value is `genie_llm_route or os.getenv("GENIE_LLM_ROUTE", "classic")` (`:132`). The original spec named `trigger.py` here; the launcher is where `run_now` parameters are actually assembled. **Defect:** the only caller, `integration/trigger.py:396`, passes no route, and the kwarg default `"classic"` is truthy, so the app-env fallback is unreachable and every run is sent `classic` (see open gap below). `llm_model` avoids this because its default is `""` (`:77`) |
 | 4. App env (non-job surfaces) | `app.yaml` | `GENIE_LLM_ROUTE`, value `"classic"` (`:98`). `GENIE_BYOK_ENABLED` (`:107`) sits beside it but is app-only, not a job param (§1.4) |
 
@@ -208,7 +208,7 @@ A param present in fewer than all its places is a bug.
 > needed fixes:
 >
 > **(a) The run-now value is always `classic`.** As row 3 shows, `submit_optimization` sends
-> `"classic"` unless a caller passes the kwarg, and none does. `backend/tests/test_deploy_lib.py:1311`
+> `"classic"` unless a caller passes the kwarg, and none does. `backend/tests/test_deploy_lib.py:1331`
 > pins `launcher_params.get("genie_llm_route") == "classic"`, so the test enshrines the default
 > rather than catching it. Fix: default the kwarg to `""` (the `llm_model` shape) so the app's
 > `GENIE_LLM_ROUTE` reaches the run, and add a test that sets the app env to `gateway` and asserts
@@ -270,11 +270,11 @@ A param present in fewer than all its places is a bug.
 - **What:** sites 1–3 (llm_utils, create_agent `_stream_llm`, GSO `get_openai_client` / `call_llm`) call
   the factory and inject the tag header per transport (§1.1). This is the unit that delivers attribution.
 - **Why:** attribution needs the gateway path; can't be decoupled from the route swap.
-- **Surfaces:** `llm_utils.py:59`, `create_agent.py:990`, `llm_client.py:118/147`; component tags at the
-  two site-1 callers (`create_agent.py:717`, `plan_builder.py:182`). Streaming+tools is the gating shape.
+- **Surfaces:** `llm_utils.py:59`, `create_agent.py:1118`, `llm_client.py:118/147`; component tags at the
+  two site-1 callers (`create_agent.py:730`, `plan_builder.py:182`). Streaming+tools is the gating shape.
 - **Regression guard:**
   - Default-off: with `classic`, these three are unchanged.
-  - Streaming parser already provider-agnostic — the `[DONE]` break (`create_agent.py:1085`) is retained,
+  - Streaming parser already provider-agnostic — the `[DONE]` break (`create_agent.py:1213`) is retained,
     and GPT's "no `[DONE]`, close-on-`finish_reason`" ending is handled by the natural `iter_lines`
     end (validated). **No parser change needed**, but a test pins both terminations.
   - Tool path uses the `reasoning_effort` retry (§2), NOT always-send, at site 2 only (R1). It is
@@ -288,7 +288,7 @@ A param present in fewer than all its places is a bug.
   `POST /ai-gateway/mlflow/v1/embeddings` under the flag, so the tag header can be attached. Review
   added a `component` kwarg so metric-view scoring tags as `mv-suggest` (`mv_scoring.py:366`).
 - **Why:** different transport; can't tag the typed SDK call.
-- **Surfaces:** `leakage.py:197`. The firewall preflight (`preflight_embedding_endpoint`, `:271`)
+- **Surfaces:** `leakage.py:207`. The firewall preflight (`preflight_embedding_endpoint`, `:281`)
   calls `get_embedding`, so it follows the route without its own change.
 - **Regression guard:** classic branch keeps the SDK call verbatim; gateway branch validated (dim=1024).
   Firewall degradation path (embeddings disabled → n-gram/fingerprint) is untouched and still the
@@ -318,7 +318,7 @@ A param present in fewer than all its places is a bug.
   `suggest_only` coupling, though the original wording here proposed both.
 - **Why:** entitlement failures are 404s (§3); without this a de-entitled user sees a raw error body.
 - **Surfaces:** seam (`llm_route.py:77/80`, both twins) + `llm_utils.py:124-127`,
-  `create_agent.py:1070-1073`, `llm_client.py:232-236`.
+  `create_agent.py:1198-1201`, `llm_client.py:232-236`.
 - **Regression guard:** classic route error handling unchanged; only gateway 404 is affected. Tests
   fire the de-entitled 404 shape and assert `str(exc) == MODEL_UNAVAILABLE_MESSAGE`. They also pin that
   a classic 404 and a gateway 500 keep the raw error, and that a 200 stream never reads `resp.text`.
@@ -347,9 +347,10 @@ A param present in fewer than all its places is a bug.
   flag variants), tag header presence at the three chat sites and the embeddings site, streaming
   terminator (both `[DONE]` and `finish_reason` endings), the `reasoning_effort` retry, and
   gateway-404 → `MODEL_UNAVAILABLE_MESSAGE` (plus classic-404 / gateway-500 unchanged).
-- **Baseline:** `./scripts/test.sh` measured **2818 passed** on 2026-10-20 at the branch tip
-  `12d574a8` (one combined run of both suites; the Phase 3 plan's pre-Phase-3 floor was 2796). Below
-  this is a regression. The mv-advisor rule's per-suite baseline line is not maintained by this
+- **Baseline:** `./scripts/test.sh` measured **4012 passed** on 2026-10-20 at the merge commit
+  `941aed5b`, which builds this branch on PR #332 (`feature/metric-view-advisor`, itself carrying
+  main). One combined run of both suites; before the merge the branch tip `12d574a8` measured 2818.
+  Below this is a regression. The mv-advisor rule's per-suite baseline line is not maintained by this
   initiative (Phase 3 plan constraint).
 - **Contract grep (per repo rule):** after each phase, a repo-wide grep proving (a) no chat call site
   still hard-codes `/serving-endpoints/{...}/invocations` outside the classic branch of the seam, and
@@ -513,13 +514,13 @@ and BYOK passthrough; `request_tags` drops empty scope.
   (`:64`); `rc = resolve_chat(host, model, component)` (`:94`); `rc.model` goes in the body only if
   set; `headers = {**auth_headers, **rc.extra_headers}`. 429 retry loop unchanged. Phase 3: on
   gateway, a 404 raises `MODEL_UNAVAILABLE_MESSAGE` before the raw-body raise (`:124-127`).
-- **Site 2 `create_agent._stream_llm` (`:990`)** — `rc = resolve_chat(host, effective_model,
-  "create-agent", space_id=space_id)` (`:1018`); body gets `rc.model` if set; `session.post(url,
+- **Site 2 `create_agent._stream_llm` (`:1118`)** — `rc = resolve_chat(host, effective_model,
+  "create-agent", space_id=space_id)` (`:1146`); body gets `rc.model` if set; `session.post(url,
   json=body, stream=True, timeout=120, headers=rc.extra_headers)`. After the 429/502/503 backoff
   loop, a single `reasoning_effort` retry gated on gateway **and** `status_code == 400` (checked
-  before `resp.text` is read) re-POSTs with `reasoning_effort:"none"` (`:1061-1067`). Phase 3: inside
-  `if not resp.ok:`, a gateway 404 raises `MODEL_UNAVAILABLE_MESSAGE` (`:1070-1073`). The `[DONE]`
-  break (`:1085`) stays. `_async_stream_llm` (`:1094`) delegates here, so it inherits all of this.
+  before `resp.text` is read) re-POSTs with `reasoning_effort:"none"` (`:1189-1195`). Phase 3: inside
+  `if not resp.ok:`, a gateway 404 raises `MODEL_UNAVAILABLE_MESSAGE` (`:1198-1201`). The `[DONE]`
+  break (`:1213`) stays. `_async_stream_llm` (`:1222`) delegates here, so it inherits all of this.
 - **Site 3 GSO `get_openai_client` (`:118`) + `call_llm` (`:147`)** — `base_url` is
   `{host}/ai-gateway/mlflow/v1` on gateway, else `{host}/serving-endpoints` (`:135-138`); the client
   cache key is `host|route`. `call_llm` maps `model = gateway_model_name(model)` on gateway (`:184`)
@@ -528,12 +529,12 @@ and BYOK passthrough; `request_tags` drops empty scope.
   client. **No `reasoning_effort` retry** here (R1: no tools are sent). The `response_format`
   strip-retry (`:218-226`) is unchanged. Phase 3: on gateway, a final error with `status_code == 404`
   re-raises as `RuntimeError(MODEL_UNAVAILABLE_MESSAGE) from last_err` (`:232-236`).
-- **Site 4 `leakage.get_embedding` (`:197`)** — new keyword `component="leakage-embed"`. It branches
+- **Site 4 `leakage.get_embedding` (`:207`)** — new keyword `component="leakage-embed"`. It branches
   on `get_llm_route()` rather than `rc.use_legacy_sdk`, so the classic path never touches
   `w.config` (R3). On gateway it calls `resolve_embeddings(host, ep, component, route=route)` and then
   `httpx.post(rc.url, json={"model": rc.model, "input":[text]}, headers={**w.config.authenticate(),
-  **rc.extra_headers})` (`:209-221`). Classic keeps `w.serving_endpoints.query(name=ep, input=[text])`
-  verbatim (`:223`). Any non-200 or exception returns `None`. Validated dim=1024.
+  **rc.extra_headers})` (`:219-231`). Classic keeps `w.serving_endpoints.query(name=ep, input=[text])`
+  verbatim (`:233`). Any non-200 or exception returns `None`. Validated dim=1024.
 - **Site 5 `model_catalog.validate_chat_model` (`:108`)** — curated names first; then, only when
   `get_llm_route() is GATEWAY` **and** `GENIE_BYOK_ENABLED` is truthy, a well-formed 3-level UC id
   (`_UC_MODEL_ID_RE`, `:42`) is returned verbatim (`:124-129`). Otherwise `ModelValidationError`.
