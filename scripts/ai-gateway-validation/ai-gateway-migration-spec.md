@@ -454,11 +454,13 @@ app env.
   gateway check and render `GENIE_LLM_ROUTE=gateway`, `GENIE_BYOK_ENABLED=false`, the `ai-gateway`
   scope, and the job's `genie_llm_route=gateway`. A reinstall with `llm_route=classic` renders
   classic in both places and Create Agent still streams.
-- Create Agent streams on the gateway. The requests carried a CLI token, which never passes the
-  app's consent screen, so the forwarded user token was refused (`required scopes: ai-gateway`) and
-  the §4.1 SP retry carried every `create-agent` call. The same token lacks the UC, SQL and `genie`
-  scopes, so the session cannot pass table inspection and the plan builder was not reached; that
-  leg, and `USER` requester rows, need a browser session.
+- Create Agent and the plan builder run on the gateway as the user. A browser session, after the
+  app's consent screen, logged 11 `create-agent` and 15 `plan-builder` rows with requester type
+  `USER` (2026-10-21, 04:14–04:18 UTC) and no `SERVICE_PRINCIPAL` rows: a consented token carries
+  the `ai-gateway` scope, so the §4.1 SP retry stays idle. Earlier requests made with a CLI token,
+  which never passes the consent screen, were refused (`required scopes: ai-gateway`), and the SP
+  retry carried those `create-agent` calls. New sessions carry no `space_id` tag; that tag appears
+  only in the fix flow, which starts from an existing space.
 - Three optimization runs through `trigger_optimization` with metric-view suggestions on, all as
   the app SP: every task's `gso-optimize` calls carry the run's `run_id`; the advisor scored 10
   candidates and persisted 5, with 264 `mv-suggest` embedding rows. A run whose loop executed (one
@@ -468,10 +470,13 @@ app env.
   enables the firewall's embedding layer. The gateway path for it is covered by unit tests only.
 - Negative check: a made-up model returns `MODEL_UNAVAILABLE_MESSAGE` from both
   `call_serving_endpoint` and GSO `call_llm` against the live gateway.
-- Found outside gateway scope: the notebook installer needs the installing user to hold
-  `servicePrincipal.user` on the app SP before it can bind the job's `run_as`; and a new app's SP
-  gets no grants on the space's data schemas, so benchmark validation rejects every benchmark until
-  someone grants them.
+- Found outside gateway scope, both tracked on PR #332 for a fix there:
+  - The notebook installer needs the installing user to hold `servicePrincipal.user` on the app
+    SP before it can bind the job's `run_as`. PR #332 introduced this: it moved `run_as` from a
+    startup self-heal (as on `main`) to deploy time.
+  - `POST /trigger` does not check that the app SP can read the space's data schemas. The UI
+    already blocks Start until the GRANTs exist (`GET /permissions/{space_id}`), as on `main`, but
+    a caller that skips the UI starts a run that rejects every benchmark.
 
 **Merging the stack**
 
