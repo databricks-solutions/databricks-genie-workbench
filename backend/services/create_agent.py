@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import AsyncGenerator, Callable, Generator
 
 from backend.models import MAX_DESCRIPTION_CHARS
-from backend.services.llm_utils import get_llm_model, normalize_message_content
-from backend.services.auth import get_workspace_client, run_in_context
+from backend.services.llm_utils import get_llm_model, is_gateway_scope_403, normalize_message_content
+from backend.services.auth import get_service_principal_client, get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
@@ -1160,20 +1160,42 @@ class CreateGenieAgent:
                         logger.debug("    tc[%d] id=%s fn=%s args_len=%d", j, tc.get("id", "?"), tc.get("function", {}).get("name", "?"), len(tc.get("function", {}).get("arguments", "")))
 
         _RETRYABLE_STATUSES = {429, 502, 503}
+
+        def _post_with_retries(session):
+            for attempt in range(self._MAX_LLM_RETRIES + 1):
+                resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
+                if resp.status_code in _RETRYABLE_STATUSES:
+                    resp.close()
+                    if attempt >= self._MAX_LLM_RETRIES:
+                        logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
+                        raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
+                    time.sleep(delay)
+                    continue
+                break
+            return resp
+
         session = client.api_client._api_client._session
-        for attempt in range(self._MAX_LLM_RETRIES + 1):
-            resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
-            if resp.status_code in _RETRYABLE_STATUSES:
+        resp = _post_with_retries(session)
+
+        # Gateway-only and 403-only, status first: ``resp.text`` is read on that 403 and
+        # never on a streaming 200.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 403
+            and is_gateway_scope_403(resp.status_code, resp.text)
+        ):
+            sp_client = get_service_principal_client()
+            if sp_client is not client:
                 resp.close()
-                if attempt >= self._MAX_LLM_RETRIES:
-                    logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
-                    raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
-                retry_after = resp.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
-                logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
-                time.sleep(delay)
-                continue
-            break
+                logger.warning(
+                    "create-agent: user token lacks the ai-gateway scope; retrying the gateway "
+                    "call as the service principal. Verify the app's user_api_scopes if this is unexpected."
+                )
+                session = sp_client.api_client._api_client._session
+                resp = _post_with_retries(session)
 
         # reasoning_effort retry (§2): reasoning-backed models 400 on tool calls unless
         # reasoning_effort='none' is sent; non-reasoning models 400 if it IS sent. So send

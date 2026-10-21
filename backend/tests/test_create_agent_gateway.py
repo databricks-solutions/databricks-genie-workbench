@@ -183,3 +183,55 @@ def test_stream_never_reads_text_on_200(monkeypatch, route):
     assert len(chunks) == 1
     assert chunks[0]["choices"][0]["delta"]["content"] == "hi"
     assert len(session.calls) == 1  # no retry POST fired
+
+
+_SCOPE_403 = "Invalid scope, required scopes: ai-gateway"
+
+
+def _scope_rig(monkeypatch, user_first, sp_responses=(), sp_is_user=False):
+    agent, user_session = _agent_with_session(monkeypatch, [user_first])
+    user_client = create_agent.get_workspace_client()
+    sp_session = _Session(list(sp_responses))
+    sp_client = user_client if sp_is_user else SimpleNamespace(
+        config=SimpleNamespace(host="https://example.databricks.com/"),
+        api_client=SimpleNamespace(_api_client=SimpleNamespace(_session=sp_session)),
+    )
+    monkeypatch.setattr(create_agent, "get_service_principal_client", lambda: sp_client)
+    return agent, user_session, sp_session
+
+
+def test_stream_gateway_scope_403_retries_once_as_the_service_principal(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    first = _Resp(status_code=403, text=_SCOPE_403)
+    agent, user_session, sp_session = _scope_rig(
+        monkeypatch, first, [_NoTextResp(lines=[_LINE, "data: [DONE]"])])
+    chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                                    model="databricks-claude-sonnet-4-6", space_id="sp1"))
+    assert [c["choices"][0]["delta"]["content"] for c in chunks] == ["hi"]
+    assert first.closed
+    assert len(user_session.calls) == 1 and len(sp_session.calls) == 1
+    retry = sp_session.calls[0]
+    assert retry.url.endswith("/ai-gateway/mlflow/v1/chat/completions")
+    assert json.loads(retry.headers["Databricks-Ai-Gateway-Request-Tags"])["space_id"] == "sp1"
+
+
+@pytest.mark.parametrize(
+    ("route", "status", "text", "sp_is_user"),
+    [
+        ("gateway", 403, "PERMISSION_DENIED: not allowed", False),
+        ("classic", 403, _SCOPE_403, False),
+        ("gateway", 401, _SCOPE_403, False),
+        ("gateway", 403, _SCOPE_403, True),
+    ],
+)
+def test_stream_no_service_principal_retry_outside_a_gateway_scope_403(
+    monkeypatch, route, status, text, sp_is_user
+):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", route)
+    agent, user_session, sp_session = _scope_rig(
+        monkeypatch, _Resp(status_code=status, text=text), sp_is_user=sp_is_user)
+    with pytest.raises(RuntimeError) as ei:
+        list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                               model="databricks-claude-sonnet-4-6"))
+    assert f"LLM endpoint returned {status}" in str(ei.value)
+    assert len(user_session.calls) == 1 and sp_session.calls == []

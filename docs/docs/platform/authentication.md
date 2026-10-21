@@ -133,7 +133,7 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 
 The same list is applied in three places that must stay identical: `app.yaml`, `APP_SCOPES` in `scripts/deploy_lib/apps.py` (notebook installer) and the `scopes` list in `scripts/deploy.sh`. Databricks asks each user to consent once per app and set of scopes, so adding a scope, as the `ai-gateway` scope was added, prompts every existing user to consent again on their next visit.
 
-If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
+If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). LLM calls on the gateway route do the same: when Unity AI Gateway refuses the user's token for a missing scope (`403 Invalid scope`), Create Agent and the other backend LLM calls retry once as the app service principal and log a warning, so that usage is attributed to the SP instead of the user. [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
 
 ## SP Permissions Required
 
