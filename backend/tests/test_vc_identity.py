@@ -9,67 +9,55 @@ from backend.services.version_control import platform
 from backend.services.version_control.contracts import ExplicitExecutorSelection
 
 
-def test_wrong_run_as_fails_startup_without_self_healing():
-    verify = getattr(platform, "verify_configured_job_run_as", None)
-    assert callable(verify), "Startup must verify Job identity, never repair it"
-    client = Mock()
-    client.config.client_id = "app-sp"
-    job = SimpleNamespace(settings=SimpleNamespace(
-        run_as=SimpleNamespace(service_principal_name="wrong-sp", user_name=None)))
-    client.jobs.get.return_value = job
-    factory = Mock(return_value=client)
-    with pytest.raises(PermissionError, match="run_as"):
-        verify({"GSO_JOB_ID": "42"}, factory)
-    client.jobs.update.assert_not_called()
-    client.jobs.reset.assert_not_called()
-    job.settings.run_as.service_principal_name = "app-sp"
-    verify({"GSO_JOB_ID": "42"}, factory)
-    client.jobs.get.side_effect = TimeoutError("identity unavailable")
-    with pytest.raises(TimeoutError):
-        verify({"GSO_JOB_ID": "42"}, factory)
-    factory.reset_mock()
-    verify({}, factory)
-    factory.assert_not_called()
-    source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
-    assert "ensure_job_run_as" not in source
-    tree = ast.parse(source)
-    startup = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
-    first = startup.body[0]
-    assert ast.unparse(first) == (
-        "app.state.gso_run_as = await asyncio.to_thread(_verify_gso_job_run_as)")
+def _heal_calls(monkeypatch, *, job_id, sp_client):
+    from backend.services import auth
+    from genie_space_optimizer.backend import job_launcher
+
+    calls: list = []
+    monkeypatch.setenv("GSO_JOB_ID", job_id)
+    monkeypatch.setattr(auth, "get_service_principal_client", sp_client)
+    monkeypatch.setattr(job_launcher, "ensure_job_run_as", lambda *args: calls.append(args))
+    return calls
 
 
-def test_unconfigured_job_id_placeholder_does_not_block_startup():
-    verify = getattr(platform, "verify_configured_job_run_as", None)
-    assert callable(verify), "Startup must verify Job identity, never repair it"
+def test_startup_self_heals_job_run_as_to_the_app_sp(monkeypatch):
+    from backend import main
 
-    # An unsubstituted deploy placeholder (or any non-digit / non-positive value)
-    # means the optimizer integration is NOT configured. Treat it exactly like the
-    # empty case: log + return, never raise, never touch the client factory. A hard
-    # boot failure here would take down history reads and every unrelated surface,
-    # violating FM-OUTAGE ("available history reads continue").
-    for value in ("__GSO_JOB_ID__", "", "none", "0", "-1"):
+    sp = Mock()
+    sp.config.client_id = "app-sp"
+    calls = _heal_calls(monkeypatch, job_id="42", sp_client=lambda: sp)
+    main._ensure_gso_job_run_as()
+    assert calls == [(sp, 42, "app-sp")]
+
+
+def test_startup_self_heal_skips_an_unconfigured_job_id(monkeypatch):
+    from backend import main
+
+    for value in ("__GSO_JOB_ID__", "", "none"):
         factory = Mock()
-        assert verify({"GSO_JOB_ID": value}, factory) is None, (
-            f"Unconfigured GSO_JOB_ID {value!r} must not block startup")
+        calls = _heal_calls(monkeypatch, job_id=value, sp_client=factory)
+        main._ensure_gso_job_run_as()
+        assert calls == []
         factory.assert_not_called()
 
-    # A CONFIGURED job (positive, all-digit id) whose run_as is wrong is still an
-    # authority violation and must still refuse — without any self-healing writes.
-    client = Mock()
-    client.config.client_id = "app-sp"
-    client.jobs.get.return_value = SimpleNamespace(settings=SimpleNamespace(
-        run_as=SimpleNamespace(service_principal_name="wrong-sp", user_name=None)))
-    factory = Mock(return_value=client)
-    with pytest.raises(PermissionError, match="run_as"):
-        verify({"GSO_JOB_ID": "42"}, factory)
-    client.jobs.update.assert_not_called()
-    client.jobs.reset.assert_not_called()
 
-    # A configured job whose identity cannot be read still fails closed (propagates).
-    client.jobs.get.side_effect = TimeoutError("identity unavailable")
-    with pytest.raises(TimeoutError):
-        verify({"GSO_JOB_ID": "42"}, factory)
+def test_startup_self_heal_failure_only_warns(monkeypatch, caplog):
+    from backend import main
+
+    def unavailable():
+        raise RuntimeError("SP client unavailable")
+
+    calls = _heal_calls(monkeypatch, job_id="42", sp_client=unavailable)
+    main._ensure_gso_job_run_as()
+    assert calls == []
+    assert "Could not verify GSO job run_as" in caplog.text
+
+
+def test_startup_runs_the_run_as_self_heal():
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
+    tree = ast.parse(source)
+    startup = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
+    assert "_ensure_gso_job_run_as()" in [ast.unparse(statement) for statement in startup.body]
 
 
 def test_deploy_script_exits_nonzero_on_unresolved_placeholders():
@@ -254,63 +242,6 @@ def test_executor_uses_live_scim_workspace_header_not_cached_config():
         provider.executor(selection)
 
 
-def _job(principal: str):
-    return SimpleNamespace(settings=SimpleNamespace(
-        run_as=SimpleNamespace(service_principal_name=principal, user_name=None)))
-
-
-def _jobs_client(side_effect):
-    client = Mock()
-    client.config.client_id = "app-sp"
-    client.jobs.get.side_effect = side_effect
-    return client
-
-
-def test_run_as_check_retries_transient_errors_then_verifies():
-    from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
-
-    client = _jobs_client([TimeoutError("throttled"), OSError("503"), _job("app-sp")])
-    sleeps: list = []
-    status = platform.check_configured_job_run_as(
-        {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
-    assert status == RUN_AS_VERIFIED
-    assert sleeps == [2.0, 4.0]
-    assert client.jobs.get.call_count == 3
-
-
-def test_persistently_unreadable_run_as_degrades_instead_of_failing_boot():
-    from backend.services.version_control.platform.identity import RUN_AS_UNAVAILABLE
-
-    client = _jobs_client(TimeoutError("identity unavailable"))
-    sleeps: list = []
-    status = platform.check_configured_job_run_as(
-        {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
-    assert status == RUN_AS_UNAVAILABLE
-    assert client.jobs.get.call_count == 3
-    assert sleeps == [2.0, 4.0]
-    client.jobs.update.assert_not_called()
-    client.jobs.reset.assert_not_called()
-
-
-def test_readable_wrong_run_as_still_fails_without_retry():
-    client = _jobs_client([_job("wrong-sp")])
-    sleeps: list = []
-    with pytest.raises(PermissionError, match="run_as"):
-        platform.check_configured_job_run_as(
-            {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
-    assert client.jobs.get.call_count == 1
-    assert sleeps == []
-
-
-def test_unconfigured_job_is_reported_without_reading_it():
-    from backend.services.version_control.platform.identity import RUN_AS_NOT_CONFIGURED
-
-    factory = Mock()
-    assert platform.check_configured_job_run_as({"GSO_JOB_ID": "__GSO_JOB_ID__"}, factory) \
-        == RUN_AS_NOT_CONFIGURED
-    factory.assert_not_called()
-
-
 def test_bounded_read_client_disables_sdk_retry_and_shortens_timeout(monkeypatch):
     import databricks.sdk.config as sdk_config
     from databricks.sdk import WorkspaceClient
@@ -329,24 +260,3 @@ def test_bounded_read_client_disables_sdk_retry_and_shortens_timeout(monkeypatch
     assert bounded.config.http_timeout_seconds == 30
     assert client.config.http_timeout_seconds == 300
     assert client.config.retry_timeout_seconds == original_retry
-
-
-def test_startup_run_as_check_reads_through_a_bounded_sp_client(monkeypatch):
-    from backend import main
-    from backend.services import auth
-    from backend.services.version_control import platform
-    from backend.services.version_control.platform import identity
-
-    sp, bounded = object(), object()
-    seen: dict = {}
-    monkeypatch.setattr(auth, "get_service_principal_client", lambda: sp)
-    monkeypatch.setattr(platform, "bounded_read_client", lambda c: bounded if c is sp else None)
-
-    def check(environment, client_factory):
-        seen["client"] = client_factory()
-        return identity.RUN_AS_VERIFIED
-
-    monkeypatch.setattr(platform, "check_configured_job_run_as", check)
-
-    assert main._verify_gso_job_run_as() == identity.RUN_AS_VERIFIED
-    assert seen["client"] is bounded

@@ -35,6 +35,7 @@ class GsoJobInfo:
     job_name: str
     notebooks_path: str
     wheel_path: str
+    run_as_bound: bool = True
 
 
 @dataclass(frozen=True)

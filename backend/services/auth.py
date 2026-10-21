@@ -143,11 +143,10 @@ def require_obo_workspace_client() -> WorkspaceClient:
 def bounded_read_client(client, *, http_timeout_seconds: int = 30):
     """Clone ``client`` with a 1 s SDK retry window and a short HTTP timeout.
 
-    The SDK retries throttling and 503s internally for up to 300 s per call, which
-    would turn ``check_configured_job_run_as``'s own retries into minutes of blocked
-    boot. The space access resolver checks through the same clone on a cache miss,
-    so a stuck Genie read cannot pin a request's worker thread for that 300 s
-    default. Falls back to ``client`` if the config cannot be cloned.
+    The SDK retries throttling and 503s internally for up to 300 s per call. The
+    space access resolver checks through this clone on a cache miss, so a stuck
+    Genie read cannot pin a request's worker thread for that 300 s default.
+    Falls back to ``client`` if the config cannot be cloned.
     """
     import copy
 

@@ -3,9 +3,6 @@ bundle:
   databricks_cli_version: ">= 0.297.2"
 
 variables:
-  gso_run_as_principal:
-    description: "Explicit app service principal; deployer must have permission to use it"
-    default: ""
   control_schema:
     description: "Unity Catalog schema holding the VC control tables and Volumes"
     default: "vc_ctl"
@@ -236,7 +233,7 @@ resources:
 # - dev:          Personal development (mode: development adds [dev user] prefix)
 # - app:          Deploy via deploy.sh — mode: development for per-deployer
 #                 Terraform state, but name_prefix: "" for clean resource names.
-#                 run_as is set by the deployer; startup only verifies it
+#                 run_as is NOT set here; the app self-heals it at startup
 #                 (avoids needing servicePrincipal.user role on the deployer).
 # - dev-lakebase: Development with Lakebase provisioning
 # ---------------------------------------------------------------------------
@@ -248,11 +245,6 @@ targets:
     mode: development
     presets:
       name_prefix: ""
-    resources:
-      jobs:
-        gso-optimization-runner:
-          run_as:
-            service_principal_name: ${var.gso_run_as_principal}
   dev-lakebase:
     mode: development
     resources:

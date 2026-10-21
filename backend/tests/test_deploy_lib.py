@@ -12,9 +12,11 @@ from scripts.deploy_lib.apps import (
 )
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
+from scripts.deploy_lib import gso_job
 from scripts.deploy_lib.gso_job import (
     TASKS,
     build_job_settings,
+    ensure_gso_job,
     find_existing_job,
     upload_job_notebooks,
     upsert_job,
@@ -976,6 +978,79 @@ def test_upsert_job_creates_when_same_name_job_is_not_current_app():
 
     assert upsert_job(w, settings) == 300
     assert not any(call[1] == "/api/2.1/jobs/reset" for call in w.api_client.calls)
+
+
+_RUN_AS_REFUSAL = PermissionError(
+    "Cannot bind the service principal provided in 'run_as' field (app-sp). "
+    "The caller must have 'servicePrincipal.user' role on it."
+)
+
+
+def _ensure_gso_job_with(monkeypatch, responses, *, existing_job_id=None):
+    monkeypatch.setattr(gso_job, "upload_job_notebooks", lambda w, cfg, user: "/Workspace/Users/me/gso/jobs")
+    monkeypatch.setattr(gso_job, "upload_gso_wheel", lambda w, cfg: "/Volumes/main/schema/wheel.whl")
+    monkeypatch.setattr(gso_job, "upload_gso_requirements", lambda w, cfg, wheel: "/Volumes/main/schema/req.txt")
+    monkeypatch.setattr(gso_job, "find_existing_job", lambda w, settings: existing_job_id)
+    w = FakeWorkspaceClient(responses)
+    cfg = InstallConfig(app_name="genie-workbench", catalog="main", warehouse_id="wh", repo_root="/tmp")
+    return w, ensure_gso_job(w, cfg, "app-sp", "me@example.com")
+
+
+def _job_bodies(w, path):
+    return [body for method, call_path, body in w.api_client.calls if call_path == path]
+
+
+def test_ensure_gso_job_binds_run_as_to_the_app_sp_when_allowed(monkeypatch):
+    w, info = _ensure_gso_job_with(monkeypatch, {("POST", "/api/2.1/jobs/create"): {"job_id": 7}})
+
+    assert info.job_id == 7
+    assert info.run_as_bound is True
+    assert [body["run_as"] for body in _job_bodies(w, "/api/2.1/jobs/create")] == [
+        {"service_principal_name": "app-sp"}
+    ]
+
+
+def test_ensure_gso_job_creates_without_run_as_when_the_role_is_missing(monkeypatch):
+    w, info = _ensure_gso_job_with(
+        monkeypatch, {("POST", "/api/2.1/jobs/create"): [_RUN_AS_REFUSAL, {"job_id": 7}]}
+    )
+
+    creates = _job_bodies(w, "/api/2.1/jobs/create")
+    assert info.job_id == 7
+    assert info.run_as_bound is False
+    assert len(creates) == 2
+    assert "run_as" not in creates[1]
+    assert _job_bodies(w, "/api/2.0/permissions/jobs/7")
+
+
+def test_ensure_gso_job_resets_without_run_as_when_the_role_is_missing(monkeypatch):
+    w, info = _ensure_gso_job_with(
+        monkeypatch, {("POST", "/api/2.1/jobs/reset"): [_RUN_AS_REFUSAL, {}]}, existing_job_id=100
+    )
+
+    resets = _job_bodies(w, "/api/2.1/jobs/reset")
+    assert info.job_id == 100
+    assert info.run_as_bound is False
+    assert len(resets) == 2
+    assert "run_as" not in resets[1]["new_settings"]
+
+
+def test_ensure_gso_job_propagates_other_errors_without_retry(monkeypatch):
+    with pytest.raises(PermissionError, match="CAN_MANAGE"):
+        _ensure_gso_job_with(
+            monkeypatch,
+            {("POST", "/api/2.1/jobs/create"): [PermissionError("User lacks CAN_MANAGE"), {"job_id": 7}]},
+        )
+
+
+def test_bundle_and_deploy_script_never_bind_job_run_as():
+    root = Path(__file__).resolve().parents[2]
+    bundle = (root / "databricks.yml").read_text()
+    deploy = (root / "scripts" / "deploy.sh").read_text()
+
+    assert "gso_run_as_principal" not in bundle
+    assert "gso_run_as_principal" not in deploy
+    assert "run_as:" not in bundle
 
 
 def test_require_successful_deployment_raises_on_failed_state():

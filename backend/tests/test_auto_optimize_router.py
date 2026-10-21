@@ -33,12 +33,9 @@ def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
 
-    from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
-
     _allow_space_access(monkeypatch)
 
     app = FastAPI()
-    app.state.gso_run_as = RUN_AS_VERIFIED
     app.include_router(auto_optimize.router)
     return TestClient(app)
 
@@ -365,84 +362,6 @@ def test_trigger_unconfigured_returns_503(client, monkeypatch) -> None:
         json={"space_id": "space-abc"},
     )
     assert resp.status_code == 503
-
-
-def test_trigger_refuses_while_optimizer_identity_is_unverified(client, monkeypatch) -> None:
-    from backend.services.version_control import observe_optimizer
-    from backend.services.version_control.platform import identity as vc_identity
-
-    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
-    client.app.state.vc_observe = MagicMock()
-    checks: list[int] = []
-
-    def still_unreadable(environment, client_factory, *, attempts):
-        checks.append(attempts)
-        return vc_identity.RUN_AS_UNAVAILABLE
-
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", still_unreadable)
-    capture = MagicMock()
-    monkeypatch.setattr(observe_optimizer, "capture_before", capture)
-    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
-        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
-    assert resp.status_code == 503
-    assert "could not be verified" in resp.json()["detail"]
-    assert checks == [1]
-    trigger_mock.assert_not_called()
-    capture.assert_not_called()
-
-
-def test_trigger_reverifies_and_proceeds_once_identity_reads(
-    client, mock_sp_ws, mock_user_ws, monkeypatch,
-) -> None:
-    from backend.services.version_control.platform import identity as vc_identity
-
-    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as",
-                        lambda environment, client_factory, *, attempts: vc_identity.RUN_AS_VERIFIED)
-    fake_result = MagicMock(run_id="run-xyz", job_run_id=9999, job_url=None, status="QUEUED")
-    with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result) as trigger_mock:
-        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
-    assert resp.status_code == 200, resp.text
-    trigger_mock.assert_called_once()
-    assert client.app.state.gso_run_as == vc_identity.RUN_AS_VERIFIED
-
-
-def test_trigger_refuses_a_run_as_mismatch_found_after_boot(client, monkeypatch) -> None:
-    from backend.services.version_control.platform import identity as vc_identity
-
-    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
-
-    def mismatch(environment, client_factory, *, attempts):
-        raise PermissionError("Job run_as does not match expected service principal")
-
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", mismatch)
-    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
-        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
-    assert resp.status_code == 503
-    assert "does not match" in resp.json()["detail"]
-    assert client.app.state.gso_run_as == vc_identity.RUN_AS_MISMATCH
-    trigger_mock.assert_not_called()
-
-
-def test_trigger_refuses_an_unconfigured_optimizer_job(client, monkeypatch) -> None:
-    from backend.services.version_control.platform import identity as vc_identity
-
-    client.app.state.gso_run_as = vc_identity.RUN_AS_NOT_CONFIGURED
-    checks: list[int] = []
-
-    def recheck(environment, client_factory, *, attempts):
-        checks.append(attempts)
-        return vc_identity.RUN_AS_NOT_CONFIGURED
-
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", recheck)
-    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
-        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
-    assert resp.status_code == 503
-    assert "not configured" in resp.json()["detail"]
-    assert checks == []
-    trigger_mock.assert_not_called()
 
 
 def test_trigger_rejects_malformed_space_id(client) -> None:
@@ -2890,12 +2809,8 @@ def test_trigger_runs_trigger_optimization_off_the_event_loop(
 
 def test_trigger_without_edit_is_refused_before_any_side_effect(client, monkeypatch) -> None:
     from backend.services.version_control import observe_optimizer
-    from backend.services.version_control.platform import identity as vc_identity
 
     client.app.state.vc_observe = MagicMock()
-    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
-    recheck = MagicMock()
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", recheck)
     capture = MagicMock()
     monkeypatch.setattr(observe_optimizer, "capture_before", capture)
     advice = MagicMock()
@@ -2909,7 +2824,6 @@ def test_trigger_without_edit_is_refused_before_any_side_effect(client, monkeypa
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "space_access_denied"
     assert asked == [("space-abc", SpaceAccessLevel.EDIT)]
-    recheck.assert_not_called()
     advice.assert_not_called()
     capture.assert_not_called()
     trigger_mock.assert_not_called()
@@ -2998,102 +2912,6 @@ def test_run_gate_answers_409_for_a_run_without_a_space(client, monkeypatch) -> 
     assert resp.status_code == 409
     assert asked == []
     revert_mock.assert_not_called()
-
-
-def test_trigger_identity_recheck_reads_through_a_bounded_sp_client(
-    client, mock_sp_ws, monkeypatch,
-) -> None:
-    from backend.services.version_control.platform import identity as vc_identity
-
-    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
-    bounded = object()
-    seen: dict = {}
-    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
-    monkeypatch.setattr(vc_identity, "bounded_read_client", lambda c: bounded if c is mock_sp_ws else None)
-
-    def check(environment, client_factory, *, attempts):
-        seen["client"] = client_factory()
-        return vc_identity.RUN_AS_UNAVAILABLE
-
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", check)
-
-    resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
-
-    assert resp.status_code == 503
-    assert seen["client"] is bounded
-
-
-async def test_concurrent_identity_rechecks_share_one_jobs_api_read(monkeypatch) -> None:
-    import time
-    from types import SimpleNamespace
-
-    from backend.services.version_control.platform import identity as vc_identity
-
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
-        gso_run_as=vc_identity.RUN_AS_UNAVAILABLE)))
-    calls: list[int] = []
-
-    def check(environment, client_factory, *, attempts):
-        calls.append(attempts)
-        time.sleep(0.05)
-        return vc_identity.RUN_AS_VERIFIED
-
-    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", check)
-
-    await asyncio.gather(*(
-        auto_optimize._require_verified_optimizer_identity(request) for _ in range(3)
-    ))
-
-    assert calls == [1]
-    assert request.app.state.gso_run_as == vc_identity.RUN_AS_VERIFIED
-
-
-def test_identity_failure_is_reused_within_the_recheck_window(monkeypatch):
-    from types import SimpleNamespace
-
-    from backend.services.version_control.platform import identity as vc_identity
-
-    checks = []
-    monkeypatch.setattr(
-        vc_identity, "check_configured_job_run_as",
-        lambda *a, **k: checks.append(1) or vc_identity.RUN_AS_UNAVAILABLE,
-    )
-    clock = [1000.0]
-    monkeypatch.setattr(auto_optimize, "_run_as_clock", lambda: clock[0])
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(gso_run_as=None)))
-
-    for _ in range(2):
-        with pytest.raises(HTTPException) as caught:
-            asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
-        assert caught.value.status_code == 503
-    assert len(checks) == 1
-
-    clock[0] += auto_optimize._RUN_AS_RECHECK_S + 1
-    with pytest.raises(HTTPException):
-        asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
-    assert len(checks) == 2
-
-
-def test_identity_success_still_settles_forever(monkeypatch):
-    from types import SimpleNamespace
-
-    from backend.services.version_control.platform import identity as vc_identity
-
-    checks = []
-    monkeypatch.setattr(
-        vc_identity, "check_configured_job_run_as",
-        lambda *a, **k: checks.append(1) or vc_identity.RUN_AS_VERIFIED,
-    )
-    clock = [1000.0]
-    monkeypatch.setattr(auto_optimize, "_run_as_clock", lambda: clock[0])
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(gso_run_as=None)))
-
-    asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
-    assert len(checks) == 1
-
-    clock[0] += auto_optimize._RUN_AS_RECHECK_S + 1
-    asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
-    assert len(checks) == 1
 
 
 def test_run_gate_reads_the_lakebase_envelope_and_asks_its_space(monkeypatch):

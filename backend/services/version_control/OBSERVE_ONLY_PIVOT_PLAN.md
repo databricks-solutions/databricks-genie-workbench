@@ -1774,3 +1774,19 @@ loads this before any history or capture call; viewers see a permission state
 and a read-only rail (no Capture / Restore / tag editor, no auto-capture);
 editors keep the prior CUJ. Live reads and writes on gated VC paths use
 `require_obo_workspace_client` with no SP fallback.
+
+## §25 — Optimizer Job `run_as`: back to startup self-heal — DONE
+
+### Decisions
+- **VC-D-runas2 (DECIDED 2026-10-21, supersedes VC-D-runas1):** binding the
+  optimizer Job's `run_as` at deploy time required every installer to hold
+  `servicePrincipal.user` on the app SP, so a fresh notebook install failed
+  without it. Startup self-heals `run_as` again, as on `main`
+  (`_ensure_gso_job_run_as` in `backend/main.py` → `ensure_job_run_as`), and
+  only logs a warning on failure. The startup verification, the `/trigger`
+  run_as gate, and `check_configured_job_run_as` /
+  `verify_configured_job_run_as` are removed; `verify_job_run_as` stays for
+  version-control executor Jobs. The bundle and `deploy.sh` no longer bind
+  `run_as`. The notebook installer still binds it when the installer holds the
+  role and otherwise creates the Job without it. Accepted edge case: a Job
+  without `run_as` runs as its owner until the app's startup step sets it.
