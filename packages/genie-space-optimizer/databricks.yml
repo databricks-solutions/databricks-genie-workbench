@@ -185,6 +185,8 @@ resources:
           spec:
             environment_version: "4"
             dependencies:
+              # Locked transitive pins from uv.lock (scripts/export_gso_job_requirements.py).
+              - -r ./requirements-job.txt
               - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
       permissions:
         - group_name: "users"

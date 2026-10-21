@@ -36,6 +36,7 @@ cd frontend && npm run lint              # ESLint
 # After adding/bumping a Python dep in pyproject.toml:
 uv lock --upgrade-package <package-name>
 uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
+python scripts/export_gso_job_requirements.py   # regenerate GSO job pins (requirements-job.txt)
 
 # Offline unit tests (no running server) — backend/tests/ + GSO's tests/
 ./scripts/test.sh                 # Run BOTH suites (backend + genie-space-optimizer)
@@ -213,8 +214,25 @@ uv lock --upgrade-package <package-name>
 uv export --frozen --no-dev --no-hashes --format requirements-txt \
   | grep -v "^-e " > requirements.txt
 echo "-e ./packages/genie-space-optimizer" >> requirements.txt
-git add pyproject.toml packages/genie-space-optimizer/pyproject.toml uv.lock requirements.txt
+# 4. Regenerate the GSO job's locked transitive pins.
+python scripts/export_gso_job_requirements.py
+git add pyproject.toml packages/genie-space-optimizer/pyproject.toml uv.lock requirements.txt \
+  packages/genie-space-optimizer/requirements-job.txt
 ```
+
+**GSO job pins (`packages/genie-space-optimizer/requirements-job.txt`):** the GSO
+wheel only pins direct deps, so the serverless job installs this generated file
+alongside it (`-r` in every job environment spec) to get uv.lock's transitive
+versions. Without it, each run re-resolves against the live index and an upstream
+release can make the install unsatisfiable (this happened with `huggingface-hub`
+→ `httpx2`, surfacing as a misleading `ERROR_NO_SUCH_FILE_OR_DIRECTORY`).
+Packages already installed in the serverless base environment are excluded so
+the job never replaces base-image packages Spark Connect relies on; the list
+comes from the committed snapshot `serverless-env-v4-base-packages.txt`. When the
+job's `environment_version` changes, refresh that snapshot (`pip list
+--format=freeze` in a fresh serverless notebook on the new version) and rerun
+the script.
+`backend/tests/test_gso_job_requirements.py` fails if the file drifts from uv.lock.
 
 **Updating a frontend npm dep:**
 

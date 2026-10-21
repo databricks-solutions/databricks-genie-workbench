@@ -172,6 +172,17 @@ def build_gso_wheel(repo_root: Path) -> Path:
         raise
 
 
+def _upload_artifact(w, local_path: Path, dest_path: str) -> None:
+    if Path(dest_path).is_absolute() and Path(dest_path).parent.exists():
+        Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(local_path, dest_path)
+    elif hasattr(w, "files"):
+        with local_path.open("rb") as f:
+            w.files.upload(dest_path, f, overwrite=True)
+    else:
+        write_workspace_file(w, dest_path, local_path.read_bytes())
+
+
 def upload_gso_wheel(w, cfg: InstallConfig) -> str:
     repo_root = Path(cfg.repo_root or "").resolve()
     wheel_path = (
@@ -180,17 +191,25 @@ def upload_gso_wheel(w, cfg: InstallConfig) -> str:
     )
     built = build_gso_wheel(repo_root)
     try:
-        if Path(wheel_path).is_absolute() and Path(wheel_path).parent.exists():
-            Path(wheel_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(built, wheel_path)
-        elif hasattr(w, "files"):
-            with built.open("rb") as f:
-                w.files.upload(wheel_path, f, overwrite=True)
-        else:
-            write_workspace_file(w, wheel_path, built.read_bytes())
+        _upload_artifact(w, built, wheel_path)
     finally:
         shutil.rmtree(built.parent, ignore_errors=True)
     return wheel_path
+
+
+def upload_gso_requirements(w, cfg: InstallConfig, wheel_path: str) -> str:
+    """Upload the locked job requirements next to the wheel.
+
+    The wheel only pins direct dependencies; without these locked transitive
+    pins each run re-resolves against the live index and can break when an
+    upstream release makes the dependency tree unsatisfiable.
+    """
+    local = Path(cfg.repo_root or "").resolve() / "packages" / "genie-space-optimizer" / "requirements-job.txt"
+    if not local.exists():
+        raise FileNotFoundError(f"GSO job requirements not found: {local}")
+    requirements_path = f"{wheel_path.rsplit('/', 1)[0]}/genie_space_optimizer-requirements-job.txt"
+    _upload_artifact(w, local, requirements_path)
+    return requirements_path
 
 
 def _task_payload(
@@ -218,7 +237,12 @@ def _task_payload(
     return task
 
 
-def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str) -> dict[str, Any]:
+def build_job_settings(
+    cfg: InstallConfig,
+    notebooks_path: str,
+    wheel_path: str,
+    requirements_path: str,
+) -> dict[str, Any]:
     cfg = cfg.normalized()
     tasks = [_task_payload(*task, notebooks_path) for task in TASKS]
     return {
@@ -250,7 +274,7 @@ def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str)
                 "environment_key": "default",
                 "spec": {
                     "environment_version": "4",
-                    "dependencies": [wheel_path],
+                    "dependencies": [f"-r {requirements_path}", wheel_path],
                 },
             }
         ],
@@ -350,7 +374,8 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
     cfg = cfg.normalized()
     notebooks_path = upload_job_notebooks(w, cfg, deployer_user)
     wheel_path = upload_gso_wheel(w, cfg)
-    settings = build_job_settings(cfg, notebooks_path, wheel_path)
+    requirements_path = upload_gso_requirements(w, cfg, wheel_path)
+    settings = build_job_settings(cfg, notebooks_path, wheel_path, requirements_path)
     if not app_sp_client_id:
         raise ValueError("Explicit app service principal required for Job run_as")
     settings["run_as"] = {"service_principal_name": app_sp_client_id}

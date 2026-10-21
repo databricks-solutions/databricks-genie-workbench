@@ -448,6 +448,7 @@ def test_gso_job_settings_match_4task_dag_shape():
         cfg,
         "/Workspace/Users/me/.genie-workbench-deploy/genie-workbench/gso/jobs",
         "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
+        "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-requirements-job.txt",
     )
 
     # Unchanged job identity: name + tags stay stable so find_existing_job can
@@ -458,6 +459,12 @@ def test_gso_job_settings_match_4task_dag_shape():
     assert settings["tags"]["managed-by"] == "notebook-installer"
     assert settings["tags"]["pattern"] == "persistent-dag"
     assert settings["environments"][0]["spec"]["environment_version"] == "4"
+    # Locked transitive pins install alongside the wheel so job runs don't
+    # re-resolve the dependency tree against the live index.
+    assert settings["environments"][0]["spec"]["dependencies"] == [
+        "-r /Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-requirements-job.txt",
+        "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
+    ]
 
     # 4-task linear DAG — no condition task, no deploy task, correct entrypoints.
     tasks = settings["tasks"]
@@ -505,7 +512,9 @@ def test_gso_job_settings_mirror_package_bundle_4task():
     (pkg_job,) = bundle["resources"]["jobs"].values()
 
     cfg = InstallConfig(app_name="genie-workbench", catalog="main", warehouse_id="wh", repo_root="/tmp")
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
 
     def _stem(path: str) -> str:
         return path.rsplit("/", 1)[-1].removesuffix(".py")
@@ -711,6 +720,7 @@ def test_gso_job_settings_tag_with_actual_app_name():
         cfg,
         "/Workspace/Users/me/.genie-workbench-deploy/genie-workbench-dh2/gso/jobs",
         "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
+        "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-requirements-job.txt",
     )
 
     assert settings["tags"]["app"] == "genie-workbench-dh2"
@@ -779,7 +789,9 @@ def test_find_existing_job_scopes_reuse_to_current_notebook_app():
         warehouse_id="wh",
         repo_root="/tmp",
     )
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
     w = FakeWorkspaceClient(
         {
             ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
@@ -828,7 +840,9 @@ def test_find_existing_job_prefers_prefixed_name_over_legacy_same_app_job():
         warehouse_id="wh",
         repo_root="/tmp",
     )
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
     w = FakeWorkspaceClient(
         {
             ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
@@ -862,7 +876,9 @@ def test_find_existing_job_reuses_legacy_same_app_job_for_rename():
         warehouse_id="wh",
         repo_root="/tmp",
     )
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
     w = FakeWorkspaceClient(
         {
             ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
@@ -889,7 +905,9 @@ def test_find_existing_job_paginates_to_matching_job():
         warehouse_id="wh",
         repo_root="/tmp",
     )
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
     w = FakeWorkspaceClient(
         {
             ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
@@ -932,7 +950,9 @@ def test_upsert_job_creates_when_same_name_job_is_not_current_app():
         warehouse_id="wh",
         repo_root="/tmp",
     )
-    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    settings = build_job_settings(
+        cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl", "/Volumes/main/schema/req.txt"
+    )
     w = FakeWorkspaceClient(
         {
             ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
