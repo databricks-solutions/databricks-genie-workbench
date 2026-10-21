@@ -124,11 +124,14 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 |-------|---------|
 | `sql` | Execute SQL queries via warehouses |
 | `dashboards.genie` | Access Genie Agent API |
-| `serving.serving-endpoints` | Call model serving endpoints (LLM) |
+| `serving.serving-endpoints` | Call model serving endpoints (LLM on the classic route) |
+| `ai-gateway` | Call Unity AI Gateway (LLM on the gateway route, the default) |
 | `catalog.catalogs:read` | Browse Unity Catalog catalogs |
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
 | `catalog.tables:read` | Browse Unity Catalog tables |
 | `files.files` | Access workspace files |
+
+The same list is applied in three places that must stay identical: `app.yaml`, `APP_SCOPES` in `scripts/deploy_lib/apps.py` (notebook installer) and the `scopes` list in `scripts/deploy.sh`. Databricks asks each user to consent once per app and set of scopes, so adding a scope, as the `ai-gateway` scope was added, prompts every existing user to consent again on their next visit.
 
 If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
 

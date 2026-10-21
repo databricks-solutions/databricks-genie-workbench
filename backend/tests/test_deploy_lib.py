@@ -639,6 +639,28 @@ def test_gso_job_settings_mirror_package_bundle_4task():
         assert pkg_bp[key] - gso_bp[key] == set(), key
 
 
+def test_user_api_scopes_identical_in_all_three_lists():
+    """app.yaml documents the scopes, but deploy.sh and the notebook installer
+    each PATCH their own list onto the app; a scope missing from either
+    installer is never requested. The gateway route needs ``ai-gateway``:
+    ``serving.serving-endpoints`` maps to ``model-serving`` only."""
+    import ast
+    import re
+
+    yaml = pytest.importorskip("yaml")
+    from scripts.deploy_lib.apps import APP_SCOPES
+
+    repo_root = Path(__file__).resolve().parents[2]
+    app_yaml_scopes = yaml.safe_load((repo_root / "app.yaml").read_text())["user_api_scopes"]
+    match = re.search(r"^scopes = (\[.*?\])", (repo_root / "scripts" / "deploy.sh").read_text(), re.S | re.M)
+    assert match, "deploy.sh scopes list not found"
+    deploy_sh_scopes = ast.literal_eval(match.group(1))
+
+    assert app_yaml_scopes == APP_SCOPES == deploy_sh_scopes
+    assert "ai-gateway" in APP_SCOPES
+    assert "serving.serving-endpoints" in APP_SCOPES
+
+
 # ---------------------------------------------------------------------------
 # MV-D5 four-place parameter lockstep (Prompt 8)
 # ---------------------------------------------------------------------------

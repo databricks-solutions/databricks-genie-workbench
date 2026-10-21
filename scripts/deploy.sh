@@ -588,7 +588,7 @@ EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o jso
 PATCH_PAYLOAD=$(python3 -c "
 import json
 
-scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
+scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints', 'ai-gateway',
           'catalog.catalogs:read', 'catalog.schemas:read',
           'catalog.tables:read', 'files.files']
 
