@@ -446,6 +446,33 @@ app env.
    `llm_route=classic` still works.
 6. Attach the probe report and the query output to PR #400.
 
+**Smoke results (fevm-serverless, 2026-10-20, as run)**
+
+- Probe: GO (18 PASS / 0 FAIL / 2 WARN / 2 SKIP). The `--byok` leg is not runnable: the workspace
+  has no customer model service.
+- Notebook install (Git folder, defaults) and `deploy.sh --update` both pass the install-time
+  gateway check and render `GENIE_LLM_ROUTE=gateway`, `GENIE_BYOK_ENABLED=false`, the `ai-gateway`
+  scope, and the job's `genie_llm_route=gateway`. A reinstall with `llm_route=classic` renders
+  classic in both places and Create Agent still streams.
+- Create Agent streams on the gateway. The requests carried a CLI token, which never passes the
+  app's consent screen, so the forwarded user token was refused (`required scopes: ai-gateway`) and
+  the §4.1 SP retry carried every `create-agent` call. The same token lacks the UC, SQL and `genie`
+  scopes, so the session cannot pass table inspection and the plan builder was not reached; that
+  leg, and `USER` requester rows, need a browser session.
+- Three optimization runs through `trigger_optimization` with metric-view suggestions on, all as
+  the app SP: every task's `gso-optimize` calls carry the run's `run_id`; the advisor scored 10
+  candidates and persisted 5, with 264 `mv-suggest` embedding rows. A run whose loop executed (one
+  attempt, target 0.99) published at 91.18%.
+- `leakage-embed` rows cannot appear: `precompute_benchmark_embeddings` and
+  `preflight_embedding_endpoint` have no caller outside `leakage.py` and its tests, so a job never
+  enables the firewall's embedding layer. The gateway path for it is covered by unit tests only.
+- Negative check: a made-up model returns `MODEL_UNAVAILABLE_MESSAGE` from both
+  `call_serving_endpoint` and GSO `call_llm` against the live gateway.
+- Found outside gateway scope: the notebook installer needs the installing user to hold
+  `servicePrincipal.user` on the app SP before it can bind the job's `run_as`; and a new app's SP
+  gets no grants on the space's data schemas, so benchmark validation rejects every benchmark until
+  someone grants them.
+
 **After PR #332 squash-merges**
 
 - Rebase only the gateway commits onto `main` and point PR #400 at `main`.
