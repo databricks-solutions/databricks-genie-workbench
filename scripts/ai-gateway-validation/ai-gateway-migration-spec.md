@@ -283,7 +283,7 @@ app env.
 > default commits made `gateway` the default (§4, §4.1, Decision 4).
 
 ### Phase 0 — Seam scaffold (no behavior change)  → concrete signatures in **Appendix A.1**
-- **Status:** landed 2026-09-14 — `b19e4b58`, `db2bbd27`, `add2f557`, `573127b0`
+- **Status:** landed 2026-09-14 — `f6a213bb`, `ba59ab3b`, `037a0639`, `dcd6f933`
   (`ai-gateway-phase0-plan.md`). Parameter declared in every mirror; the job did not read it until
   the job-path commit (§4).
 - **What:** add `GENIE_LLM_ROUTE` (default `classic`) and the `resolve_chat` / `resolve_embeddings`
@@ -295,7 +295,7 @@ app env.
   Unit tests assert `classic` output byte-for-byte matches the current URL/headers. No call site changed yet.
 
 ### Phase 1 — Route the 3 chat sites through the seam (+ tags)  → adoption deltas in **Appendix A.2**
-- **Status:** landed 2026-09-14 — `86877183`, `d2dfcbae`, `6b597b77`, `b12c4ba5`, `0d2aba0f`
+- **Status:** landed 2026-09-14 — `47dd0c96`, `864c948a`, `714eb2d3`, `8db4888e`, `59fa35fe`
   (`ai-gateway-phase1-plan.md`, rulings R1–R2).
 - **What:** sites 1–3 (llm_utils, create_agent `_stream_llm`, GSO `get_openai_client` / `call_llm`) call
   the factory and inject the tag header per transport (§1.1). This is the unit that delivers attribution.
@@ -308,12 +308,12 @@ app env.
     and GPT's "no `[DONE]`, close-on-`finish_reason`" ending is handled by the natural `iter_lines`
     end (validated). **No parser change needed**, but a test pins both terminations.
   - Tool path uses the `reasoning_effort` retry (§2), NOT always-send, at site 2 only (R1). It is
-    gated on gateway + 400 so a 200 SSE body is never read (`0d2aba0f`). A test pins that Claude
+    gated on gateway + 400 so a 200 SSE body is never read (`59fa35fe`). A test pins that Claude
     (rejects the flag) and a reasoning model (requires it) both succeed through the one retry.
   - Re-run `probe.sh` S1–S4 + S7 before flipping the flag in any environment.
 
 ### Phase 1b — Embeddings site (separate diff)
-- **Status:** landed 2026-09-14 — `447923c9`, `b1755f2d` (`ai-gateway-phase1b-plan.md`, ruling R3).
+- **Status:** landed 2026-09-14 — `db37da25`, `dad899fa` (`ai-gateway-phase1b-plan.md`, ruling R3).
 - **What:** site 4 (`leakage.get_embedding`) switches from SDK `serving_endpoints.query()` to a raw
   `POST /ai-gateway/mlflow/v1/embeddings` under the flag, so the tag header can be attached. Review
   added a `component` kwarg so metric-view scoring tags as `mv-suggest` (`mv_scoring.py:377`).
@@ -325,7 +325,7 @@ app env.
   failure fallback.
 
 ### Phase 2 — Model catalog + BYOK
-- **Status:** landed 2026-09-14 — `00ca9a4a`, `2d35a7a0` (`ai-gateway-phase2-plan.md`, rulings R5–R7).
+- **Status:** landed 2026-09-14 — `96cae62d`, `3c65ba5e` (`ai-gateway-phase2-plan.md`, rulings R5–R7).
 - **What:** `validate_chat_model` (`model_catalog.py:108`) stops hard-rejecting a well-formed 3-level UC
   id when route=gateway **and** the new `GENIE_BYOK_ENABLED` flag is on (§1.4). The curated →
   `system.ai.*` mapping lives in the seam (`gateway_model_name`, `llm_route.py:33`), not in
@@ -339,7 +339,7 @@ app env.
   entity_name-trap, passthrough, and the flag's truthy/falsy variants.
 
 ### Phase 3 — Clean 404 downgrade (governance UX)
-- **Status:** landed 2026-09-25 — `40b41c69`, `eaf75349`, `02c0ed33` (`ai-gateway-phase3-plan.md`,
+- **Status:** landed 2026-09-25 — `0129bf92`, `32503f36`, `f8610461` (`ai-gateway-phase3-plan.md`,
   rulings R8–R10). The plan's Task 4 verification (full suite, contract greps, untouched-surface diff)
   has no recorded result of its own; the full suite now runs at every commit on the stacked branch,
   and `test_llm_route_contract.py` turns the contract greps into a test (§7).
@@ -381,10 +381,9 @@ app env.
   terminator (both `[DONE]` and `finish_reason` endings), the `reasoning_effort` retry, and
   gateway-404 → `MODEL_UNAVAILABLE_MESSAGE` (plus classic-404 / gateway-500 unchanged).
 - **Baseline:** `./scripts/test.sh` measured **4043 passed** (1793 backend + 2250 GSO) on
-  2026-10-20 at the SP-retry commit. The merge commit `941aed5b`, which builds this branch on PR #332
-  (`feature/metric-view-advisor`, itself carrying main), measured 4012; before the merge the branch
-  tip `12d574a8` measured 2818. Below this is a regression. Because the branch now carries PR #332,
-  the mv-advisor rule's per-suite floor applies here too and is kept in step at each commit.
+  2026-10-20 at the SP-retry commit. Below this is a regression. The branch is rebased onto PR #332
+  (`feature/metric-view-advisor`, itself carrying main), so the mv-advisor rule's per-suite floor
+  applies here too and is kept in step at each commit.
 - **Contract grep (per repo rule):** after each phase, a repo-wide grep proving (a) no chat call site
   still hard-codes `/serving-endpoints/{...}/invocations` outside the classic branch of the seam, and
   (b) the tag header string appears at every gateway call site — pasted into the PR.
@@ -424,7 +423,8 @@ app env.
 
 **Done on the stacked branch (PR #400)**
 
-- PR #332 brought up to `main` and this branch built on it (`941aed5b`); stacked PR #400 opened.
+- PR #332 brought up to `main`, and this branch rebased onto it as linear history (no merge
+  commits); stacked PR #400 opened.
 - The GSO job follows the app's route, and the optimizer's traced call goes through the seam (§4).
 - Installer route and BYOK settings, and the install-time gateway check (§4.1).
 - The `ai-gateway` user scope in all three scope lists (§4.1).
@@ -473,9 +473,12 @@ app env.
   gets no grants on the space's data schemas, so benchmark validation rejects every benchmark until
   someone grants them.
 
-**After PR #332 squash-merges**
+**Merging the stack**
 
-- Rebase only the gateway commits onto `main` and point PR #400 at `main`.
+- PR #400 merges as a GitHub stack on PR #332 (`main` ← #332 ← #400). Stacks merge bottom-up: once
+  #332 merges, GitHub rebases #400 and retargets it at `main` itself, so there is no manual rebase.
+  If #332 or `main` moves first, the merge box offers **Rebase stack**; re-run `./scripts/test.sh`
+  on the result before merging.
 
 **Deferred (not needed for v1)**
 
