@@ -90,7 +90,7 @@ Databricks-Ai-Gateway-Request-Tags: {"application":"genie-workbench","component"
 | `plan-builder` | `plan_builder.py:182` (site 1) | — |
 | `gso-optimize` | GSO `call_llm` and `optimizer_utils._traced_llm_call`, both through `resolve_gso_chat` (`llm_client.py:158`) | `run_id` from `GSO_RUN_ID`, which the job notebooks export |
 | `leakage-embed` | `get_embedding` default (`leakage.py:207`) | — |
-| `mv-suggest` | metric-view scoring embeddings (`mv_scoring.py:366`) | — |
+| `mv-suggest` | metric-view scoring embeddings (`mv_scoring.py:377`) | — |
 | `workbench` | `call_serving_endpoint` default, for any caller that doesn't pass one (`llm_utils.py:92`) | — |
 
 The originally proposed `iq-scan` is not emitted: no call site passes it. Tag
@@ -316,7 +316,7 @@ app env.
 - **Status:** landed 2026-09-14 — `447923c9`, `b1755f2d` (`ai-gateway-phase1b-plan.md`, ruling R3).
 - **What:** site 4 (`leakage.get_embedding`) switches from SDK `serving_endpoints.query()` to a raw
   `POST /ai-gateway/mlflow/v1/embeddings` under the flag, so the tag header can be attached. Review
-  added a `component` kwarg so metric-view scoring tags as `mv-suggest` (`mv_scoring.py:366`).
+  added a `component` kwarg so metric-view scoring tags as `mv-suggest` (`mv_scoring.py:377`).
 - **Why:** different transport; can't tag the typed SDK call.
 - **Surfaces:** `leakage.py:207`. The firewall preflight (`preflight_embedding_endpoint`, `:281`)
   calls `get_embedding`, so it follows the route without its own change.
