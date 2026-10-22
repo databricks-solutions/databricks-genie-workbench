@@ -13,11 +13,19 @@ from pathlib import Path
 from typing import AsyncGenerator, Callable, Generator
 
 from backend.models import MAX_DESCRIPTION_CHARS
-from backend.services.llm_utils import get_llm_model, normalize_message_content
-from backend.services.auth import get_workspace_client, run_in_context
+from backend.services.llm_utils import get_llm_model, is_gateway_scope_403, normalize_message_content
+from backend.services.auth import get_service_principal_client, get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
+from backend.services.llm_route import (
+    resolve_chat,
+    is_reasoning_effort_400,
+    get_llm_route,
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    is_model_unavailable_404,
+)
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -208,7 +216,9 @@ class CreateGenieAgent:
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
             effective_model = self._effective_model(session)
-            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs, model=effective_model):
+            async for chunk in self._async_stream_llm(
+                messages, tools=step_tool_defs, model=effective_model, space_id=session.space_id
+            ):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -717,6 +727,7 @@ class CreateGenieAgent:
                 [{"role": "user", "content": prompt}],
                 model=model or get_llm_model(),
                 max_tokens=16000,
+                component="create-agent",
             )
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config
@@ -1109,6 +1120,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
@@ -1131,7 +1143,10 @@ class CreateGenieAgent:
             body["tools"] = effective_tools
 
         effective_model = model or get_llm_model()
-        url = f"{host}/serving-endpoints/{effective_model}/invocations"
+        rc = resolve_chat(host, effective_model, "create-agent", space_id=space_id)
+        url = rc.url
+        if rc.model is not None:
+            body["model"] = rc.model
         logger.info("Streaming LLM call to %s with %d messages", effective_model, len(messages))
         if logger.isEnabledFor(logging.DEBUG):
             for i, m in enumerate(messages):
@@ -1145,23 +1160,67 @@ class CreateGenieAgent:
                         logger.debug("    tc[%d] id=%s fn=%s args_len=%d", j, tc.get("id", "?"), tc.get("function", {}).get("name", "?"), len(tc.get("function", {}).get("arguments", "")))
 
         _RETRYABLE_STATUSES = {429, 502, 503}
+
+        def _post_with_retries(session):
+            for attempt in range(self._MAX_LLM_RETRIES + 1):
+                resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
+                if resp.status_code in _RETRYABLE_STATUSES:
+                    resp.close()
+                    if attempt >= self._MAX_LLM_RETRIES:
+                        logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
+                        raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
+                    time.sleep(delay)
+                    continue
+                break
+            return resp
+
         session = client.api_client._api_client._session
-        for attempt in range(self._MAX_LLM_RETRIES + 1):
-            resp = session.post(url, json=body, stream=True, timeout=120)
-            if resp.status_code in _RETRYABLE_STATUSES:
+        resp = _post_with_retries(session)
+
+        # Gateway-only and 403-only, status first: ``resp.text`` is read on that 403 and
+        # never on a streaming 200.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 403
+            and is_gateway_scope_403(resp.status_code, resp.text)
+        ):
+            sp_client = get_service_principal_client()
+            if sp_client is not client:
                 resp.close()
-                if attempt >= self._MAX_LLM_RETRIES:
-                    logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
-                    raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
-                retry_after = resp.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
-                logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
-                time.sleep(delay)
-                continue
-            break
+                logger.warning(
+                    "create-agent: user token lacks the ai-gateway scope; retrying the gateway "
+                    "call as the service principal. Verify the app's user_api_scopes if this is unexpected."
+                )
+                session = sp_client.api_client._api_client._session
+                resp = _post_with_retries(session)
+
+        # reasoning_effort retry (§2): reasoning-backed models 400 on tool calls unless
+        # reasoning_effort='none' is sent; non-reasoning models 400 if it IS sent. So send
+        # plain first, and retry once only when the 400 body names reasoning_effort.
+        #
+        # Gateway-only, 400-only, and short-circuit ordered: the ``status_code == 400``
+        # term MUST precede the ``is_reasoning_effort_400(..., resp.text)`` term so that
+        # ``resp.text`` is never evaluated on a 200 — reading it forces ``.content``
+        # (a full ``iter_content`` buffer) and would defeat incremental SSE streaming.
+        # On classic the behavior stays byte-identical to before this phase (fail-safe).
+        # This retry POST is deliberately outside the 429/502/503 backoff loop above.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 400
+            and is_reasoning_effort_400(resp.status_code, resp.text)
+        ):
+            resp.close()
+            body = {**body, "reasoning_effort": "none"}
+            resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
 
         try:
             if not resp.ok:
+                if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(resp.status_code, ""):
+                    logger.warning("Gateway model unavailable/entitlement 404 for %s", effective_model)
+                    raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE)
                 error_body = resp.text[:1000]
                 logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
                 raise RuntimeError(
@@ -1187,6 +1246,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async.
 
@@ -1196,7 +1256,7 @@ class CreateGenieAgent:
         import contextvars as _cv
         loop = asyncio.get_event_loop()
         ctx = _cv.copy_context()
-        gen = self._stream_llm(messages, tools=tools, model=model)
+        gen = self._stream_llm(messages, tools=tools, model=model, space_id=space_id)
         _sentinel = object()
 
         while True:

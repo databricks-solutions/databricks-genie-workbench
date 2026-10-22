@@ -76,6 +76,143 @@ def test_call_serving_endpoint_normalizes_structured_content(monkeypatch):
     assert result == '{"findings": []}'
 
 
+def _capture_post(monkeypatch, status=200):
+    """Stub get_workspace_client + httpx.post; return the captured-call list."""
+    captured = []
+    client = SimpleNamespace(
+        config=SimpleNamespace(
+            host="https://example.databricks.com/",
+            authenticate=lambda: {"Authorization": "Bearer test"},
+        )
+    )
+    response = SimpleNamespace(
+        status_code=status,
+        text="",
+        json=lambda: {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.append(SimpleNamespace(url=url, json=json, headers=headers))
+        return response
+
+    monkeypatch.setattr(llm_utils, "get_workspace_client", lambda: client)
+    monkeypatch.setattr(llm_utils.httpx, "post", fake_post)
+    return captured
+
+
+def test_call_serving_endpoint_classic_is_unchanged(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    captured = _capture_post(monkeypatch)
+    llm_utils.call_serving_endpoint(
+        [{"role": "user", "content": "hi"}], model="databricks-claude-sonnet-4-6"
+    )
+    call = captured[0]
+    assert call.url == "https://example.databricks.com/serving-endpoints/databricks-claude-sonnet-4-6/invocations"
+    assert "model" not in call.json                       # model stays in the URL
+    assert "Databricks-Ai-Gateway-Request-Tags" not in call.headers
+
+
+def test_call_serving_endpoint_gateway_tags_and_maps(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    captured = _capture_post(monkeypatch)
+    llm_utils.call_serving_endpoint(
+        [{"role": "user", "content": "hi"}],
+        model="databricks-claude-sonnet-4-6",
+        component="plan-builder",
+    )
+    call = captured[0]
+    assert call.url == "https://example.databricks.com/ai-gateway/mlflow/v1/chat/completions"
+    assert call.json["model"] == "system.ai.claude-sonnet-4-6"   # mapped, in the body
+    tags = json.loads(call.headers["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "plan-builder"}
+
+
+def test_call_serving_endpoint_gateway_404_downgrades(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    captured = _capture_post(monkeypatch, status=404)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint(
+            [{"role": "user", "content": "hi"}],
+            model="databricks-claude-sonnet-4-6",
+        )
+    assert str(ei.value) == llm_utils.MODEL_UNAVAILABLE_MESSAGE
+    assert captured  # the POST was attempted
+
+
+def test_call_serving_endpoint_classic_404_keeps_raw_body(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    _capture_post(monkeypatch, status=404)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])
+    assert "Serving endpoint returned 404" in str(ei.value)   # unchanged
+
+
+def test_call_serving_endpoint_gateway_500_keeps_raw_body(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    _capture_post(monkeypatch, status=500)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])
+    assert "Serving endpoint returned 500" in str(ei.value)   # only 404 downgrades
+
+
+_SCOPE_403 = "Invalid scope, required scopes: ai-gateway"
+
+
+def _scope_rig(monkeypatch, first_status=403, first_text=_SCOPE_403, sp_is_user=False):
+    """User client whose first POST answers ``first_status``; the SP client answers 200."""
+    def _client(token):
+        return SimpleNamespace(config=SimpleNamespace(
+            host="https://example.databricks.com/",
+            authenticate=lambda: {"Authorization": f"Bearer {token}"},
+        ))
+
+    user, sp = _client("user"), _client("sp")
+    posts = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        posts.append(SimpleNamespace(url=url, headers=headers))
+        if headers["Authorization"] == "Bearer user":
+            return SimpleNamespace(status_code=first_status, text=first_text, headers={})
+        return SimpleNamespace(status_code=200, text="", headers={},
+                               json=lambda: {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(llm_utils, "get_workspace_client", lambda: user)
+    monkeypatch.setattr(llm_utils, "get_service_principal_client", lambda: user if sp_is_user else sp)
+    monkeypatch.setattr(llm_utils.httpx, "post", fake_post)
+    return posts
+
+
+def test_gateway_scope_403_retries_once_as_the_service_principal(monkeypatch, caplog):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    posts = _scope_rig(monkeypatch)
+    with caplog.at_level("WARNING", logger=llm_utils.__name__):
+        out = llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}], component="plan-builder")
+    assert out == "ok"
+    assert [p.headers["Authorization"] for p in posts] == ["Bearer user", "Bearer sp"]
+    assert all(p.url.endswith("/ai-gateway/mlflow/v1/chat/completions") for p in posts)
+    tags = json.loads(posts[1].headers["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags["component"] == "plan-builder"
+    assert any("ai-gateway scope" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("route", "status", "text", "sp_is_user"),
+    [
+        ("gateway", 403, "PERMISSION_DENIED: not allowed", False),  # a 403 that is not a scope error
+        ("classic", 403, _SCOPE_403, False),                        # classic never retries
+        ("gateway", 401, _SCOPE_403, False),                        # 403 only
+        ("gateway", 403, _SCOPE_403, True),                         # no distinct SP (local dev)
+    ],
+)
+def test_no_service_principal_retry_outside_a_gateway_scope_403(monkeypatch, route, status, text, sp_is_user):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", route)
+    posts = _scope_rig(monkeypatch, first_status=status, first_text=text, sp_is_user=sp_is_user)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])
+    assert f"Serving endpoint returned {status}" in str(ei.value)
+    assert [p.headers["Authorization"] for p in posts] == ["Bearer user"]
+
+
 # ---------------------------------------------------------------------------
 # _repair_json
 # ---------------------------------------------------------------------------

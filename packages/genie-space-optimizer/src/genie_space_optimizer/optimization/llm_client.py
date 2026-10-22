@@ -21,6 +21,14 @@ from genie_space_optimizer.common.config import (
     LLM_TEMPERATURE,
     get_llm_endpoint,
 )
+from genie_space_optimizer.optimization.llm_route import (
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    gateway_model_name,
+    get_llm_route,
+    is_model_unavailable_404,
+    tag_header,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -123,14 +131,40 @@ def get_openai_client(w: "WorkspaceClient | None") -> Any:
     host = wc.config.host.rstrip("/")
     token = _resolve_bearer_token(wc)
 
-    if host not in _openai_client_cache:
-        _openai_client_cache[host] = OpenAI(
-            api_key=token,
-            base_url=f"{host}/serving-endpoints",
-        )
+    route = get_llm_route()
+    base_url = (
+        f"{host}/ai-gateway/mlflow/v1" if route is LLMRoute.GATEWAY
+        else f"{host}/serving-endpoints"
+    )
+    cache_key = f"{host}|{route.value}"
+    if cache_key not in _openai_client_cache:
+        _openai_client_cache[cache_key] = OpenAI(api_key=token, base_url=base_url)
     else:
-        _openai_client_cache[host].api_key = token
-    return _openai_client_cache[host]
+        _openai_client_cache[cache_key].api_key = token
+    return _openai_client_cache[cache_key]
+
+
+def resolve_gso_chat() -> tuple[str, dict[str, Any]]:
+    """Model id and route-specific request kwargs for one GSO chat completion.
+
+    Every ``chat.completions.create`` in GSO builds its request from this, so the
+    gateway route always gets the ``system.ai.*`` name and the cost-attribution
+    tag. Classic returns the endpoint name unchanged and no extra kwargs.
+    """
+    model = get_llm_endpoint()
+    if get_llm_route() is not LLMRoute.GATEWAY:
+        return model, {}
+    return gateway_model_name(model), {
+        "extra_headers": tag_header("gso-optimize", run_id=os.getenv("GSO_RUN_ID") or None),
+    }
+
+
+def raise_if_model_unavailable(err: BaseException | None) -> None:
+    """Re-raise a gateway 404 as ``MODEL_UNAVAILABLE_MESSAGE``; no-op otherwise."""
+    if err is None or get_llm_route() is not LLMRoute.GATEWAY:
+        return
+    if is_model_unavailable_404(getattr(err, "status_code", 0) or 0, str(err)):
+        raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE) from err
 
 
 def call_llm(
@@ -167,12 +201,13 @@ def call_llm(
     logger.info("GSO LLM request packed: %s", pack_stats)
 
     client = get_openai_client(w)
-    model = get_llm_endpoint()
+    model, route_kwargs = resolve_gso_chat()
 
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": eval_llm_timeout_seconds(),
+        **route_kwargs,
     }
     # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
     if max_tokens is not None:
@@ -211,4 +246,5 @@ def call_llm(
             if attempt < total_attempts - 1:
                 time.sleep(2**attempt)
 
+    raise_if_model_unavailable(last_err)
     raise last_err  # type: ignore[misc]

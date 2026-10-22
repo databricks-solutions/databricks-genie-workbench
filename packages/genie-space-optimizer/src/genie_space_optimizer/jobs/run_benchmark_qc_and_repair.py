@@ -140,6 +140,7 @@ dbutils.widgets.text("benchmark_repair_max_tries", "3")
 dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("genie_llm_route", "")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -154,6 +155,9 @@ if benchmark_policy not in {"review_only", "repair_allowed"}:
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
+_route = dbutils.widgets.get("genie_llm_route").strip()
+if _route:
+    os.environ["GENIE_LLM_ROUTE"] = _route
 
 if not run_id:
     raise RuntimeError("benchmark_qc_and_repair: run_id parameter is required")

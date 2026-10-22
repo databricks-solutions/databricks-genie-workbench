@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -149,10 +150,39 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    from backend.services.lakebase import init_pool
+    await init_pool()
+    from backend.services.create_agent_session import _ensure_table
+    await _ensure_table()
+    _ensure_gso_job_run_as()
+    try:
+        # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
+        # case on a cold warehouse). Run in a worker thread so we don't pin
+        # the event loop during startup and stall healthcheck responses.
+        from backend.routers.auto_optimize import probe_iterations_schema
+        await asyncio.to_thread(probe_iterations_schema)
+    except Exception:
+        logger.warning("iterations schema probe failed", exc_info=True)
+
+    # Pre-warm the Cost-tab overview cache in the background since it
+    # takes a long time to run.
+    asyncio.create_task(asyncio.to_thread(warm_cost_overview_cache, 7))
+
+    yield
+
+    # Shutdown
+    from backend.services.lakebase import close_pool
+    await close_pool()
+
+
 app = FastAPI(
     title="Genie Workbench",
     description="Unified Databricks Genie Agent management platform",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 from backend.services.version_control.platform import compose
@@ -210,33 +240,6 @@ def _ensure_gso_job_run_as() -> None:
             ensure_job_run_as(ws, int(job_id_str), sp_client_id)
     except Exception:
         logger.warning("Could not verify GSO job run_as", exc_info=True)
-
-
-@app.on_event("startup")
-async def startup():
-    from backend.services.lakebase import init_pool
-    await init_pool()
-    from backend.services.create_agent_session import _ensure_table
-    await _ensure_table()
-    _ensure_gso_job_run_as()
-    try:
-        # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
-        # case on a cold warehouse). Run in a worker thread so we don't pin
-        # the event loop during startup and stall healthcheck responses.
-        from backend.routers.auto_optimize import probe_iterations_schema
-        await asyncio.to_thread(probe_iterations_schema)
-    except Exception:
-        logger.warning("iterations schema probe failed", exc_info=True)
-
-    # Pre-warm the Cost-tab overview cache in the background since it
-    # takes a long time ro run.
-    asyncio.create_task(asyncio.to_thread(warm_cost_overview_cache, 7))
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    from backend.services.lakebase import close_pool
-    await close_pool()
 
 
 # Mount all routers

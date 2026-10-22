@@ -140,6 +140,10 @@ if llm_model:
 if not run_id:
     raise RuntimeError("optimize: run_id parameter is required")
 os.environ["GSO_RUN_ID"] = run_id
+dbutils.widgets.text("genie_llm_route", "")
+_route = dbutils.widgets.get("genie_llm_route").strip()
+if _route:
+    os.environ["GENIE_LLM_ROUTE"] = _route
 
 exp_name = _resolve_experiment_path(space_id=space_id, domain=domain)
 

@@ -33,7 +33,9 @@ from .workspace_source import (
 # the local-terminal deploy passes it via `--var llm_model` (deploy.sh) and the
 # notebook installer defaults it to cfg.llm_model, so the operator-selected
 # serving endpoint reaches each task (every v2 entrypoint honors the llm_model
-# widget). See build_job_settings for the parameter declarations.
+# widget). `genie_llm_route` is the second such extra: deploy.sh passes
+# `--var genie_llm_route` and the installer defaults it to cfg.llm_route.
+# See build_job_settings for the parameter declarations.
 TASKS = [
     (
         "intake_and_snapshot",
@@ -44,6 +46,7 @@ TASKS = [
             "levers", "max_attempts", "target_accuracy",
             "benchmark_repair_max_tries", "triggered_by",
             "benchmark_policy", "warehouse_id", "workload_warehouse_ids", "llm_model",
+            "genie_llm_route",
         ],
     ),
     (
@@ -53,6 +56,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "benchmark_repair_max_tries", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -64,6 +68,7 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_policy", "warehouse_id", "llm_model",
+            "genie_llm_route",
             # Metric view advisor phase inputs (MV-D5). Present as base_parameters
             # so run_optimize.py's widgets receive real job values — a job
             # parameter omitted here silently resolves to the widget default.
@@ -78,6 +83,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -105,6 +111,7 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
+    "genie_llm_route": "gateway",  # AI Gateway route (spec §4); build_job_settings uses cfg.llm_route
     # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
     # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
     # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).
@@ -245,6 +252,7 @@ def build_job_settings(
 ) -> dict[str, Any]:
     cfg = cfg.normalized()
     tasks = [_task_payload(*task, notebooks_path) for task in TASKS]
+    cfg_defaults = {"llm_model": cfg.llm_model, "genie_llm_route": cfg.llm_route}
     return {
         "name": cfg.gso_job_name,
         "description": (
@@ -264,7 +272,7 @@ def build_job_settings(
         "parameters": [
             {
                 "name": name,
-                "default": cfg.llm_model if name == "llm_model" else default,
+                "default": cfg_defaults.get(name, default),
             }
             for name, default in JOB_PARAMETERS.items()
         ],

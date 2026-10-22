@@ -77,6 +77,8 @@ dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("max_attempts", "3")
 dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
+dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("genie_llm_route", "")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -89,6 +91,13 @@ max_attempts = int(dbutils.widgets.get("max_attempts") or "3")
 # publish_record's target_accuracy lines up with the per-attempt accuracies.
 if target_accuracy <= 1.0:
     target_accuracy *= 100.0
+
+llm_model = dbutils.widgets.get("llm_model").strip()
+if llm_model:
+    os.environ["LLM_MODEL"] = llm_model
+_route = dbutils.widgets.get("genie_llm_route").strip()
+if _route:
+    os.environ["GENIE_LLM_ROUTE"] = _route
 
 if not run_id:
     raise RuntimeError("publish_and_audit: run_id parameter is required")

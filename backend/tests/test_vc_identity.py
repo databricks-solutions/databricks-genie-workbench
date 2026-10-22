@@ -56,8 +56,8 @@ def test_startup_self_heal_failure_only_warns(monkeypatch, caplog):
 def test_startup_runs_the_run_as_self_heal():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
     tree = ast.parse(source)
-    startup = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
-    assert "_ensure_gso_job_run_as()" in [ast.unparse(statement) for statement in startup.body]
+    lifespan = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan")
+    assert "_ensure_gso_job_run_as()" in [ast.unparse(statement) for statement in lifespan.body]
 
 
 def test_deploy_script_exits_nonzero_on_unresolved_placeholders():

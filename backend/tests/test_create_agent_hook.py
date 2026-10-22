@@ -85,7 +85,7 @@ def test_main_loop_fires_capture():
     agent = CreateGenieAgent()
     agent._build_messages = lambda session: []
 
-    async def fake_stream(messages, tools=None, model=None):
+    async def fake_stream(messages, tools=None, model=None, space_id=None):
         yield {
             "choices": [{
                 "delta": {

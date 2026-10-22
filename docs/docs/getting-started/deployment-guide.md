@@ -23,6 +23,7 @@ A Databricks workspace with:
 - A Unity Catalog with CREATE SCHEMA permission
 - Lakebase Autoscaling available (optional but recommended for persistent scan history, starred agents, and agent sessions)
 - Databricks Foundation Model APIs enabled for the curated Create Agent and Auto-Optimize model list
+- Unity AI Gateway available in the workspace's region. LLM calls go through the gateway by default so their cost is attributed in `system.ai_gateway.usage`; both installers send one test request and stop with guidance if it fails. To use the serving endpoints directly instead, install with `llm_route` set to `classic`
 
 ### Enable required preview features
 
@@ -80,6 +81,8 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `warehouse_id` | Yes | Serverless SQL Warehouse ID used by the app and GSO |
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
+| `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
+| `byok_enabled` | No | `false` (default). `true` lets a Unity Catalog model id (`catalog.schema.model`) be used as the model on the gateway route |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
@@ -92,7 +95,7 @@ The notebook user must hold the [installer permissions](/docs/platform/authentic
 
 The installer uses the shared `scripts.deploy_lib` Python library and notebook-native `WorkspaceClient()` authentication. It:
 
-1. Creates or updates the Databricks App and resolves its service principal
+1. Creates or updates the Databricks App and resolves its service principal, then, on the `gateway` route, sends one test request to Unity AI Gateway and stops with guidance if it fails
 2. Generates a clean source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app` (excluding deploy-only files, docs, tests, notebooks, `scripts/`, `.git`, `.env*`, `node_modules`, and `requirements.txt`)
 3. Provisions the UC schema, volume, GSO tables, CDF, and permissions
 4. Provisions or attaches Lakebase when requested
@@ -106,6 +109,10 @@ The Git folder is never modified — the generated workspace folder is deploymen
 ### 4. Updating a notebook-installed app
 
 Pull the latest repo changes in the Databricks Git folder, then rerun `notebooks/install.py` from the top with the same `app_name` and Lakebase widget values.
+
+:::note
+The app now requests the `ai-gateway` user scope. After an update that adds a scope, each user is asked to consent once more on their next visit. See [Authentication & Permissions](/docs/platform/authentication).
+:::
 
 ## Method 2: Local Terminal Installer (Backup)
 
@@ -221,6 +228,8 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (unique in workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint |
+| `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` (Unity AI Gateway) or `classic` (serving endpoints directly) |
+| `GENIE_BYOK_ENABLED` | No | `false` | `true` accepts a Unity Catalog model id as the model on the gateway route |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project name (auto-provisioned by deploy); installer suggests `<app-name>-lakebase` |
 
 ## Manual Setup (Method 2, without installer)

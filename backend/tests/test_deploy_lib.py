@@ -13,6 +13,8 @@ from scripts.deploy_lib.apps import (
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
 from scripts.deploy_lib import gso_job
+from scripts.deploy_lib.install import llm_route_replacements
+from scripts.deploy_lib.verify import verify_ai_gateway
 from scripts.deploy_lib.gso_job import (
     TASKS,
     build_job_settings,
@@ -159,6 +161,9 @@ def test_all_current_app_yaml_placeholders_are_covered():
             "GSO_JOB_ID": "123",
             "LAKEBASE_INSTANCE": "genie-workbench-lakebase",
             "LLM_MODEL": "databricks-claude-sonnet-4-6",
+            **llm_route_replacements(
+                InstallConfig(app_name="a", catalog="c", warehouse_id="w").normalized()
+            ),
             "MLFLOW_EXPERIMENT_ID": "",
             # VC observe surface placeholders — must stay in lockstep with the
             # replacements dict built by run_install in scripts/deploy_lib/install.py.
@@ -224,6 +229,92 @@ def test_notebook_installer_uses_streamlined_widgets_and_defaults():
     assert 'dbutils.widgets.dropdown("grant_genie_spaces"' not in notebook_source
     assert 'dbutils.widgets.get("grant_genie_spaces")' not in notebook_source
     assert "grant_genie_spaces=True" in notebook_source
+
+    assert 'dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])' in notebook_source
+    assert 'llm_route=dbutils.widgets.get("llm_route").strip()' in notebook_source
+    assert 'dbutils.widgets.dropdown("byok_enabled", "false", ["false", "true"])' in notebook_source
+    assert 'byok_enabled=dbutils.widgets.get("byok_enabled").strip() == "true"' in notebook_source
+
+
+def test_config_llm_route_and_byok_defaults_and_validation():
+    base = dict(app_name="genie-workbench", catalog="main", warehouse_id="abc", repo_root="/tmp")
+    cfg = InstallConfig(**base).normalized()
+    assert (cfg.llm_route, cfg.byok_enabled) == ("gateway", False)
+    assert llm_route_replacements(cfg) == {"GENIE_LLM_ROUTE": "gateway", "GENIE_BYOK_ENABLED": "false"}
+
+    explicit = InstallConfig(**base, llm_route=" Classic ", byok_enabled=True).normalized()
+    assert (explicit.llm_route, explicit.byok_enabled) == ("classic", True)
+    assert llm_route_replacements(explicit) == {"GENIE_LLM_ROUTE": "classic", "GENIE_BYOK_ENABLED": "true"}
+
+    with pytest.raises(ValueError, match="llm_route"):
+        InstallConfig(**base, llm_route="serving").validate()
+
+
+def test_rendered_app_yaml_carries_installer_route_and_byok():
+    import re
+
+    yaml = pytest.importorskip("yaml")
+    cfg = InstallConfig(
+        app_name="a", catalog="c", warehouse_id="w", llm_route="classic", byok_enabled=True
+    ).normalized()
+    template = Path("app.yaml").read_text()
+    others = {m[2:-2]: "x" for m in re.findall(r"__[A-Z0-9_]+__", template)}
+    rendered = render_text(template, {**others, **llm_route_replacements(cfg)})
+    env = {e["name"]: e.get("value") for e in yaml.safe_load(rendered)["env"] if "name" in e}
+    assert env["GENIE_LLM_ROUTE"] == "classic"
+    assert env["GENIE_BYOK_ENABLED"] == "true"
+
+
+def test_verify_ai_gateway_posts_mapped_model():
+    w = FakeWorkspaceClient()
+    verify_ai_gateway(w, "databricks-claude-sonnet-4-6")
+    ((method, path, body),) = w.api_client.calls
+    assert (method, path) == ("POST", "/ai-gateway/mlflow/v1/chat/completions")
+    assert body["model"] == "system.ai.claude-sonnet-4-6"
+
+
+def test_verify_ai_gateway_failure_points_to_classic():
+    w = FakeWorkspaceClient(
+        {("POST", "/ai-gateway/mlflow/v1/chat/completions"): RuntimeError("NOT_FOUND")}
+    )
+    with pytest.raises(RuntimeError, match="llm_route=classic") as ei:
+        verify_ai_gateway(w, "databricks-claude-sonnet-4-6")
+    assert "system.ai.claude-sonnet-4-6" in str(ei.value)
+
+
+def test_deploy_sh_fills_every_app_yaml_placeholder():
+    """deploy.sh patches app.yaml with sed; a placeholder without a sed line would
+    trip the leftover check and abort the deploy."""
+    import re
+
+    deploy_sh = Path("scripts/deploy.sh").read_text()
+    placeholders = set(re.findall(r"__[A-Z0-9_]+__", Path("app.yaml").read_text()))
+    missing = sorted(p for p in placeholders if f'"s|{p}|' not in deploy_sh)
+    assert missing == []
+    assert "grep -cE '__[A-Z0-9_]+__' \"$PATCHED_APP_YAML\"" in deploy_sh
+    assert '--var="genie_llm_route=$LLM_ROUTE"' in deploy_sh
+    assert '_preflight_check_ai_gateway "$LLM_ROUTE" "$LLM_MODEL" "$PROFILE"' in deploy_sh
+
+
+def test_deploy_config_route_and_byok_defaults(tmp_path):
+    import shutil
+    import subprocess
+
+    # A copy outside the repo, so a local .env.deploy is never sourced.
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(_repo_root() / "scripts" / "deploy-config.sh", tmp_path / "scripts")
+
+    def _resolve(env: dict) -> tuple[int, str]:
+        proc = subprocess.run(
+            ["bash", "-c", 'source scripts/deploy-config.sh && echo "$LLM_ROUTE $BYOK_ENABLED"'],
+            env={"PATH": "/usr/bin:/bin", "GENIE_WAREHOUSE_ID": "w", "GENIE_CATALOG": "c", **env},
+            capture_output=True, text=True, cwd=tmp_path,
+        )
+        return proc.returncode, proc.stdout.strip()
+
+    assert _resolve({}) == (0, "gateway false")
+    assert _resolve({"GENIE_LLM_ROUTE": "CLASSIC", "GENIE_BYOK_ENABLED": "true"}) == (0, "classic true")
+    assert _resolve({"GENIE_LLM_ROUTE": "serving"})[0] != 0
 
 
 def test_workspace_source_inclusion_rules(tmp_path):
@@ -490,6 +581,14 @@ def test_gso_job_settings_match_4task_dag_shape():
     assert "deploy_target" not in params
     # llm_model stays a Workbench-specific param defaulted to cfg.llm_model.
     assert params["llm_model"] == "custom-gso-model"
+    # genie_llm_route follows the installer's llm_route (default gateway).
+    assert params["genie_llm_route"] == "gateway"
+    classic = build_job_settings(
+        InstallConfig(app_name="genie-workbench", catalog="main", warehouse_id="wh",
+                      llm_route="classic", repo_root="/tmp"),
+        "/jobs", "/wheel.whl", "/req.txt",
+    )
+    assert {p["name"]: p["default"] for p in classic["parameters"]}["genie_llm_route"] == "classic"
 
     # Every task carries run_id/catalog/schema (D9 — bootstrap from job params,
     # no task-value plumbing) and the operator llm_model.
@@ -506,7 +605,7 @@ def test_gso_job_settings_mirror_package_bundle_4task():
     (packages/genie-space-optimizer/databricks.yml, validated by
     test_phase7_job_dag.py) must not silently drift: identical task keys/order,
     entrypoints, per-task base_parameters and declared params, EXCEPT for the
-    Workbench-specific ``llm_model`` extra."""
+    Workbench-specific ``llm_model`` and ``genie_llm_route`` extras."""
     yaml = pytest.importorskip("yaml")
     repo_root = Path(__file__).resolve().parents[2]
     bundle_path = repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
@@ -528,18 +627,40 @@ def test_gso_job_settings_mirror_package_bundle_4task():
         _stem(t["notebook_task"]["notebook_path"]) for t in pkg_job["tasks"]
     ]
 
-    # Declared params identical except llm_model.
+    # Declared params identical except the Workbench-only extras.
     gso_params = {p["name"] for p in settings["parameters"]}
     pkg_params = {p["name"] for p in pkg_job["parameters"]}
-    assert gso_params - pkg_params == {"llm_model"}
+    assert gso_params - pkg_params == {"llm_model", "genie_llm_route"}
     assert pkg_params - gso_params == set()
 
-    # Per-task base_parameters identical except llm_model.
+    # Per-task base_parameters identical except the Workbench-only extras.
     gso_bp = {t["task_key"]: set(t["notebook_task"]["base_parameters"]) for t in settings["tasks"]}
     pkg_bp = {t["task_key"]: set(t["notebook_task"].get("base_parameters", {})) for t in pkg_job["tasks"]}
     for key in gso_bp:
-        assert gso_bp[key] - pkg_bp[key] == {"llm_model"}, key
+        assert gso_bp[key] - pkg_bp[key] == {"llm_model", "genie_llm_route"}, key
         assert pkg_bp[key] - gso_bp[key] == set(), key
+
+
+def test_user_api_scopes_identical_in_all_three_lists():
+    """app.yaml documents the scopes, but deploy.sh and the notebook installer
+    each PATCH their own list onto the app; a scope missing from either
+    installer is never requested. The gateway route needs ``ai-gateway``:
+    ``serving.serving-endpoints`` maps to ``model-serving`` only."""
+    import ast
+    import re
+
+    yaml = pytest.importorskip("yaml")
+    from scripts.deploy_lib.apps import APP_SCOPES
+
+    repo_root = Path(__file__).resolve().parents[2]
+    app_yaml_scopes = yaml.safe_load((repo_root / "app.yaml").read_text())["user_api_scopes"]
+    match = re.search(r"^scopes = (\[.*?\])", (repo_root / "scripts" / "deploy.sh").read_text(), re.S | re.M)
+    assert match, "deploy.sh scopes list not found"
+    deploy_sh_scopes = ast.literal_eval(match.group(1))
+
+    assert app_yaml_scopes == APP_SCOPES == deploy_sh_scopes
+    assert "ai-gateway" in APP_SCOPES
+    assert "serving.serving-endpoints" in APP_SCOPES
 
 
 # ---------------------------------------------------------------------------
@@ -594,9 +715,9 @@ def test_four_way_declared_param_sets_stay_in_lockstep():
     """Extends the two-way gso_job<->package pin to all four mirrors (MV-D5):
     root databricks.yml, the package bundle, gso_job.JOB_PARAMETERS, and the
     job_launcher run_now map. Sanctioned exceptions kept explicit: ``llm_model``
-    is the Workbench-only extra (absent from the package bundle) and
-    ``benchmark_repair_max_tries`` is declared by every job but intentionally
-    left to its job default in the launcher's run_now map."""
+    and ``genie_llm_route`` are the Workbench-only extras (both absent from the
+    package bundle) and ``benchmark_repair_max_tries`` is declared by every job
+    but intentionally left to its job default in the launcher's run_now map."""
     from scripts.deploy_lib.gso_job import JOB_PARAMETERS
 
     repo_root = _repo_root()
@@ -613,8 +734,8 @@ def test_four_way_declared_param_sets_stay_in_lockstep():
     # gso_job.JOB_PARAMETERS and root databricks.yml declare the identical set
     # (both carry the Workbench-only llm_model).
     assert gso_params == root_params
-    # Package bundle omits only llm_model.
-    assert root_params - pkg_params == {"llm_model"}
+    # Package bundle omits the two Workbench-only extras (llm_model, genie_llm_route).
+    assert root_params - pkg_params == {"llm_model", "genie_llm_route"}
     assert pkg_params - root_params == set()
     # The launcher overrides every declared param except benchmark_repair_max_tries.
     assert root_params - launcher_params == {"benchmark_repair_max_tries"}
@@ -1380,3 +1501,46 @@ def test_lakebase_existing_mode_rejects_soft_deleted_project():
 
     assert w.postgres.created_projects == []
     assert w.postgres.purged_projects == []
+
+
+def test_genie_llm_route_declared_gateway_across_workbench_mirrors():
+    """AI Gateway (spec §4): genie_llm_route is a second Workbench-only
+    extra, declared "gateway" in root databricks.yml (through the
+    genie_llm_route bundle variable deploy.sh sets, like llm_model) and
+    gso_job.JOB_PARAMETERS; intentionally absent from the package bundle. The
+    launcher sends the app's own GENIE_LLM_ROUTE instead of a pinned value
+    (test_submit_optimization_route_follows_app_env)."""
+    yaml = pytest.importorskip("yaml")
+    from scripts.deploy_lib.gso_job import JOB_PARAMETERS
+
+    repo_root = _repo_root()
+    root_params = {
+        p["name"]: p["default"] for p in _load_bundle_job(repo_root / "databricks.yml")["parameters"]
+    }
+    root_vars = yaml.safe_load((repo_root / "databricks.yml").read_text())["variables"]
+    pkg_params = {
+        p["name"]
+        for p in _load_bundle_job(
+            repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+        )["parameters"]
+    }
+
+    assert root_params.get("genie_llm_route") == "${var.genie_llm_route}"
+    assert root_vars["genie_llm_route"]["default"] == "gateway"
+    assert JOB_PARAMETERS.get("genie_llm_route") == "gateway"
+    assert "genie_llm_route" in _launcher_run_now_params()
+    assert "genie_llm_route" not in pkg_params  # package bundle omits it, like llm_model
+
+
+def test_genie_llm_route_reaches_every_task_base_parameters():
+    """Like llm_model, the route param rides into every task's base_parameters in
+    both Workbench job definitions (root databricks.yml + gso_job.TASKS)."""
+    from scripts.deploy_lib.gso_job import TASKS
+
+    repo_root = _repo_root()
+    root_tasks = _load_bundle_job(repo_root / "databricks.yml")["tasks"]
+    for t in root_tasks:
+        bp = t["notebook_task"]["base_parameters"]
+        assert bp.get("genie_llm_route") == "{{job.parameters.genie_llm_route}}", t["task_key"]
+    for _key, _stem, _dep, base_param_keys in TASKS:
+        assert "genie_llm_route" in base_param_keys, _key
