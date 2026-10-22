@@ -91,6 +91,13 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status("Uploading GSO job notebooks, building wheel, and creating/updating job...")
     gso_job = ensure_gso_job(w, cfg, app_sp_client_id, deployer_user)
     status(f"GSO job ready: {gso_job.job_id}")
+    if gso_job.run_as_bound:
+        status("Job run_as set to the app service principal.")
+    else:
+        status(
+            "Job created without run_as (installer lacks servicePrincipal.user on the "
+            "app service principal); the app sets it at startup."
+        )
 
     status("Rendering patched app.yaml into generated workspace source...")
     # Version Control observe surface: mirror deploy.sh's __VC_OBSERVE_*__ resolution.

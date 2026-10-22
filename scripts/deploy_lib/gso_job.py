@@ -386,8 +386,18 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
     settings = build_job_settings(cfg, notebooks_path, wheel_path, requirements_path)
     if not app_sp_client_id:
         raise ValueError("Explicit app service principal required for Job run_as")
+    # Binding run_as to the app SP needs servicePrincipal.user on it. Without
+    # that role, create the job without run_as; the app sets it at startup.
     settings["run_as"] = {"service_principal_name": app_sp_client_id}
-    job_id = upsert_job(w, settings)
+    run_as_bound = True
+    try:
+        job_id = upsert_job(w, settings)
+    except Exception as exc:
+        if "servicePrincipal.user" not in str(exc):
+            raise
+        del settings["run_as"]
+        run_as_bound = False
+        job_id = upsert_job(w, settings)
     set_job_permissions(w, job_id, deployer_user, app_sp_client_id)
     grant_directory_permissions(w, notebooks_path, app_sp_client_id)
     return GsoJobInfo(
@@ -395,4 +405,5 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
         job_name=cfg.gso_job_name,
         notebooks_path=notebooks_path,
         wheel_path=wheel_path,
+        run_as_bound=run_as_bound,
     )

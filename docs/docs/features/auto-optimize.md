@@ -355,6 +355,8 @@ durable across app restarts.
 
 The app service principal owns optimizer Delta state and executes the Lakeflow Job. A history action therefore reads internal state with the SP, but separately authorizes the requesting OBO user against the target Genie Agent. The user must have `CAN_EDIT` or `CAN_MANAGE`; the SP's broader access never substitutes for user authorization.
 
+The SP also needs read access (`USE CATALOG`, `USE SCHEMA`, `SELECT`) to every schema the Agent references. The Auto-Optimize tab shows the missing GRANTs and disables Start until they are in place, including for a schema whose grants it could not read. The trigger endpoint enforces the same check for callers that skip the UI: it refuses with a 403, before any run is recorded, when a schema is definitely not granted, and proceeds with a logged warning when the Grants API cannot answer.
+
 See [Authentication & Permissions](/docs/platform/authentication) for setup and required grants.
 
 ## Durable state

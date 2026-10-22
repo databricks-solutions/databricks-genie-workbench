@@ -312,6 +312,9 @@ fi
 #   - Builds the GSO wheel (artifacts block)
 #   - Syncs job notebooks to workspace
 #   - Creates/updates the optimization job (Terraform-managed)
+# run_as is NOT set in the bundle — the app self-heals it at startup
+# via _ensure_gso_job_run_as() in backend/main.py (avoids needing
+# servicePrincipal.user role on the deployer).
 # The "app" target uses mode: development (per-deployer Terraform state)
 # with presets.name_prefix: "" (clean job names, no [dev] prefix).
 
@@ -324,7 +327,6 @@ rm -f "$PROJECT_DIR/.databricks/bundle/app/sync-snapshots/"*.json 2>/dev/null ||
 
 set +e
 BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
-    --var="gso_run_as_principal=$SP_CLIENT_ID" \
     --var="catalog=$CATALOG" \
     --var="warehouse_id=$WAREHOUSE_ID" \
     --var="llm_model=$LLM_MODEL" \

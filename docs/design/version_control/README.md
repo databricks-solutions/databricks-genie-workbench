@@ -594,7 +594,7 @@ Accepted. DABs provision; the Workbench app performs everyday create/edit and Da
 - Continue using OBO identity for user-sensitive interactive operations.
 - In production, reserve Genie editing to the executor SP (humans `CAN_RUN`/`CAN_VIEW`).
 - Use OAuth M2M and governed credential storage; no Databricks PATs.
-- Replace the startup `run_as` self-healing behavior with **fail-closed verification**: verify the configured run identity and refuse to start if it is wrong. Self-healing identity is self-healing authority.
+- Replace the startup `run_as` self-healing behavior with **fail-closed verification**: verify the configured run identity and refuse to start if it is wrong. Self-healing identity is self-healing authority. *(Amended 2026-10-21: reversed for the optimizer Job; startup self-heals its `run_as` again. See ADR-001 decision 23.)*
 - Restrict access to raw snapshots because they may contain business logic, SQL, and metadata; ensure snapshots contain no credentials or secrets.
 - Record whether an actor was a human OBO user, Workbench service principal, optimization principal, or deployment principal.
 - Require explicit, audited break-glass approval to override drift gates.
@@ -634,7 +634,7 @@ Accepted. DABs provision; the Workbench app performs everyday create/edit and Da
 - Implement Delta compare-and-swap admission (serialized enrollment, unique row, generation, atomic write-authorizing transition binding already-committed preimage evidence).
 - Route every mutation through the shared version-capture + coordination gate: everyday Workbench create/edit in-app, and governed operations (optimizer champion apply, restore, promotion) through Jobs; retire in-process `revert.py`.
 - Add authoritative read-back verification, `applied_unverified`/`applied_partial` handling, and quarantine with the two-signal exit.
-- Replace `run_as` startup self-healing with fail-closed verification.
+- Replace `run_as` startup self-healing with fail-closed verification. *(Amended 2026-10-21: reversed for the optimizer Job; see ADR-001 decision 23.)*
 
 ### Phase 3: External Drift Reconciliation
 

@@ -153,11 +153,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    app.state.gso_run_as = await asyncio.to_thread(_verify_gso_job_run_as)
     from backend.services.lakebase import init_pool
     await init_pool()
     from backend.services.create_agent_session import _ensure_table
     await _ensure_table()
+    _ensure_gso_job_run_as()
     try:
         # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
         # case on a cold warehouse). Run in a worker thread so we don't pin
@@ -220,15 +220,26 @@ if not is_running_on_databricks_apps():
     )
 
 # Lakebase connection pool lifecycle
-def _verify_gso_job_run_as() -> str:
-    from backend.services.auth import get_service_principal_client
-    from backend.services.version_control.platform import (
-        bounded_read_client,
-        check_configured_job_run_as,
-    )
+def _ensure_gso_job_run_as() -> None:
+    """Ensure the GSO optimization job's run_as matches this app's SP.
 
-    return check_configured_job_run_as(
-        os.environ, lambda: bounded_read_client(get_service_principal_client()))
+    Ported from the standalone GSO app's _JobRunAsBootstrap (app.py).
+    The app runs as the SP, so it can update its own job's run_as
+    without needing the "Service Principal User" role on the deployer.
+    """
+    job_id_str = os.environ.get("GSO_JOB_ID", "")
+    if not job_id_str.isdigit():
+        return
+    try:
+        from backend.services.auth import get_service_principal_client
+        from genie_space_optimizer.backend.job_launcher import ensure_job_run_as
+
+        ws = get_service_principal_client()
+        sp_client_id = ws.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
+        if sp_client_id:
+            ensure_job_run_as(ws, int(job_id_str), sp_client_id)
+    except Exception:
+        logger.warning("Could not verify GSO job run_as", exc_info=True)
 
 
 # Mount all routers

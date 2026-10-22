@@ -1,14 +1,10 @@
 """Server-side identity verification without authority repair or credential fallback."""
 
-import logging
-import time
 from urllib.parse import urlsplit
 
 from backend.services.auth import bounded_read_client  # noqa: F401  (re-exported for vc_identity callers)
 
 from ..contracts import ActorContext, ExecutorContext
-
-logger = logging.getLogger(__name__)
 
 
 def canonical_host(host: str) -> str:
@@ -139,8 +135,8 @@ class TrustedSnapshotReader:
 
 def verify_job_run_as(client, execution_ref: str, expected_principal_id: str) -> None:
     # The governed execute path (promotion/restore/optimizer/gate) carries the
-    # executor selection as ``job/<id>`` (validated by each `_executor`); the
-    # optimizer boot check passes a bare ``GSO_JOB_ID``. Accept either form.
+    # executor selection as ``job/<id>`` (validated by each `_executor`). A bare
+    # job id is accepted too.
     job_ref = execution_ref.removeprefix("job/")
     if not job_ref.isdigit() or int(job_ref) <= 0 or not expected_principal_id:
         raise ValueError("Explicit Job and expected principal required")
@@ -150,63 +146,3 @@ def verify_job_run_as(client, execution_ref: str, expected_principal_id: str) ->
     if (getattr(run_as, "service_principal_name", None) != expected_principal_id
             or getattr(run_as, "user_name", None)):
         raise PermissionError("Job run_as does not match expected service principal")
-
-
-RUN_AS_NOT_CONFIGURED = "not_configured"
-RUN_AS_VERIFIED = "verified"
-RUN_AS_UNAVAILABLE = "unavailable"
-RUN_AS_MISMATCH = "mismatch"
-
-
-def _configured_job_ref(environment) -> str | None:
-    execution_ref = environment.get("GSO_JOB_ID", "")
-    if not execution_ref or not execution_ref.isdigit() or int(execution_ref) <= 0:
-        logger.warning(
-            "Optimizer integration not configured (GSO_JOB_ID=%r); skipping Job "
-            "run_as verification", execution_ref)
-        return None
-    return execution_ref
-
-
-def verify_configured_job_run_as(environment, client_factory) -> None:
-    # "Not configured" and "configured but wrong" are different states; only the
-    # second is an authority violation. An empty value, the unsubstituted deploy
-    # placeholder "__GSO_JOB_ID__", or any non-digit / non-positive value all mean
-    # the optimizer integration is NOT configured. Log and return — never raise —
-    # so a half-configured deploy degrades the optimizer instead of failing the
-    # whole app boot and taking history reads down with it (FM-OUTAGE). This is not
-    # startup authority repair: nothing is written; we simply do not verify what was
-    # never configured. Only a CONFIGURED (all-digit, positive) Job whose run_as is
-    # wrong or unreadable refuses.
-    execution_ref = _configured_job_ref(environment)
-    if execution_ref is None:
-        return
-    client = client_factory()
-    principal = client.config.client_id or environment.get("DATABRICKS_CLIENT_ID", "")
-    verify_job_run_as(client, execution_ref, principal)
-
-
-def check_configured_job_run_as(environment, client_factory, *, attempts: int = 3,
-                                backoff_s: float = 2.0, sleep=time.sleep) -> str:
-    """Classify the optimizer Job's run_as for app startup and ``/trigger``.
-
-    Raises ``PermissionError`` only when run_as is readable and wrong. A read
-    that still fails after ``attempts`` tries returns ``RUN_AS_UNAVAILABLE``: the
-    caller refuses the optimizer rather than failing boot (VC-D-runas1).
-    """
-    if _configured_job_ref(environment) is None:
-        return RUN_AS_NOT_CONFIGURED
-    for attempt in range(1, attempts + 1):
-        try:
-            verify_configured_job_run_as(environment, client_factory)
-            return RUN_AS_VERIFIED
-        except PermissionError:
-            raise
-        except Exception:
-            if attempt == attempts:
-                logger.error(
-                    "Optimizer Job run_as unreadable after %d attempt(s); the optimizer "
-                    "is disabled until it verifies", attempts, exc_info=True)
-                return RUN_AS_UNAVAILABLE
-            sleep(backoff_s * 2 ** (attempt - 1))
-    return RUN_AS_UNAVAILABLE

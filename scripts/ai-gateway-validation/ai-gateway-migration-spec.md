@@ -198,7 +198,7 @@ A param present in fewer than all its places is a bug.
 |---|---|---|
 | 1. Root bundle | `databricks.yml` | bundle variable `genie_llm_route`, default `"gateway"` (`:22-24`), set by `deploy.sh --var` (`scripts/deploy.sh`); job param `default: ${var.genie_llm_route}` (`:119-120`, beside `llm_model` at `:113-114`) and passed through on every task's `base_parameters` (`:161/181/203/233`) |
 | 2. Deploy lib | `scripts/deploy_lib/gso_job.py` | in all four per-task param lists (`:49/59/71/86`); default `"gateway"` in the default map (`:114`), overridden with `cfg.llm_route` by `build_job_settings` (`:255`), so the notebook-installed job carries the operator's choice |
-| 3. Run-now map | `packages/…/backend/job_launcher.py` `submit_optimization` | `genie_llm_route` kwarg, default `""` (`:78`, the `llm_model` shape at `:77`); `job_parameters` value is `genie_llm_route or os.getenv("GENIE_LLM_ROUTE") or "gateway"` (`:132`). The only caller, `integration/trigger.py:384`, passes no route, so every run is sent the app's own `GENIE_LLM_ROUTE` |
+| 3. Run-now map | `packages/…/backend/job_launcher.py` `submit_optimization` | `genie_llm_route` kwarg, default `""` (`:78`, the `llm_model` shape at `:77`); `job_parameters` value is `genie_llm_route or os.getenv("GENIE_LLM_ROUTE") or "gateway"` (`:132`). The only caller, `integration/trigger.py:412`, passes no route, so every run is sent the app's own `GENIE_LLM_ROUTE` |
 | 4. App env (non-job surfaces) | `app.yaml` | `GENIE_LLM_ROUTE`, value `"__GENIE_LLM_ROUTE__"` (`:101-102`), filled by both installers (§4.1). `GENIE_BYOK_ENABLED` (`:111-112`) sits beside it, filled the same way, but is app-only, not a job param (§1.4) |
 
 **Job-side consumption.** Each task notebook declares a `genie_llm_route` widget and, when it is
@@ -222,7 +222,7 @@ app env.
 ### 4.1 Install-time settings and the gateway check
 
 - **Settings.** `InstallConfig.llm_route` (`gateway` default, validated against `gateway|classic`) and
-  `InstallConfig.byok_enabled` (default `false`) (`scripts/deploy_lib/config.py:47-48`, `:99-100`).
+  `InstallConfig.byok_enabled` (default `false`) (`scripts/deploy_lib/config.py:48-49`, `:100-101`).
   The install notebook exposes both as dropdowns (`notebooks/install.py:66-67`, passed at
   `:140-141`); `install.py`'s `llm_route_replacements` (`:30`) fills the two `app.yaml` placeholders.
   The `deploy.sh` path reads `GENIE_LLM_ROUTE` / `GENIE_BYOK_ENABLED` from `.env.deploy`
@@ -380,8 +380,8 @@ app env.
   flag variants), tag header presence at the three chat sites and the embeddings site, streaming
   terminator (both `[DONE]` and `finish_reason` endings), the `reasoning_effort` retry, and
   gateway-404 → `MODEL_UNAVAILABLE_MESSAGE` (plus classic-404 / gateway-500 unchanged).
-- **Baseline:** `./scripts/test.sh` measured **4043 passed** (1793 backend + 2250 GSO) on
-  2026-10-20 at the SP-retry commit. Below this is a regression. The branch is rebased onto PR #332
+- **Baseline:** `./scripts/test.sh` measured **4049 passed** (1788 backend + 2261 GSO) on
+  2026-10-22 at the merge of PR #332's Gap 1 and Gap 2. Below this is a regression. The branch carries PR #332 through a merge
   (`feature/metric-view-advisor`, itself carrying main), so the mv-advisor rule's per-suite floor
   applies here too and is kept in step at each commit.
 - **Contract grep (per repo rule):** after each phase, a repo-wide grep proving (a) no chat call site
@@ -424,7 +424,8 @@ app env.
 **Done on the stacked branch (PR #400)**
 
 - PR #332 brought up to `main`, and this branch rebased onto it as linear history (no merge
-  commits); stacked PR #400 opened.
+  commits); stacked PR #400 opened. PR #332's later Gap 1 and Gap 2 fixes came in through one
+  merge commit (2026-10-22), with no history rewrite.
 - The GSO job follows the app's route, and the optimizer's traced call goes through the seam (§4).
 - Installer route and BYOK settings, and the install-time gateway check (§4.1).
 - The `ai-gateway` user scope in all three scope lists (§4.1).
@@ -470,13 +471,15 @@ app env.
   enables the firewall's embedding layer. The gateway path for it is covered by unit tests only.
 - Negative check: a made-up model returns `MODEL_UNAVAILABLE_MESSAGE` from both
   `call_serving_endpoint` and GSO `call_llm` against the live gateway.
-- Found outside gateway scope, both tracked on PR #332 for a fix there:
-  - The notebook installer needs the installing user to hold `servicePrincipal.user` on the app
-    SP before it can bind the job's `run_as`. PR #332 introduced this: it moved `run_as` from a
-    startup self-heal (as on `main`) to deploy time.
-  - `POST /trigger` does not check that the app SP can read the space's data schemas. The UI
-    already blocks Start until the GRANTs exist (`GET /permissions/{space_id}`), as on `main`, but
-    a caller that skips the UI starts a run that rejects every benchmark.
+- Found outside gateway scope, both fixed on PR #332 and merged into this branch:
+  - The notebook installer needed the installing user to hold `servicePrincipal.user` on the app
+    SP before it could bind the job's `run_as`. PR #332 had introduced this by moving `run_as` from
+    a startup self-heal (as on `main`) to deploy time. Fixed in `9e7a6327` (Gap 1): the app's
+    startup self-heal is back, here in the `lifespan` handler, and the installer's bind is best effort.
+  - `POST /trigger` did not check that the app SP can read the space's data schemas, so a caller
+    that skipped the UI's Start block (`GET /permissions/{space_id}`) started a run that rejected
+    every benchmark. Fixed in `2e3c5a51` (Gap 2): the trigger refuses a schema the app SP
+    definitely cannot read, before any run row.
 
 **Merging the stack**
 

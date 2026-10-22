@@ -1463,7 +1463,10 @@ async def check_permissions(space_id: SpaceId):
             extract_genie_space_table_refs,
             get_unique_schemas,
         )
-        from genie_space_optimizer.common.sp_permissions import probe_sp_required_access
+        from genie_space_optimizer.common.sp_permissions import (
+            probe_sp_required_access,
+            read_grant_sql,
+        )
 
         config = fetch_space_config(require_obo_workspace_client(), space_id)
         refs = extract_genie_space_table_refs(config)
@@ -1476,14 +1479,7 @@ async def check_permissions(space_id: SpaceId):
 
             for cat, sch in sorted(unique_schemas):
                 granted = (cat, sch) in read_granted
-                grant_sql = None
-                if not granted:
-                    grant_sql = (
-                        f"GRANT USE CATALOG ON CATALOG `{cat}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT USE SCHEMA ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT SELECT ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT EXECUTE ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;"
-                    )
+                grant_sql = None if granted else read_grant_sql(sp_name_for_grant, cat, sch)
                 schemas.append(SchemaAccessStatus(
                     catalog=cat,
                     schema_name=sch,
@@ -1732,81 +1728,12 @@ async def probe_mv_entitlement(body: MvProbeRequest):
     return result
 
 
-_RUN_AS_RECHECK_S = 30.0
-
-
-def _run_as_clock() -> float:
-    # Tests patch this, not time.monotonic, which the event loop also reads.
-    return time.monotonic()
-
-
-async def _require_verified_optimizer_identity(request: Request) -> None:
-    """Refuse to launch the optimizer Job until its run_as identity verifies.
-
-    Startup records the status on ``app.state.gso_run_as``. An unconfigured Job
-    always refuses; anything else short of verified is re-checked at most every
-    30 s, one caller at a time, so a Jobs API failure at boot recovers without a
-    restart.
-    """
-    from backend.services.version_control.platform import identity as vc_identity
-
-    settled = (vc_identity.RUN_AS_VERIFIED, vc_identity.RUN_AS_NOT_CONFIGURED)
-    state = request.app.state
-
-    def _fresh(status) -> bool:
-        if status in settled:
-            return True
-        checked_at = getattr(state, "gso_run_as_checked_at", None)
-        return (status is not None and checked_at is not None
-                and _run_as_clock() - checked_at < _RUN_AS_RECHECK_S)
-
-    status = getattr(state, "gso_run_as", None)
-    if not _fresh(status):
-        lock = getattr(state, "gso_run_as_lock", None)
-        if lock is None:
-            lock = state.gso_run_as_lock = asyncio.Lock()
-        async with lock:
-            status = getattr(state, "gso_run_as", None)
-            if not _fresh(status):
-                try:
-                    status = await _offload(
-                        vc_identity.check_configured_job_run_as,
-                        os.environ,
-                        lambda: vc_identity.bounded_read_client(get_service_principal_client()),
-                        attempts=1,
-                    )
-                except PermissionError:
-                    status = vc_identity.RUN_AS_MISMATCH
-                state.gso_run_as = status
-                state.gso_run_as_checked_at = _run_as_clock()
-    if status == vc_identity.RUN_AS_NOT_CONFIGURED:
-        raise HTTPException(
-            status_code=503,
-            detail="The optimizer job is not configured (GSO_JOB_ID must be the Job's numeric id). "
-                   "Redeploy before starting a run.",
-        )
-    if status == vc_identity.RUN_AS_MISMATCH:
-        logger.warning("Refusing /trigger: the optimizer job's run_as does not match the app service principal")
-        raise HTTPException(
-            status_code=503,
-            detail="The optimizer job's run_as does not match the app service principal. "
-                   "Redeploy the job before starting a run.",
-        )
-    if status == vc_identity.RUN_AS_UNAVAILABLE:
-        logger.warning("Refusing /trigger: the optimizer job's run_as could not be read")
-        raise HTTPException(
-            status_code=503,
-            detail="The optimizer job's identity could not be verified. Try again shortly.",
-        )
-
-
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
     await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.")
-    await _require_verified_optimizer_identity(request)
 
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
