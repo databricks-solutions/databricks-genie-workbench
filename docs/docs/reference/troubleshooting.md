@@ -31,6 +31,7 @@ them for the same app instance.
 |---------|-------|-----|
 | "You need CAN_EDIT or CAN_MANAGE permission" on optimize trigger | User lacks permission on the Genie Agent | Share the agent with the user (CAN_EDIT or CAN_MANAGE) |
 | "The service principal does not have CAN_MANAGE" | SP not shared on the Genie Agent | Share the agent with the app's SP (CAN_MANAGE) |
+| "The app service principal cannot read N schema(s) this space uses" (403 on optimize trigger) | SP lacks `USE CATALOG`, `USE SCHEMA` or `SELECT` on a schema the agent references | Run the GRANTs the Auto-Optimize permission check shows for that schema, then retry |
 | "OBO token lacks genie scope, retrying with service principal" (in logs) | User token missing `dashboards.genie` scope | This is handled automatically via SP fallback — no action needed unless SP also fails |
 | Optimization job fails with catalog/schema access errors | SP lacks UC permissions on referenced data | Grant `SELECT` on referenced schemas to the SP |
 | "Permission denied" on scan | User lacks access to the Genie Agent | Share the agent with the user |

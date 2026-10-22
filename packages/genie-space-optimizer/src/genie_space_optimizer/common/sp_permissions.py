@@ -75,8 +75,48 @@ def probe_sp_required_access(
     Returns ``(read_granted, write_granted)`` — sets of ``(catalog, schema)``
     pairs where the SP has the corresponding access level.
     """
+    read_granted, write_granted, _unknown = _probe_sp_access(sp_ws, schemas)
+    return read_granted, write_granted
+
+
+def missing_read_schemas(
+    sp_ws: WorkspaceClient,
+    schemas: set[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split the schemas the SP cannot read into ``(missing, unknown)``.
+
+    ``missing`` are definitely not granted. ``unknown`` could not be checked
+    (a grants read failed, or the SP's identity could not be resolved), so a
+    caller that must not block on a Grants API outage can tell them apart.
+    Keys are lowercase, matching ``probe_sp_required_access``.
+    """
+    read_granted, _write_granted, unknown = _probe_sp_access(sp_ws, schemas)
+    keys = {(cat.lower(), sch.lower()) for cat, sch in schemas}
+    missing = keys - read_granted - unknown
+    return sorted(missing), sorted(unknown)
+
+
+def read_grant_sql(principal: str, catalog: str, schema: str) -> str:
+    """The GRANTs that give ``principal`` read access to ``catalog.schema``."""
+    return (
+        f"GRANT USE CATALOG ON CATALOG `{catalog}` TO `{principal}`;\n"
+        f"GRANT USE SCHEMA ON SCHEMA `{catalog}`.`{schema}` TO `{principal}`;\n"
+        f"GRANT SELECT ON SCHEMA `{catalog}`.`{schema}` TO `{principal}`;\n"
+        f"GRANT EXECUTE ON SCHEMA `{catalog}`.`{schema}` TO `{principal}`;"
+    )
+
+
+def _probe_sp_access(
+    sp_ws: WorkspaceClient,
+    schemas: set[tuple[str, str]],
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], set[tuple[str, str]]]:
+    """Return ``(read_granted, write_granted, unknown)`` for ``schemas``.
+
+    A schema is ``unknown`` when it is not read-granted and a grants read
+    for its catalog or for the schema itself raised.
+    """
     if not schemas:
-        return set(), set()
+        return set(), set(), set()
 
     by_catalog: dict[str, list[str]] = {}
     for cat, sch in schemas:
@@ -84,11 +124,15 @@ def probe_sp_required_access(
 
     aliases = get_sp_principal_aliases(sp_ws)
     logger.info("SP aliases for privilege probing: %s", aliases)
+    if not aliases:
+        return set(), set(), {(cat.lower(), sch.lower()) for cat, sch in schemas}
     read_granted: set[tuple[str, str]] = set()
     write_granted: set[tuple[str, str]] = set()
+    unreadable: set[tuple[str, str]] = set()
 
     for cat, schema_list in by_catalog.items():
         catalog_privs: set[Privilege] = set()
+        catalog_unreadable = False
         try:
             cat_eff = sp_ws.grants.get_effective(
                 securable_type=SecurableType.CATALOG.value,
@@ -101,10 +145,12 @@ def probe_sp_required_access(
             if catalog_privs:
                 logger.info("SP catalog-level privs on %s: %s", cat, catalog_privs)
         except Exception:
+            catalog_unreadable = True
             logger.debug("Could not read effective grants for catalog %s", cat, exc_info=True)
 
         for sch in schema_list:
             schema_privs: set[Privilege] = set()
+            schema_unreadable = catalog_unreadable
             try:
                 sch_eff = sp_ws.grants.get_effective(
                     securable_type=SecurableType.SCHEMA.value,
@@ -119,6 +165,7 @@ def probe_sp_required_access(
                     cat, sch, schema_privs,
                 )
             except Exception:
+                schema_unreadable = True
                 logger.debug(
                     "Could not read effective grants for schema %s.%s",
                     cat, sch, exc_info=True,
@@ -137,7 +184,9 @@ def probe_sp_required_access(
                 read_granted.add(key)
             if has_modify:
                 write_granted.add(key)
+            if schema_unreadable:
+                unreadable.add(key)
 
     read_granted |= write_granted
 
-    return read_granted, write_granted
+    return read_granted, write_granted, unreadable - read_granted

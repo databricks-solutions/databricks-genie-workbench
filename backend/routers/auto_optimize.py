@@ -1463,7 +1463,10 @@ async def check_permissions(space_id: SpaceId):
             extract_genie_space_table_refs,
             get_unique_schemas,
         )
-        from genie_space_optimizer.common.sp_permissions import probe_sp_required_access
+        from genie_space_optimizer.common.sp_permissions import (
+            probe_sp_required_access,
+            read_grant_sql,
+        )
 
         config = fetch_space_config(require_obo_workspace_client(), space_id)
         refs = extract_genie_space_table_refs(config)
@@ -1476,14 +1479,7 @@ async def check_permissions(space_id: SpaceId):
 
             for cat, sch in sorted(unique_schemas):
                 granted = (cat, sch) in read_granted
-                grant_sql = None
-                if not granted:
-                    grant_sql = (
-                        f"GRANT USE CATALOG ON CATALOG `{cat}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT USE SCHEMA ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT SELECT ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;\n"
-                        f"GRANT EXECUTE ON SCHEMA `{cat}`.`{sch}` TO `{sp_name_for_grant}`;"
-                    )
+                grant_sql = None if granted else read_grant_sql(sp_name_for_grant, cat, sch)
                 schemas.append(SchemaAccessStatus(
                     catalog=cat,
                     schema_name=sch,

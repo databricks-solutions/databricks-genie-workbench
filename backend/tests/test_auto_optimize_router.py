@@ -354,6 +354,29 @@ def test_trigger_rejects_invalid_llm_model(
     trigger_mock.assert_not_called()
 
 
+def test_trigger_refuses_unreadable_schema_with_403(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
+    )
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+
+    refusal = PermissionError(
+        "The app service principal cannot read 1 schema(s) this space uses: "
+        "`cat.sch`. Grant read access (the Auto-Optimize permission check shows "
+        "the exact GRANTs) and retry."
+    )
+    with patch.object(auto_optimize, "trigger_optimization", side_effect=refusal):
+        resp = client.post(
+            "/api/auto-optimize/trigger",
+            json={"space_id": "space-abc", "apply_mode": "genie_config"},
+        )
+
+    assert resp.status_code == 403
+    assert "`cat.sch`" in resp.json()["detail"]
+
+
 def test_trigger_unconfigured_returns_503(client, monkeypatch) -> None:
     """Unconfigured Auto-Optimize must 503 rather than silently no-op."""
     monkeypatch.delenv("GSO_JOB_ID", raising=False)

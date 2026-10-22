@@ -268,6 +268,34 @@ def trigger_optimization(
             f"The service principal does not have CAN_MANAGE on Genie Agent {space_id}."
         )
 
+    # Refuse only a definite miss: a Grants API failure must not block a run,
+    # and the job still reports INSUFFICIENT_VALID_BENCHMARKS if access is absent.
+    missing_schemas: list[tuple[str, str]] = []
+    try:
+        from genie_space_optimizer.common.sp_permissions import missing_read_schemas
+        from genie_space_optimizer.common.uc_metadata import get_unique_schemas
+
+        missing_schemas, unknown_schemas = missing_read_schemas(
+            sp_ws, set(get_unique_schemas(genie_refs)),
+        )
+        if unknown_schemas:
+            logger.warning(
+                "Could not verify the service principal's read access to %s for run %s; proceeding",
+                ", ".join(f"{c}.{s}" for c, s in unknown_schemas), run_id,
+            )
+    except Exception:
+        logger.warning(
+            "Could not verify the service principal's read access for run %s; proceeding",
+            run_id, exc_info=True,
+        )
+    if missing_schemas:
+        names = ", ".join(f"`{c}.{s}`" for c, s in missing_schemas)
+        raise PermissionError(
+            f"The app service principal cannot read {len(missing_schemas)} schema(s) "
+            f"this space uses: {names}. Grant read access (the Auto-Optimize permission "
+            "check shows the exact GRANTs) and retry."
+        )
+
     levers_resolved = levers if levers else list(DEFAULT_LEVER_ORDER)
     levers_str = json.dumps(levers_resolved)
 

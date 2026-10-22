@@ -36,7 +36,7 @@ On-Behalf-Of User Authorization is what lets the app act as the signed-in user (
 
 ### Installer permissions
 
-The installer creates apps, UC objects, Lakebase projects, MLflow experiments, and jobs, and grants the app service principal across all of them. **The person running the installer typically needs workspace-admin equivalents.** If you are uncertain, have a workspace admin run the installer. The `servicePrincipal.user` role on the app service principal is not required: without it, the app sets the optimization job's `run_as` at startup. See [Authentication & Permissions](/docs/platform/authentication) for the full entitlement list.
+The installer creates apps, UC objects, Lakebase projects, MLflow experiments, and jobs, and grants the app service principal across all of them. **The person running the installer typically needs workspace-admin equivalents.** If you are uncertain, have a workspace admin run the installer. The `servicePrincipal.user` role on the app service principal is not required: without it, the app sets the optimization job's `run_as` at startup. The installer grants the app access to Genie Agents, not to the data they reference: the Auto-Optimize tab checks the app service principal's read access per agent, and a run refuses to start on a schema it cannot read. See [Authentication & Permissions](/docs/platform/authentication) for the full entitlement list.
 
 ### Method 1 (notebook) prerequisites
 
