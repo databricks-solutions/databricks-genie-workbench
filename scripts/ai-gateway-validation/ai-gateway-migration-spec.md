@@ -1,7 +1,7 @@
 # AI Gateway migration — implementation spec
 
-- **Status:** Implemented on `feature/ai-gateway-migration`, built on PR #332
-  (`feature/metric-view-advisor`) and reviewed as the stacked PR #400; not yet merged. Phases 0, 1, 1b,
+- **Status:** Implemented on `feature/ai-gateway-migration` (PR #400) and folded into PR #332
+  (`feature/metric-view-advisor`), which takes both to `main`; not yet merged. Phases 0, 1, 1b,
   2 and 3 landed default-off (§6); the gateway is now the **default from the start** (Decision 4), the
   GSO job follows the app's route (§4), and both installers carry the route and BYOK settings plus an
   install-time gateway check (§4.1). This spec describes the **as-built** design; where a phase
@@ -481,12 +481,15 @@ app env.
     every benchmark. Fixed in `2e3c5a51` (Gap 2): the trigger refuses a schema the app SP
     definitely cannot read, before any run row.
 
-**Merging the stack**
+**Merging**
 
-- PR #400 merges as a GitHub stack on PR #332 (`main` ← #332 ← #400). Stacks merge bottom-up: once
-  #332 merges, GitHub rebases #400 and retargets it at `main` itself, so there is no manual rebase.
-  If #332 or `main` moves first, the merge box offers **Rebase stack**; re-run `./scripts/test.sh`
-  on the result before merging.
+- PR #400 folds into PR #332: it merges into `feature/metric-view-advisor` with a merge commit,
+  and #332 then takes the metric-view advisor and the AI Gateway migration to `main` as one PR.
+  #400 stays as the record of the gateway review and the smoke results.
+- Never rebase either branch, and never use **Rebase stack** or **Rebase and merge**. This branch
+  carries PR #332's Gap 1 and Gap 2 through a merge commit (`6dd3f4eb`); a rebase drops it and
+  reopens the `lifespan` startup conflict. If `main` moves before #332 merges, merge `main` into
+  `feature/metric-view-advisor` and re-run `./scripts/test.sh` on the result.
 
 **Deferred (not needed for v1)**
 

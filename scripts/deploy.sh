@@ -401,7 +401,7 @@ fi
 
 echo "  ✓ Optimization job deployed: $JOB_ID"
 
-# Grant job permissions (bundle manages run_as; API call sets ownership + SP access)
+# Grant job permissions (run_as is set by the app at startup; API call sets ownership + SP access)
 PERM_PAYLOAD=$(python3 -c "
 import json
 acl = [
