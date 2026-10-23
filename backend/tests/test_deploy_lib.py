@@ -232,8 +232,8 @@ def test_notebook_installer_uses_streamlined_widgets_and_defaults():
 
     assert 'dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])' in notebook_source
     assert 'llm_route=dbutils.widgets.get("llm_route").strip()' in notebook_source
-    assert 'dbutils.widgets.dropdown("byok_enabled", "false", ["false", "true"])' in notebook_source
-    assert 'byok_enabled=dbutils.widgets.get("byok_enabled").strip() == "true"' in notebook_source
+    assert 'dbutils.widgets.dropdown("byok_enabled"' not in notebook_source
+    assert 'dbutils.widgets.get("byok_enabled")' not in notebook_source
 
 
 def test_config_llm_route_and_byok_defaults_and_validation():

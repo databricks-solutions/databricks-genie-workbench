@@ -82,7 +82,6 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
 | `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
-| `byok_enabled` | No | `false` (default). `true` lets a Unity Catalog model id (`catalog.schema.model`) be used as the model on the gateway route |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.

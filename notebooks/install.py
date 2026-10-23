@@ -64,7 +64,6 @@ dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
 dbutils.widgets.text("lakebase_project_name", "")
 dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
-dbutils.widgets.dropdown("byok_enabled", "false", ["false", "true"])
 
 # COMMAND ----------
 # MAGIC %md
@@ -138,7 +137,6 @@ cfg = InstallConfig(
     catalog=dbutils.widgets.get("catalog").strip(),
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
     llm_route=dbutils.widgets.get("llm_route").strip(),
-    byok_enabled=dbutils.widgets.get("byok_enabled").strip() == "true",
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,

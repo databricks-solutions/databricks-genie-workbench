@@ -1,7 +1,7 @@
 """Pin how app.yaml carries the BYOK flag (Phase 2).
 
 validate_chat_model reads GENIE_BYOK_ENABLED. app.yaml ships it as an installer
-placeholder (notebook byok_enabled widget / deploy.sh GENIE_BYOK_ENABLED, both
+placeholder (the notebook always fills "false"; deploy.sh reads GENIE_BYOK_ENABLED,
 default "false"), so BYOK acceptance stays off unless the operator enables it
 (spec §2, §9 Decision 2).
 """

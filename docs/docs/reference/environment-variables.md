@@ -66,7 +66,7 @@ On the gateway route, `databricks-<name>` endpoints are called as `system.ai.<na
 
 These variables apply to the **local terminal path only** — they are read by `deploy.sh` and written by `install.sh`. They are **not** injected into the app runtime directly; the deploy scripts use them to patch `app.yaml` placeholders and configure resources.
 
-On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`, `byok_enabled`).
+On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`). The notebook always sets `GENIE_BYOK_ENABLED` to `false`.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
