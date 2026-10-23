@@ -24,6 +24,7 @@ The recommended install path is the Databricks notebook installer.
    - `warehouse_id`
    - `lakebase_mode` (`create` / `existing` / `skip`)
    - `lakebase_project_name`
+   - `llm_route` (optional; `gateway` by default) and `byok_enabled` (optional; `false` by default)
 5. Run the notebook from the top.
 
 The notebook uses notebook-native `WorkspaceClient()` auth, creates a generated deployment source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app`, patches `app.yaml` there, provisions UC/Lakebase/GSO resources, and deploys the Databricks App from that generated source. The Git folder remains unchanged.
@@ -58,6 +59,7 @@ If you do not have a dataset ready, `notebooks/demo-data/` includes standalone D
 Notebook installer:
 
 - Databricks workspace with Apps enabled
+- Unity AI Gateway available in the workspace's region (see [LLM calls](#llm-calls))
 - SQL Warehouse
 - Unity Catalog with permission to create the GSO schema
 - Repo cloned into a Databricks Git folder
@@ -86,6 +88,12 @@ The installer creates a Databricks App, UC schema/volume/tables, a Lakebase Auto
 
 For the full entitlement list, see [Installer permissions](docs/docs/getting-started/deployment-guide.md#installer-permissions) and [Authentication & Permissions](docs/docs/platform/authentication.md).
 
+### LLM calls
+
+Every LLM call the app and the optimization job make goes through Unity AI Gateway by default, tagged so its cost shows up per feature in `system.ai_gateway.usage`. Both installers send one test request to the gateway and stop with guidance if it fails. To call model serving endpoints directly instead, install with `llm_route=classic` (notebook) or `GENIE_LLM_ROUTE=classic` (terminal); nothing falls back to classic on its own.
+
+The installers grant nothing on the gateway models. If your workspace restricts who can use them, both the app's users and the app's service principal need access. See [Model access for LLM calls](docs/docs/platform/authentication.md#model-access-for-llm-calls).
+
 ## Documentation
 
 Start with the [Introduction](docs/docs/getting-started/introduction.md); the canonical documentation is the Docusaurus site under [`docs/docs/`](docs/docs/).
@@ -102,7 +110,7 @@ Common references:
 
 ## Development Notes
 
-This app runs only on Databricks Apps. Do not run a local `uvicorn` server for app testing; OBO auth, Lakebase, app resources, and serving endpoints are Databricks-managed runtime dependencies.
+This app runs only on Databricks Apps. Do not run a local `uvicorn` server for app testing; OBO auth, Lakebase, app resources, and Unity AI Gateway are Databricks-managed runtime dependencies.
 
 Dependency lock files are the source of truth and should be committed when changed:
 

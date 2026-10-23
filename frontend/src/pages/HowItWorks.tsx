@@ -495,7 +495,7 @@ function ArchitectureContent() {
       desc: "FastAPI + Pydantic + asyncio",
       color: ACCENT,
       icon: <Box className="h-5 w-5" />,
-      items: ["4 routers: analysis, spaces, admin, create", "OBO middleware (ContextVar-based)", "LLM calls via Databricks serving endpoints"],
+      items: ["4 routers: analysis, spaces, admin, create", "OBO middleware (ContextVar-based)", "LLM calls via Unity AI Gateway"],
     },
     {
       name: "Persistence",

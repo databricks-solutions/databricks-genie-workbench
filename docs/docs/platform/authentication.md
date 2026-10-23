@@ -135,6 +135,27 @@ The same list is applied in three places that must stay identical: `app.yaml`, `
 
 If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). LLM calls on the gateway route do the same: when Unity AI Gateway refuses the user's token for a missing scope (`403 Invalid scope`), Create Agent and the other backend LLM calls retry once as the app service principal and log a warning, so that usage is attributed to the SP instead of the user. [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
 
+## Model Access for LLM Calls
+
+LLM calls go through Unity AI Gateway by default (see [LLM calls](/docs/getting-started/architecture-overview#llm-calls)). They run under two identities:
+
+| Calls | Identity |
+|-------|----------|
+| Create Agent and the plan builder | The signed-in user, through the OBO token. If the token lacks the `ai-gateway` scope, the call is retried once as the app service principal |
+| The optimization job (`gso-optimize`) and metric-view suggestion embeddings (`mv-suggest`), including the IQ panel's suggestion scan | The app service principal |
+
+The installers grant nothing on the gateway models. What a deployment needs:
+
+- **Unity AI Gateway in the workspace's region.** Both installers send one chat request through the gateway and stop if it fails: `verify_ai_gateway` in `scripts/deploy_lib/verify.py` and `_preflight_check_ai_gateway` in `scripts/preflight.sh`.
+- **User consent to the `ai-gateway` scope.** Each user accepts it once, on the app's consent screen.
+- **Model access for both identities, if your workspace restricts it.** If an admin limits who can use the `system.ai` models, or you use your own model (`GENIE_BYOK_ENABLED`), grant access to the app's users *and* to the app's service principal. Grant whatever privilege your workspace's gateway governance requires.
+
+A caller without access gets `404` from the gateway, because the gateway hides models a caller can't use. The app shows it as `Model unavailable or access not granted.`
+
+The install-time check runs as the installing user, so it can pass while the app service principal, or another user, has no access. For the SP, that shows up at the first optimization run.
+
+To avoid the gateway entirely, install with `llm_route=classic` (notebook) or `GENIE_LLM_ROUTE=classic` (terminal). The app then calls serving endpoints directly, under the `serving.serving-endpoints` scope and your existing serving-endpoint permissions.
+
 ## SP Permissions Required
 
 ### Per Genie Agent

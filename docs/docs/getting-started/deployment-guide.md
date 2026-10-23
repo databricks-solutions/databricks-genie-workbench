@@ -227,7 +227,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (needs CREATE SCHEMA) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (unique in workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint |
+| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM model (sent as `system.ai.*` on the gateway route; the serving endpoint name on classic) |
 | `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` (Unity AI Gateway) or `classic` (serving endpoints directly) |
 | `GENIE_BYOK_ENABLED` | No | `false` | `true` accepts a Unity Catalog model id as the model on the gateway route |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project name (auto-provisioned by deploy); installer suggests `<app-name>-lakebase` |

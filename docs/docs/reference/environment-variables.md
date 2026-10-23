@@ -20,7 +20,7 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `LLM_MODEL` | `__LLM_MODEL__` | Databricks model serving endpoint for analysis and the create agent. Default: `databricks-claude-sonnet-4-6` |
+| `LLM_MODEL` | `__LLM_MODEL__` | Model for analysis and the create agent. On the gateway route a `databricks-*` name is sent as `system.ai.*`; on the classic route it is the serving endpoint name. Default: `databricks-claude-sonnet-4-6` |
 | `GENIE_LLM_ROUTE` | `__GENIE_LLM_ROUTE__` | `gateway` (default) sends LLM and embedding calls through Unity AI Gateway (`/ai-gateway/mlflow/v1`) with cost-attribution tags; `classic` calls `/serving-endpoints/{name}/invocations`. Only an explicit `classic` selects classic: unset or unknown values use the gateway, with a warning for unknown values. Optimization runs receive the same value as the `genie_llm_route` job parameter |
 | `GENIE_BYOK_ENABLED` | `__GENIE_BYOK_ENABLED__` | `false` (default). When `true` on the gateway route, a Unity Catalog model id (`catalog.schema.model`) is accepted as the model. App-only; not passed to the job |
 
@@ -74,7 +74,7 @@ On the recommended notebook path there is no `.env.deploy` file. The equivalent 
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
+| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM model for analysis; fills `LLM_MODEL` |
 | `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` or `classic`; fills `GENIE_LLM_ROUTE` and the job's `genie_llm_route` default |
 | `GENIE_BYOK_ENABLED` | No | `false` | `true` or `false`; fills `GENIE_BYOK_ENABLED` |
 | `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |

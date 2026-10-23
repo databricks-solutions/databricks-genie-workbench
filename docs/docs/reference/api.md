@@ -21,7 +21,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--info">POST</span> | `/api/space/parse` | <span className="badge badge--secondary">None</span> | Parse pasted Genie API JSON (client-side data, no auth needed) |
 | <span className="badge badge--success">GET</span> | `/api/debug/auth` | <span className="badge badge--primary">OBO</span> | Dev-only auth debug endpoint (404 on Databricks Apps) |
 | <span className="badge badge--success">GET</span> | `/api/settings` | <span className="badge badge--secondary">None</span> | Read-only app settings (LLM model, warehouse, host) |
-| <span className="badge badge--success">GET</span> | `/api/models` | <span className="badge badge--secondary">None</span> | Curated chat serving endpoints selectable per Create Agent / Auto-Optimize run |
+| <span className="badge badge--success">GET</span> | `/api/models` | <span className="badge badge--secondary">None</span> | Curated chat models selectable per Create Agent / Auto-Optimize run |
 
 ## Spaces Router (`/api`)
 

@@ -109,6 +109,10 @@ The final corpus is written directly to
 `genie_benchmarks_<domain>` as a Delta table with nested `inputs` and
 `expectations` structs. MLflow is not used for dataset persistence, run
 tracking, model registration, or evaluation; it is used only for LLM tracing.
+The job's LLM calls go through Unity AI Gateway by default (the `genie_llm_route`
+job parameter follows the app's `GENIE_LLM_ROUTE`), run as the app service
+principal, and are tagged `gso-optimize` with the run's `run_id`. See
+[LLM calls](/docs/getting-started/architecture-overview#llm-calls).
 
 ## Optimization loop
 
