@@ -294,7 +294,7 @@ openai==2.30.0
     #   genie-space-optimizer
     #   langchain-openai
     #   litellm
-opentelemetry-api==1.40.0
+opentelemetry-api==1.45.1
     # via
     #   mlflow-skinny
     #   mlflow-tracing
