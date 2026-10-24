@@ -91,6 +91,12 @@ export interface OptimizedScoreInputs {
   optimizedScore: number | null
   bestIteration: number | null
   status: string | null | undefined
+  bestEvalScope?: string | null
+}
+
+/** Only a full-scope iteration 0 is the retained baseline; a metric-view or enrichment win there is an improvement (MV-D121). */
+function holdsBaseline(inputs: OptimizedScoreInputs): boolean {
+  return inputs.bestIteration === 0 && (inputs.bestEvalScope ?? "full") === "full"
 }
 
 /**
@@ -110,6 +116,9 @@ export interface OptimizedScoreInputs {
  *      headline cell stays a clean number.
  *   4. ``bestIteration > 0`` → render the optimized number. Floor-at-baseline
  *      is enforced server-side, so we just trust the value.
+ *
+ * ``bestIteration == 0`` with a ``metric_view`` or ``enrichment`` scope is an
+ * improvement, not a retained baseline.
  */
 export function presentOptimizedScore(
   inputs: OptimizedScoreInputs,
@@ -117,7 +126,6 @@ export function presentOptimizedScore(
   const basePct = toPct(inputs.baselineScore)
   const optPct = toPct(inputs.optimizedScore)
   const isTerminal = isTerminalStatus(inputs.status)
-  const bestIter = inputs.bestIteration
 
   if (basePct == null) {
     return { text: "—", tooltip: null, pct: null }
@@ -125,7 +133,7 @@ export function presentOptimizedScore(
 
   // Mid-run with no accepted iter > 0 yet. Show "—" instead of echoing
   // the baseline number, so the card doesn't look "done".
-  if (bestIter === 0 && !isTerminal) {
+  if (holdsBaseline(inputs) && !isTerminal) {
     return {
       text: "—",
       tooltip: OPTIMIZATION_IN_PROGRESS_TOOLTIP,
@@ -172,14 +180,17 @@ export function presentBaselineScore(
  *   - ``bestIteration == 0`` AND not terminal → null (the headline is "—"
  *     with its own tooltip; we don't need a second copy).
  *   - Otherwise → the convergence reason as-is, or null when absent.
+ *
+ * ``bestIteration == 0`` with a ``metric_view`` or ``enrichment`` scope is an
+ * improvement, not a retained baseline.
  */
 export function convergenceReasonText(
   inputs: OptimizedScoreInputs & { convergenceReason: string | null },
 ): string | null {
-  const { convergenceReason, bestIteration, status } = inputs
+  const { convergenceReason, status } = inputs
   const terminal = isTerminalStatus(status)
 
-  if (bestIteration === 0) {
+  if (holdsBaseline(inputs)) {
     if (!terminal) return null
     if (convergenceReason && convergenceReason.trim().length > 0) {
       return `${BASELINE_RETAINED_LABEL} — ${convergenceReason.trim()}`

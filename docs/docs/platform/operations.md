@@ -99,9 +99,31 @@ databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile 
 | `OBO: using user token for /api/...` | Request authenticated via user's OBO token |
 | `OBO: no x-forwarded-access-token, using SP` | No user token — using SP (expected for health checks) |
 | `OBO token lacks genie scope, retrying with service principal` | Genie API scope fallback triggered |
+| `user token lacks the ai-gateway scope; retrying the gateway call as the service principal` | Gateway scope fallback: the user hasn't consented to the `ai-gateway` scope, so the call runs as the SP |
+| `Gateway model unavailable/entitlement 404 for <model>` | The model doesn't exist on Unity AI Gateway, or the caller isn't entitled to it |
 | `Lakebase pool created` | Database connection established |
 | `Lakebase pool re-created (credential refresh)` | Scheduled 50-minute token refresh |
 | `Failed to persist scan result` | Lakebase write failed (check connectivity) |
+
+## LLM Usage and Cost Attribution
+
+On the gateway route (the default), every LLM call carries a `Databricks-Ai-Gateway-Request-Tags` header, which lands in the `request_tags` map of `system.ai_gateway.usage`. Every call is tagged `application: genie-workbench` plus a `component` (`create-agent`, `plan-builder`, `gso-optimize`, `mv-suggest`, `leakage-embed`). Optimizer calls add `run_id`, and Create Agent sessions started from an existing space add `space_id`. See [LLM calls](/docs/getting-started/architecture-overview#llm-calls) for which caller sends which tag.
+
+Usage by feature and identity over the last day:
+
+```sql
+SELECT request_tags['component'] AS component,
+       requester_type,
+       count(*) AS requests,
+       sum(total_tokens) AS tokens
+FROM system.ai_gateway.usage
+WHERE request_tags['application'] = 'genie-workbench'
+  AND event_time > current_timestamp() - INTERVAL 1 DAY
+GROUP BY ALL
+ORDER BY tokens DESC
+```
+
+For one optimization run, filter on `request_tags['run_id'] = '<run_id>'`. `requester_type` separates calls made as a user from calls made as the app's service principal. Run the query as an identity that can read `system.ai_gateway`. Rows can take about 20 minutes to appear. Calls on the classic route are not recorded in this table at all.
 
 ## GSO Job Management
 
@@ -121,7 +143,11 @@ If a job with matching settings already exists, it is reused rather than duplica
 
 ### `ensure_job_run_as` Self-Healing
 
-At app startup, `_ensure_gso_job_run_as()` checks that the optimization job's `run_as` matches the current app SP. If they don't match (e.g., the app was redeployed with a different SP), the job is automatically updated. This avoids manual reconfiguration when the app identity changes.
+At app startup, `_ensure_gso_job_run_as()` checks that the optimization job's `run_as` matches the current app SP. If they don't match (e.g., the app was redeployed with a different SP), the job is automatically updated. This avoids manual reconfiguration when the app identity changes. If the update fails, the app logs `Could not verify GSO job run_as` and keeps running.
+
+The local terminal path never sets `run_as`; startup sets it. The notebook installer sets `run_as` to the app SP when the installing user holds the `servicePrincipal.user` role on it, and otherwise creates the job without `run_as` and leaves it to startup.
+
+If `GSO_JOB_ID` is empty, the app boots, and `/trigger` returns 503 `Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.` (`auto_optimize.py`, `_is_configured`).
 
 ### Bundle Management (local terminal path only)
 

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from backend.services.genie_client import get_serialized_space, normalize_metric_view_sources
 from backend.services.model_catalog import ModelCatalogError, list_chat_models
+from backend.services.space_access import SpaceAccessLevel, require_space_access
 from backend.models import LLMModelInfo
 
 router = APIRouter(prefix="/api")
@@ -75,6 +76,7 @@ async def fetch_space(request: FetchSpaceRequest):
 
     Returns the space data.
     """
+    await require_space_access(request.genie_space_id, SpaceAccessLevel.EDIT)
     try:
         space_data = get_serialized_space(request.genie_space_id)
 

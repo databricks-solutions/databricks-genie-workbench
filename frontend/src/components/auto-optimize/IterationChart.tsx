@@ -13,7 +13,10 @@ import type { GSOIterationResult } from "@/types"
 
 interface IterationChartProps {
   iterations: GSOIterationResult[]
+  metricViewAttachAccuracy?: number | null
 }
+
+const ATTACH_KEY = "0-mv"
 
 const LEVER_NAMES: Record<number, string> = {
   1: "Tables & Columns",
@@ -25,6 +28,8 @@ const LEVER_NAMES: Record<number, string> = {
 }
 
 interface ChartPoint {
+  // Categorical x key: the attach point shares iteration 0 with the baseline.
+  key: string
   iteration: number
   lever: number | null
   leverLabel: string
@@ -36,12 +41,21 @@ interface ChartPoint {
   numNeedsReview: number | null
 }
 
-function buildChartData(iterations: GSOIterationResult[]): ChartPoint[] {
-  return iterations
+function toPct(value: number): number {
+  return value <= 1 ? value * 100 : value
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildChartData(
+  iterations: GSOIterationResult[],
+  metricViewAttachAccuracy: number | null = null,
+): ChartPoint[] {
+  const points: ChartPoint[] = iterations
     .filter((it) => it.eval_scope === "full")
     .filter((it) => it.total_questions > 0 || it.iteration === 0)
     .sort((a, b) => a.iteration - b.iteration)
     .map((it) => ({
+      key: String(it.iteration),
       iteration: it.iteration,
       lever: it.lever,
       leverLabel:
@@ -50,11 +64,26 @@ function buildChartData(iterations: GSOIterationResult[]): ChartPoint[] {
           : it.lever != null && it.lever > 0
             ? (LEVER_NAMES[it.lever] ?? `Lever ${it.lever}`)
             : `Iter ${it.iteration}`,
-      accuracy: Number(it.overall_accuracy) <= 1 ? Number(it.overall_accuracy) * 100 : Number(it.overall_accuracy),
+      accuracy: toPct(Number(it.overall_accuracy)),
       totalQuestions: it.num_questions ?? it.total_questions,
       numCorrect: it.num_correct ?? it.correct_count ?? null,
       numNeedsReview: it.num_needs_review ?? null,
     }))
+
+  const baselineIdx = points.findIndex((p) => p.iteration === 0)
+  if (baselineIdx >= 0 && metricViewAttachAccuracy != null && Number.isFinite(metricViewAttachAccuracy)) {
+    points.splice(baselineIdx + 1, 0, {
+      key: ATTACH_KEY,
+      iteration: 0,
+      lever: null,
+      leverLabel: "Metric view",
+      accuracy: toPct(metricViewAttachAccuracy),
+      totalQuestions: points[baselineIdx].totalQuestions,
+      numCorrect: null,
+      numNeedsReview: null,
+    })
+  }
+  return points
 }
 
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: ChartPoint }> }) {
@@ -70,13 +99,16 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<
       {pt.numNeedsReview != null && pt.numNeedsReview > 0 && (
         <div><span className="text-muted">Needs review:</span> {pt.numNeedsReview}</div>
       )}
-      <div><span className="text-muted">Lever:</span> {pt.leverLabel}</div>
+      <div><span className="text-muted">Lever:</span> {pt.key === ATTACH_KEY ? "Metric view attach" : pt.leverLabel}</div>
     </div>
   )
 }
 
-export function IterationChart({ iterations }: IterationChartProps) {
-  const chartData = useMemo(() => buildChartData(iterations), [iterations])
+export function IterationChart({ iterations, metricViewAttachAccuracy = null }: IterationChartProps) {
+  const chartData = useMemo(
+    () => buildChartData(iterations, metricViewAttachAccuracy),
+    [iterations, metricViewAttachAccuracy],
+  )
 
   if (chartData.length < 2) {
     return (
@@ -98,15 +130,15 @@ export function IterationChart({ iterations }: IterationChartProps) {
   return (
     <div className="rounded-xl border border-default p-6">
       <h3 className="text-sm font-semibold text-primary mb-3">Score Progression</h3>
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={280} initialDimension={{ width: 480, height: 280 }}>
         <LineChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border, #e5e7eb)" />
           <XAxis
-            dataKey="iteration"
+            dataKey="key"
             tick={{ fontSize: 11 }}
             tickFormatter={(val) => {
-              const pt = chartData.find((p) => p.iteration === val)
-              return pt?.leverLabel ?? (val === 0 ? "Baseline" : String(val))
+              const pt = chartData.find((p) => p.key === val)
+              return pt?.leverLabel ?? (val === "0" ? "Baseline" : String(val))
             }}
           />
           <YAxis domain={[yMin, yMax]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11 }} />

@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ _memory_store: dict = {
     "stars": set(),   # set of starred space_ids
     "seen": set(),    # set of seen space_ids
     "optimization_runs": {},  # space_id -> latest optimization run dict
+    "join_advice": {},  # space_id -> {seeds, updated_at, seeded_by} (Join Advisor advice)
     # ── GenieWatch caches (read-only observability surface) ──
     "watch_space_cache": {},        # space_id -> dict
     "watch_conversation_cache": {}, # (space_id, conversation_id) -> dict
@@ -215,6 +216,19 @@ async def _ensure_schema():
                 "CREATE INDEX IF NOT EXISTS idx_hidden_optimization_runs_space_id "
                 "ON genie.hidden_optimization_runs(space_id)"
             )
+            # Join Advisor advice (Semantic Blueprint v4 §7). One row per space:
+            # the pending set of operator-seeded candidate joins carried into the
+            # next Auto-Optimize run as ADVICE (never a declared join_spec — the
+            # Workbench makes no ad-hoc Genie Agent config edits). seeds_json is a
+            # JSON array of JoinCandidate dicts.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.join_advice (
+                    space_id    VARCHAR(128) PRIMARY KEY,
+                    seeds_json  TEXT NOT NULL,
+                    seeded_by   TEXT,
+                    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
 
             # ── GenieWatch tables (read-only observability) ──
             await conn.execute("""
@@ -418,7 +432,7 @@ async def close_pool():
 
 async def save_scan_result(space_id: str, scan_result: dict) -> None:
     """Save a scan result to Lakebase (or in-memory fallback)."""
-    scan_result["scanned_at"] = scan_result.get("scanned_at", datetime.utcnow().isoformat())
+    scan_result["scanned_at"] = scan_result.get("scanned_at", datetime.now(UTC).isoformat())
 
     if not _lakebase_available or _pool is None:
         _memory_store["scans"][space_id] = scan_result
@@ -522,7 +536,15 @@ async def get_latest_scores_batch(space_ids: list[str]) -> dict[str, dict]:
 async def get_score_history(space_id: str, days: int = 30) -> list[dict]:
     """Get score history for a space over the last N days."""
     if not _lakebase_available or _pool is None:
-        return _memory_store["history"].get(space_id, [])
+        return [
+            {
+                "score": s["score"],
+                "maturity": s["maturity"],
+                "optimization_accuracy": s.get("optimization_accuracy"),
+                "scanned_at": s["scanned_at"],
+            }
+            for s in _memory_store["history"].get(space_id, [])
+        ]
 
     import json
     async with _pool.acquire() as conn:
@@ -640,7 +662,7 @@ async def save_optimization_run(space_id: str, benchmark_total: int, benchmark_c
         "benchmark_total": benchmark_total,
         "benchmark_correct": benchmark_correct,
         "accuracy": accuracy,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
 
     if not _lakebase_available or _pool is None:
@@ -745,6 +767,82 @@ async def get_hidden_optimization_run_ids(space_id: str) -> set[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Join Advisor advice (Semantic Blueprint v4 §7)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def save_join_advice(
+    space_id: str, seeds: list[dict], seeded_by: str | None = None
+) -> dict:
+    """Persist the pending Join Advisor advice for a space (upsert; empty clears).
+
+    ``seeds`` is a list of JoinCandidate dicts. This is ADVICE the next
+    Auto-Optimize run validates and adds itself — the Workbench never writes it
+    into ``serialized_space``. Returns the stored record. Mirrors the write posture
+    of ``save_optimization_run`` (best-effort; falls back to the in-memory store).
+    """
+    updated_at = datetime.now(UTC).isoformat()
+    record = {"seeds": seeds, "seeded_by": seeded_by, "updated_at": updated_at}
+
+    if not _lakebase_available or _pool is None:
+        if seeds:
+            _memory_store["join_advice"][space_id] = record
+        else:
+            _memory_store["join_advice"].pop(space_id, None)
+        return record
+
+    async with _pool.acquire() as conn:
+        if not seeds:
+            await conn.execute("DELETE FROM genie.join_advice WHERE space_id = $1", space_id)
+            return record
+        await conn.execute(
+            """
+            INSERT INTO genie.join_advice (space_id, seeds_json, seeded_by, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (space_id) DO UPDATE SET
+                seeds_json = EXCLUDED.seeds_json,
+                seeded_by = EXCLUDED.seeded_by,
+                updated_at = NOW()
+            """,
+            space_id,
+            json.dumps(seeds),
+            seeded_by,
+        )
+    return record
+
+
+async def get_join_advice(space_id: str) -> Optional[dict]:
+    """Read the pending Join Advisor advice for a space, or ``None``.
+
+    Returns ``{"seeds": [...], "seeded_by": str|None, "updated_at": str|None}``.
+    Reads fail open (a transient Lakebase issue yields ``None``, i.e. no advice)
+    so the semantic-model tab and the trigger never break on it."""
+    if not _lakebase_available or _pool is None:
+        return _memory_store["join_advice"].get(space_id)
+
+    try:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT seeds_json, seeded_by, updated_at FROM genie.join_advice WHERE space_id = $1",
+                space_id,
+            )
+        if not row:
+            return None
+        try:
+            seeds = json.loads(row["seeds_json"]) or []
+        except (ValueError, TypeError):
+            seeds = []
+        return {
+            "seeds": seeds,
+            "seeded_by": row["seeded_by"],
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+    except Exception:
+        logger.warning("Failed to read join advice for space %s", space_id, exc_info=True)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # GenieWatch accessors — observability caches & user-set mappings.
 # Tables live in the same `genie` schema (prefixed `watch_`) so there's a
 # single Lakebase pool + single schema bootstrap.
@@ -761,7 +859,7 @@ async def watch_upsert_space(space: dict) -> None:
     if not is_available():
         _memory_store["watch_space_cache"][space_id] = {
             **space,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         return
     async with _pool.acquire() as conn:
@@ -909,7 +1007,7 @@ async def watch_set_watermark(resource: str, status: str, error: str | None = No
     if not is_available():
         _memory_store["watch_sync_watermark"][resource] = {
             "resource": resource,
-            "last_synced_at": datetime.utcnow().isoformat(),
+            "last_synced_at": datetime.now(UTC).isoformat(),
             "status": status,
             "error": error,
         }

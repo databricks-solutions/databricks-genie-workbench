@@ -15,11 +15,17 @@ router = APIRouter(prefix="/api/auth")
 async def get_current_user(request: Request) -> dict:
     """Return current user info from OBO headers or SDK.
 
-    On Databricks Apps, reads X-Forwarded-User / X-Forwarded-Groups headers.
+    On Databricks Apps, reads X-Forwarded-Email / X-Forwarded-Groups headers.
     Locally, fetches from the SDK's current_user.me().
     """
-    # Databricks Apps injects user info via headers
-    email = request.headers.get("X-Forwarded-User") or request.headers.get("X-Forwarded-Email")
+    # Databricks Apps injects user info via headers. Prefer the human email
+    # (X-Forwarded-Email / X-Forwarded-Preferred-Username); X-Forwarded-User is the numeric
+    # user id, which is not a readable identity — only use it as a last resort.
+    email = (
+        request.headers.get("X-Forwarded-Email")
+        or request.headers.get("X-Forwarded-Preferred-Username")
+        or request.headers.get("X-Forwarded-User")
+    )
     groups = request.headers.get("X-Forwarded-Groups", "")
 
     if email:

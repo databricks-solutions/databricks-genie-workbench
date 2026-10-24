@@ -12,7 +12,8 @@ import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { HowItWorks } from "@/pages/HowItWorks"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
-import { getSpaceDetail } from "@/lib/api"
+import { SpaceDetailLoadError } from "@/components/space-access/SpaceAccessChrome"
+import { ApiError, getSpaceDetail } from "@/lib/api"
 import {
   LIST_ROUTE,
   buildAppRouteUrl,
@@ -51,6 +52,7 @@ interface DetailState {
 interface DetailError {
   spaceId: string
   message: string
+  status?: number
 }
 
 function initialRoute(): AppRoute {
@@ -62,6 +64,10 @@ function stringField(value: unknown): string | undefined {
 }
 
 export default function App() {
+  return <WorkbenchApp />
+}
+
+function WorkbenchApp() {
   useTheme()
   const [route, setRoute] = useState<AppRoute>(initialRoute)
   const [detailState, setDetailState] = useState<DetailState | null>(null)
@@ -69,8 +75,8 @@ export default function App() {
   const currentView = route.view
   const routeSpaceId = route.view === "detail" ? route.spaceId : undefined
   const detailReady = Boolean(routeSpaceId && detailState?.spaceId === routeSpaceId)
-  const detailErrorMessage = detailError && detailError.spaceId === routeSpaceId ? detailError.message : null
-  const detailLoading = currentView === "detail" && !detailReady && !detailErrorMessage
+  const detailErrorShown = detailError && detailError.spaceId === routeSpaceId ? detailError : null
+  const detailLoading = currentView === "detail" && !detailReady && !detailErrorShown
 
   const navigate = useCallback((nextRoute: AppRoute, replace = false) => {
     if (routesEqual(route, nextRoute)) return
@@ -111,6 +117,7 @@ export default function App() {
           setDetailError({
             spaceId,
             message: error instanceof Error ? error.message : "Failed to load this Agent",
+            status: error instanceof ApiError ? error.status : undefined,
           })
         }
       })
@@ -225,16 +232,11 @@ export default function App() {
           <div className="py-16 text-center text-sm text-muted">Loading Agent...</div>
         )}
 
-        {currentView === "detail" && !detailLoading && detailErrorMessage && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-5 text-red-400">
-            <p>{detailErrorMessage}</p>
-            <button onClick={handleNavList} className="mt-3 text-sm text-accent hover:underline">
-              Return to Agents
-            </button>
-          </div>
+        {currentView === "detail" && !detailLoading && detailErrorShown && (
+          <SpaceDetailLoadError status={detailErrorShown.status} message={detailErrorShown.message} onBack={handleNavList} />
         )}
 
-        {currentView === "detail" && !detailLoading && !detailErrorMessage && detailState && route.view === "detail" && detailState.spaceId === route.spaceId && (
+        {currentView === "detail" && !detailLoading && !detailErrorShown && detailState && route.view === "detail" && detailState.spaceId === route.spaceId && (
           <SpaceDetail
             spaceId={detailState.spaceId}
             displayName={detailState.displayName}

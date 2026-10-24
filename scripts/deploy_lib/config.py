@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 
 LakebaseMode = Literal["create", "existing", "skip"]
+LLM_ROUTES = ("gateway", "classic")
 
 APP_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 GSO_JOB_BASENAME = "gso-optimization-job"
@@ -35,6 +36,7 @@ class GsoJobInfo:
     job_name: str
     notebooks_path: str
     wheel_path: str
+    run_as_bound: bool = True
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,8 @@ class InstallConfig:
     catalog: str
     warehouse_id: str
     llm_model: str = "databricks-claude-sonnet-4-6"
+    llm_route: str = "gateway"
+    byok_enabled: bool = False
     mlflow_experiment_id: str | None = None
     lakebase_mode: LakebaseMode = "create"
     lakebase_instance: str | None = None
@@ -67,6 +71,8 @@ class InstallConfig:
             catalog=self.catalog.strip(),
             warehouse_id=self.warehouse_id.strip(),
             llm_model=(self.llm_model or "databricks-claude-sonnet-4-6").strip(),
+            llm_route=(self.llm_route or "gateway").strip().lower(),
+            byok_enabled=bool(self.byok_enabled),
             mlflow_experiment_id=(self.mlflow_experiment_id or "").strip() or None,
             lakebase_mode=self.lakebase_mode,
             lakebase_instance=lakebase_instance,
@@ -91,6 +97,8 @@ class InstallConfig:
             errors.append("catalog is required")
         if not cfg.warehouse_id:
             errors.append("warehouse_id is required")
+        if cfg.llm_route not in LLM_ROUTES:
+            errors.append("llm_route must be one of: gateway, classic")
         if cfg.lakebase_mode not in ("create", "existing", "skip"):
             errors.append("lakebase_mode must be one of: create, existing, skip")
         if cfg.lakebase_mode == "existing" and not cfg.lakebase_instance:

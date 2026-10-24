@@ -1,17 +1,24 @@
 /**
- * SpaceDetail - 3-tab detail view for a Genie Agent.
- * Tabs: Score (default) | Optimize | History
+ * SpaceDetail - detail view for a Genie Agent.
+ * Tabs: Score | Model | Optimize | History | Version Control
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Network, GitBranch } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
-import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
+import type { ScanResult, ScoreHistoryPoint, OptimizationEvent, MvProposal } from "@/types"
+import type { MvRerunPrefill } from "@/components/auto-optimize/OptimizationConfig"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
+import { SpaceVersionControlTab } from "@/components/version-control/SpaceVersionControlTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { AutoOptimizeViewerTab } from "@/components/auto-optimize/AutoOptimizeViewerTab"
+import { SemanticModelTab } from "@/components/model/SemanticModelTab"
+import { CheckingAccess, LockedSection, SpaceAccessNotice, SpaceNoAccessState } from "@/components/space-access/SpaceAccessChrome"
+import { useSpaceAccess } from "@/hooks/useSpaceAccess"
+import { canEditSpace, CONFIG_NEEDS_EDIT, MODEL_NEEDS_EDIT } from "@/lib/space-access"
 import type { SpaceTab } from "@/lib/navigation"
 import { createScanCoordinator } from "@/lib/scan-coordinator"
 
@@ -38,6 +45,31 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
   const [configExpanded, setConfigExpanded] = useState(false)
 
+  // Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
+  // setup" deep-link. Seeds the optimize tab's MV prefill on mount, and is
+  // cleared when a run starts, a run is opened, or the user leaves the optimize tab, so a later
+  // visit does not reopen create_and_attach. The nonce keys the tab: each deep
+  // link remounts it, and clearing the prefill does not.
+  const [mvPrefill, setMvPrefill] = useState<MvRerunPrefill | null>(null)
+  const [mvPrefillNonce, setMvPrefillNonce] = useState(0)
+
+  useEffect(() => {
+    if (activeTab !== "optimize" && mvPrefill) setMvPrefill(null)
+  }, [activeTab, mvPrefill])
+
+  const handleReviewProposal = useCallback(
+    (proposal: MvProposal | null) => {
+      setMvPrefill(
+        proposal
+          ? { mode: "create_and_attach", suggestionId: proposal.suggestion_id }
+          : { mode: "create_and_attach", suggestionId: null },
+      )
+      setMvPrefillNonce((n) => n + 1)
+      onNavigate("optimize")
+    },
+    [onNavigate],
+  )
+
   const { state, actions } = useAnalysis()
   // Pull the stable callback out of `actions` so the load effect can depend on
   // it directly. `actions` is a fresh object every render, so depending on it
@@ -45,16 +77,21 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   // with an empty dep array (see useAnalysis), so its identity is stable.
   const { handleFetchSpace } = actions
 
+  const { access, reason: accessReason } = useSpaceAccess(spaceId, { retryNotFound: Boolean(autoScan) })
+  // Every write affordance and every Edit-level read waits for this answer.
+  const canEdit = canEditSpace(access)
+
   // Guard against getSpaceDetail overwriting a fresh scan result
   const freshScanDoneRef = useRef(false)
   const postOptimizationScansRef = useRef(new Map<string, Promise<boolean>>())
+  const autoScanDoneRef = useRef(false)
 
   // Load space data + persisted score on mount
   useEffect(() => {
     freshScanDoneRef.current = false
+    autoScanDoneRef.current = false
     setIsLoadingScan(true)
     if (spaceId) {
-      handleFetchSpace(spaceId)
       // Load latest persisted scan result (skip if a fresh scan already completed)
       getSpaceDetail(spaceId)
         .then((detail) => {
@@ -78,7 +115,11 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
         .catch((e) => console.error("Failed to load space detail:", e))
         .finally(() => setIsLoadingScan(false))
     }
-  }, [spaceId, handleFetchSpace])
+  }, [spaceId])
+
+  useEffect(() => {
+    if (canEdit) handleFetchSpace(spaceId)
+  }, [spaceId, canEdit, handleFetchSpace])
 
   useEffect(() => {
     getActiveRunForSpace(spaceId)
@@ -130,12 +171,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
     }
   }
 
-  // Auto-scan on mount when requested (e.g., returning from create/update flows)
+  // Auto-scan when requested (e.g., returning from create/update flows), once the
+  // caller is known to hold Can Edit.
   useEffect(() => {
-    if (autoScan && !isScanning) {
+    if (autoScan && canEdit && !autoScanDoneRef.current && !isScanning) {
+      autoScanDoneRef.current = true
       handleScan()
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoScan, canEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (activeTab === "history") {
@@ -152,8 +195,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
   const tabs: { id: SpaceTab; label: string; icon: React.ReactNode }[] = [
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
+    { id: "model", label: "Model", icon: <Network className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
+    { id: "versions", label: "Version Control", icon: <GitBranch className="w-4 h-4" /> },
   ]
 
   // Determine contextual action(s) based on scan results
@@ -205,9 +250,11 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
         <div className="flex-1">
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-display font-bold text-primary">{displayName}</h2>
-            <button onClick={handleToggleStar}>
-              <Star className={`w-5 h-5 ${isStarred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"} transition-colors`} />
-            </button>
+            {access !== "none" && access !== "checking" && (
+              <button onClick={handleToggleStar}>
+                <Star className={`w-5 h-5 ${isStarred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"} transition-colors`} />
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3 mt-2">
             {scanResult ? (
@@ -239,103 +286,135 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-default">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => onNavigate(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === tab.id
-                ? "border-accent text-accent"
-                : "border-transparent text-muted hover:text-secondary"
-            }`}
-          >
-            {tab.icon}
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {access === "none" ? (
+        <SpaceNoAccessState reason={accessReason} />
+      ) : (
+        <>
+          {/* Tabs */}
+          <div className="flex border-b border-default">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => onNavigate(tab.id)}
+                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.id
+                    ? "border-accent text-accent"
+                    : "border-transparent text-muted hover:text-secondary"
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-      {/* Tab content */}
-      <div>
-        {activeTab === "score" && (
-          <>
-            {activeOptRunId && (
-              <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
-                  <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this agent.</p>
-                </div>
-                <button
-                  onClick={() => onNavigate("optimize", activeOptRunId)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  View Run
-                </button>
-              </div>
+          {/* Tab content */}
+          <div>
+            {activeTab !== "versions" && <SpaceAccessNotice access={access} reason={accessReason} />}
+            {activeTab === "score" && (
+              <>
+                {activeOptRunId && (
+                  <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
+                      <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this agent.</p>
+                    </div>
+                    {canEdit && (
+                      <button
+                        onClick={() => onNavigate("optimize", activeOptRunId)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        View Run
+                      </button>
+                    )}
+                  </div>
+                )}
+                <IQScoreTab
+                  scanResult={scanResult}
+                  isLoading={isLoadingScan}
+                  onScan={canEdit ? handleScan : undefined}
+                  isScanning={isScanning}
+                  spaceId={spaceId}
+                  {...(canEdit ? actionProps : {})}
+                  onNavigateToOptimize={canEdit ? () => onNavigate("optimize") : undefined}
+                />
+
+                {canEdit ? (
+                  <div className="mt-6 bg-surface border border-default rounded-xl">
+                    <div className="flex items-center justify-between px-5 py-3">
+                      <button
+                        onClick={() => setConfigExpanded(!configExpanded)}
+                        className="flex items-center gap-2 text-left"
+                      >
+                        {configExpanded
+                          ? <ChevronDown className="w-4 h-4 text-muted" />
+                          : <ChevronRight className="w-4 h-4 text-muted" />
+                        }
+                        <Settings className="w-4 h-4 text-muted" />
+                        <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
+                          Agent Configuration
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => handleFetchSpace(spaceId)}
+                        disabled={state.isLoading}
+                        className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+                        title="Reload agent configuration"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${state.isLoading ? "animate-spin" : ""}`} />
+                        Reload
+                      </button>
+                    </div>
+                    {configExpanded && (
+                      <div className="border-t border-default">
+                        <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+                      </div>
+                    )}
+                  </div>
+                ) : access !== "checking" && (
+                  <div className="mt-6">
+                    <LockedSection title="Agent Configuration" message={CONFIG_NEEDS_EDIT} />
+                  </div>
+                )}
+              </>
             )}
-            <IQScoreTab
-              scanResult={scanResult}
-              isLoading={isLoadingScan}
-              onScan={handleScan}
-              isScanning={isScanning}
-              spaceId={spaceId}
-              {...actionProps}
-              onNavigateToOptimize={() => onNavigate("optimize")}
-            />
 
-            {/* Collapsible space configuration */}
-            <div className="mt-6 bg-surface border border-default rounded-xl">
-              <div className="flex items-center justify-between px-5 py-3">
-                <button
-                  onClick={() => setConfigExpanded(!configExpanded)}
-                  className="flex items-center gap-2 text-left"
-                >
-                  {configExpanded
-                    ? <ChevronDown className="w-4 h-4 text-muted" />
-                    : <ChevronRight className="w-4 h-4 text-muted" />
-                  }
-                  <Settings className="w-4 h-4 text-muted" />
-                  <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
-                    Agent Configuration
-                  </span>
-                </button>
-                <button
-                  onClick={() => handleFetchSpace(spaceId)}
-                  disabled={state.isLoading}
-                  className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
-                  title="Reload agent configuration"
-                >
-                  <RefreshCw className={`w-3 h-3 ${state.isLoading ? "animate-spin" : ""}`} />
-                  Reload
-                </button>
-              </div>
-              {configExpanded && (
-                <div className="border-t border-default">
-                  <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
-                </div>
-              )}
-            </div>
-          </>
-        )}
+            {activeTab === "model" && (
+              canEdit ? <SemanticModelTab spaceId={spaceId} onReviewCreate={handleReviewProposal} />
+                : access === "checking" ? <CheckingAccess />
+                : <LockedSection title="Model" message={MODEL_NEEDS_EDIT} />
+            )}
 
-        {activeTab === "optimize" && (
-          <AutoOptimizeTab
-            key={runId ?? "configure"}
-            spaceId={spaceId}
-            requestedRunId={runId}
-            onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
-            onRefreshIqScore={handlePostOptimizationScan}
-            onViewIqScore={() => onNavigate("score")}
-          />
-        )}
+            {activeTab === "optimize" && (
+              canEdit ? (
+                <AutoOptimizeTab
+                  key={`${runId ?? "configure"}:${mvPrefillNonce}`}
+                  spaceId={spaceId}
+                  requestedRunId={runId}
+                  onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
+                  onRefreshIqScore={handlePostOptimizationScan}
+                  onViewIqScore={() => onNavigate("score")}
+                  initialMvPrefill={mvPrefill}
+                  onMvPrefillConsumed={() => setMvPrefill(null)}
+                />
+              ) : access === "checking" ? (
+                <CheckingAccess />
+              ) : (
+                <AutoOptimizeViewerTab spaceId={spaceId} />
+              )
+            )}
 
-        {activeTab === "history" && (
-          <HistoryTab history={history} optimizationEvents={optimizationEvents} isLoading={isLoadingHistory} />
-        )}
-      </div>
+            {activeTab === "history" && (
+              <HistoryTab history={history} optimizationEvents={optimizationEvents} isLoading={isLoadingHistory} />
+            )}
+
+            {activeTab === "versions" && (
+              <SpaceVersionControlTab spaceId={spaceId} access={access} accessReason={accessReason} />
+            )}
+          </div>
+        </>
+      )}
 
     </div>
   )

@@ -54,6 +54,10 @@ def _patch_trigger_happy_path(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         lambda _sp_ws: {"sp"},
     )
     monkeypatch.setattr(
+        "genie_space_optimizer.common.sp_permissions.missing_read_schemas",
+        lambda _sp_ws, _schemas: ([], []),
+    )
+    monkeypatch.setattr(
         "genie_space_optimizer.backend.job_launcher.submit_optimization",
         lambda *a, **k: (987, 654),
     )
@@ -205,6 +209,76 @@ def test_trigger_never_marks_submitted_job_failed_when_handoff_cannot_persist(
     assert len(writes) == 2
     assert all("status = 'IN_PROGRESS'" in sql for sql in writes)
     assert not any("status = 'FAILED'" in sql for sql in writes)
+
+
+def _patch_read_check(monkeypatch: pytest.MonkeyPatch, check) -> MagicMock:
+    create_run = _patch_trigger_happy_path(monkeypatch)
+    snapshot = {**_snapshot(2), "_tables": ["cat.sch.table_0", "cat.sch.table_1"]}
+    monkeypatch.setattr(
+        _genie_client, "fetch_space_config", lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.sp_permissions.missing_read_schemas", check,
+    )
+    return create_run
+
+
+def test_trigger_refuses_a_schema_the_sp_cannot_read_before_any_run_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probed: list[set] = []
+
+    def check(_sp_ws, schemas):
+        probed.append(schemas)
+        return [("cat", "sch")], []
+
+    create_run = _patch_read_check(monkeypatch, check)
+
+    with pytest.raises(PermissionError, match=r"cannot read 1 schema\(s\) this space uses: `cat.sch`"):
+        _trigger(_client("obo"), _client("sp"))
+
+    assert probed == [{("cat", "sch")}]
+    create_run.assert_not_called()
+
+
+def test_trigger_proceeds_when_the_sp_can_read_every_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_run = _patch_read_check(monkeypatch, lambda _sp_ws, _schemas: ([], []))
+
+    assert _trigger(_client("obo"), _client("sp")).status == "IN_PROGRESS"
+    create_run.assert_called_once()
+
+
+def test_trigger_proceeds_with_a_warning_when_read_access_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    create_run = _patch_read_check(
+        monkeypatch, lambda _sp_ws, _schemas: ([], [("cat", "sch")]),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert _trigger(_client("obo"), _client("sp")).status == "IN_PROGRESS"
+
+    create_run.assert_called_once()
+    assert "Could not verify the service principal's read access to cat.sch" in caplog.text
+
+
+def test_trigger_proceeds_with_a_warning_when_the_read_check_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def check(_sp_ws, _schemas):
+        raise RuntimeError("grants API unavailable")
+
+    create_run = _patch_read_check(monkeypatch, check)
+
+    with caplog.at_level(logging.WARNING):
+        assert _trigger(_client("obo"), _client("sp")).status == "IN_PROGRESS"
+
+    create_run.assert_called_once()
+    assert "Could not verify the service principal's read access for run" in caplog.text
 
 
 def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(

@@ -1,0 +1,12 @@
+{
+  "type": "CreateIntentRef",
+  "examples": [
+    {
+      "event_id": "00000000-0000-4000-8000-000000000004",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ]
+}

@@ -75,10 +75,19 @@ def submit_optimization(
     triggered_by: str = "",
     warehouse_id: str = "",
     llm_model: str = "",
+    genie_llm_route: str = "",
     target_accuracy: str = "0.90",
     max_attempts: str = "3",
     workload_warehouse_ids: str = "[]",
     benchmark_policy: str = "repair_allowed",
+    # Metric view advisor job parameters (MV-D5 four-place lockstep). Defaults
+    # match the job-level declarations so the sole caller (integration/trigger.py)
+    # stays untouched until Prompt 9 threads real values through the trigger flow.
+    enable_metric_view_suggestions: str = "false",
+    mv_action_mode: str = "suggest_only",
+    mv_attach_views: str = "",
+    mv_consent_id: str = "",
+    mv_min_confidence: str = "75",
 ) -> tuple[str, int]:
     """Trigger a run on the bundle-managed optimization job.
 
@@ -120,8 +129,18 @@ def submit_optimization(
                 "triggered_by": triggered_by,
                 "warehouse_id": warehouse_id,
                 "llm_model": llm_model or os.getenv("LLM_MODEL", ""),
+                "genie_llm_route": genie_llm_route or os.getenv("GENIE_LLM_ROUTE") or "gateway",
                 "workload_warehouse_ids": workload_warehouse_ids,
                 "benchmark_policy": benchmark_policy,
+                # Metric view advisor parameters (MV-D5). enable_metric_view_suggestions
+                # gates the advisor phase in run_optimize.py; mv_attach_views /
+                # mv_consent_id drive the MV-D16 attach phase. mv_action_mode and
+                # mv_min_confidence are declared-but-unconsumed today (see run_optimize).
+                "enable_metric_view_suggestions": enable_metric_view_suggestions,
+                "mv_action_mode": mv_action_mode,
+                "mv_attach_views": mv_attach_views,
+                "mv_consent_id": mv_consent_id,
+                "mv_min_confidence": mv_min_confidence,
             },
         )
 

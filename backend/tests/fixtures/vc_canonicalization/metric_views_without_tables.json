@@ -1,0 +1,20 @@
+{
+  "submitted": {
+    "data_sources": {
+      "metric_views": [
+        {
+          "identifier": "cat.sch.mv_revenue"
+        }
+      ]
+    }
+  },
+  "observed": {
+    "data_sources": {
+      "tables": [
+        {
+          "identifier": "cat.sch.mv_revenue"
+        }
+      ]
+    }
+  }
+}

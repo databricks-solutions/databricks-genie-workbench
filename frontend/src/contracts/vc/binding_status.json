@@ -1,0 +1,157 @@
+{
+  "type": "BindingStatus",
+  "examples": [
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "clean",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "external_ahead",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "desired_ahead",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "diverged",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "unknown",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "unreachable",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "applied_unverified",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "heads": {
+        "observed": null,
+        "approved": null,
+        "deployed": null
+      },
+      "drift": "conflicted",
+      "quarantined": false,
+      "unresolved_operation_id": null,
+      "observed_at": null,
+      "projection_as_of": "2026-09-06T00:00:00Z",
+      "stale": true,
+      "allowed_actions": [],
+      "reasons": [
+        "coordination_unavailable"
+      ]
+    }
+  ]
+}

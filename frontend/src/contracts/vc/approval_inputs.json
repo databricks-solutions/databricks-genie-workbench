@@ -1,0 +1,95 @@
+{
+  "type": "ApprovalInputs",
+  "examples": [
+    {
+      "schema_version": "VC/1.0",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "operation_type": "restore",
+      "source_version_id": "00000000-0000-4000-8000-000000000002",
+      "raw_source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "artifact_digest": null,
+      "mapping_digest": null,
+      "rendered_target_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "transformer_version": null,
+      "canonicalizer_version": "vc-c14n/1",
+      "target_binding": {
+        "binding_id": "00000000-0000-4000-8000-000000000001",
+        "binding_revision": 1,
+        "space_key": "sales",
+        "workspace_id": "123",
+        "space_id": null,
+        "environment": "dev"
+      },
+      "expected_base_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "permission_policy_digest": null,
+      "validation_policy_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "benchmark_policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "preflight_evidence_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "thresholds": {
+        "minimum_accuracy": 0.9
+      },
+      "requester_id": "requester@example.invalid",
+      "recovery_policy": {
+        "automatic_clear": false,
+        "residual_risk_acknowledged": false
+      },
+      "expires_at": "2026-09-06T12:00:00Z"
+    },
+    {
+      "schema_version": "VC/1.0",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "operation_type": "restore",
+      "source_version_id": "00000000-0000-4000-8000-000000000002",
+      "raw_source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "artifact_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mapping_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "rendered_target_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "transformer_version": "vc-transform/1",
+      "canonicalizer_version": "vc-c14n/1",
+      "target_binding": {
+        "binding_id": "00000000-0000-4000-8000-000000000001",
+        "binding_revision": 1,
+        "space_key": "sales",
+        "workspace_id": "123",
+        "space_id": null,
+        "environment": "dev"
+      },
+      "expected_base_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "permission_policy_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "validation_policy_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "benchmark_policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "preflight_evidence_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "thresholds": {
+        "minimum_accuracy": 0.9
+      },
+      "requester_id": "requester@example.invalid",
+      "recovery_policy": {
+        "automatic_clear": false,
+        "residual_risk_acknowledged": false
+      },
+      "expires_at": "2026-09-06T12:00:00Z"
+    }
+  ]
+}

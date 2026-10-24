@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from databricks.sdk import WorkspaceClient
 
 from backend.models import LLMModelInfo
+from backend.services.llm_route import LLMRoute, get_llm_route
 from backend.services.llm_utils import get_llm_model
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,22 @@ def _optimizer_prompt_budget_chars() -> int:
     except ValueError:
         logger.warning("Invalid GSO_OPTIMIZER_PROMPT_MAX_CHARS=%r; using 60000", raw)
         return 60_000
+
+
+_UC_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){2}$")
+_BYOK_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _byok_enabled() -> bool:
+    """GENIE_BYOK_ENABLED gate (spec §2, Decision 2). Off unless explicitly enabled."""
+    return (os.environ.get("GENIE_BYOK_ENABLED") or "").strip().lower() in _BYOK_TRUTHY
+
+
+def _is_wellformed_uc_model_id(name: str) -> bool:
+    """A BYOK model is a full 3-level UC id (catalog.schema.name) — never a bare
+    endpoint/registered-model name (the entity_name trap, §1.4). Requires exactly
+    two dots and three non-empty UC-identifier segments."""
+    return bool(_UC_MODEL_ID_RE.match(name))
 
 
 class ModelCatalogError(RuntimeError):
@@ -97,6 +115,17 @@ def validate_chat_model(
     if not selected:
         return None
     if selected in _CURATED_COMPATIBLE_CHAT_MODEL_NAMES:
+        return selected
+
+    # BYOK (spec §1.4/§2, Decision 2): on the gateway route with BYOK enabled,
+    # additionally accept a customer's full 3-level UC model id, returned
+    # verbatim (no strip — the seam passes 3-level ids through unchanged).
+    # Strictly additive; the classic route and BYOK-off keep rejecting.
+    if (
+        get_llm_route() is LLMRoute.GATEWAY
+        and _byok_enabled()
+        and _is_wellformed_uc_model_id(selected)
+    ):
         return selected
 
     raise ModelValidationError(

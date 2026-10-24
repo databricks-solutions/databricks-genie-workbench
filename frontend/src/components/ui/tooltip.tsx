@@ -6,10 +6,11 @@ interface TooltipProps {
   children: React.ReactNode
   side?: "top" | "bottom" | "left" | "right"
   className?: string
+  defaultOpen?: boolean
 }
 
-function Tooltip({ content, children, side = "top", className }: TooltipProps) {
-  const [show, setShow] = React.useState(false)
+function Tooltip({ content, children, side = "top", className, defaultOpen = false }: TooltipProps) {
+  const [show, setShow] = React.useState(defaultOpen)
 
   const positionClasses = {
     top: "bottom-full left-1/2 -translate-x-1/2 mb-2",
@@ -23,13 +24,15 @@ function Tooltip({ content, children, side = "top", className }: TooltipProps) {
       className="relative inline-flex"
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
+      onFocus={() => setShow(true)}
+      onBlur={() => setShow(false)}
     >
       {children}
       {show && (
         <div
           role="tooltip"
           className={cn(
-            "absolute z-50 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md animate-in fade-in-0 zoom-in-95",
+            "absolute z-50 w-max max-w-xs whitespace-normal rounded-md border border-default bg-surface px-3 py-2 text-left text-xs leading-relaxed text-secondary shadow-lg",
             positionClasses[side],
             className,
           )}

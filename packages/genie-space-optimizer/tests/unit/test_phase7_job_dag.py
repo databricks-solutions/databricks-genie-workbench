@@ -108,6 +108,78 @@ def test_new_job_parameters_present_with_defaults():
     assert params.get("workload_warehouse_ids") == "[]"
 
 
+_MV_JOB_PARAM_DEFAULTS = {
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
+}
+
+
+def test_metric_view_advisor_params_declared_with_defaults():
+    """MV-D5: the five advisor job parameters are declared with their defaults."""
+    job = _load_job()
+    params = {p["name"]: p["default"] for p in job["parameters"]}
+    for name, default in _MV_JOB_PARAM_DEFAULTS.items():
+        assert params.get(name) == default, name
+
+
+def test_optimize_task_receives_metric_view_advisor_params():
+    """The advisor phase runs inside the optimize task, so every MV parameter
+    must reach run_optimize.py via that task's base_parameters. A parameter
+    declared at job level but omitted here silently resolves to the widget
+    default — the pass-through trap Prompt 8 exists to close."""
+    job = _load_job()
+    by_key = {t["task_key"]: t for t in job["tasks"]}
+    bp = by_key["optimize"]["notebook_task"]["base_parameters"]
+    for name in _MV_JOB_PARAM_DEFAULTS:
+        assert bp.get(name) == f"{{{{job.parameters.{name}}}}}", name
+
+
+def test_submit_optimization_threads_metric_view_params_with_defaults():
+    """MV-D5: the five MV parameters ride into run_now with the job-level
+    defaults when the caller omits them (Prompt 9 will pass real values), so the
+    launcher stays a subset-consistent mirror of the declared job parameters."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=7)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+    )
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    for name, default in _MV_JOB_PARAM_DEFAULTS.items():
+        assert params[name] == default, name
+
+
+def test_submit_optimization_threads_metric_view_param_overrides():
+    """Keyword-only MV kwargs propagate into run_now, proving the plumbing is
+    live for the Prompt 9 trigger flow while the default-only caller is untouched."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=8)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+        enable_metric_view_suggestions="true",
+        mv_action_mode="create_and_attach",
+        mv_attach_views='["main.sales.mv_orders"]',
+        mv_consent_id="probe_7f21",
+        mv_min_confidence="80",
+    )
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    assert params["enable_metric_view_suggestions"] == "true"
+    assert params["mv_action_mode"] == "create_and_attach"
+    assert params["mv_attach_views"] == '["main.sales.mv_orders"]'
+    assert params["mv_consent_id"] == "probe_7f21"
+    assert params["mv_min_confidence"] == "80"
+
+
 def test_legacy_deploy_target_param_removed():
     job = _load_job()
     names = {p["name"] for p in job["parameters"]}
@@ -403,3 +475,40 @@ def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():
         assert "dbutils.notebook.run" not in src, f"{nb} uses dbutils.notebook.run"
         assert "taskValues.set" not in src, f"{nb} sets task values"
         assert "taskValues.get" not in src, f"{nb} reads task values directly"
+
+
+def test_every_task_notebook_exports_llm_route_and_model_widgets():
+    """Each task reaches the LLM (publish via publish.py), so each notebook must
+    turn the genie_llm_route / llm_model job params into the env vars the
+    routing module and get_llm_endpoint read. An undeclared widget silently
+    leaves the task on the code default."""
+    import re
+
+    jobs_dir = _PKG_ROOT / "src" / "genie_space_optimizer" / "jobs"
+    for nb in _TASK_NOTEBOOK.values():
+        src = (jobs_dir / nb).read_text()
+        for widget, env in (("genie_llm_route", "GENIE_LLM_ROUTE"), ("llm_model", "LLM_MODEL")):
+            assert f'dbutils.widgets.text("{widget}", "")' in src, f"{nb}: no {widget} widget"
+            assert re.search(rf'os\.environ\["{env}"\]\s*=', src), f"{nb}: {widget} not exported"
+
+
+def test_submit_optimization_route_follows_app_env(monkeypatch):
+    """The run inherits the app's GENIE_LLM_ROUTE; unset means gateway."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    def _route() -> str:
+        ws = MagicMock()
+        ws.jobs.run_now.return_value = MagicMock(run_id=1)
+        submit_optimization(
+            ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+        )
+        return ws.jobs.run_now.call_args.kwargs["job_parameters"]["genie_llm_route"]
+
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    assert _route() == "classic"
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    assert _route() == "gateway"
+    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    assert _route() == "gateway"

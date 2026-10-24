@@ -92,6 +92,7 @@ dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("triggered_by", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("genie_llm_route", "")
 dbutils.widgets.text("workload_warehouse_ids", "[]")
 
 run_id = dbutils.widgets.get("run_id").strip()
@@ -119,6 +120,9 @@ except (TypeError, ValueError):
     workload_warehouse_ids = []
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
+_route = dbutils.widgets.get("genie_llm_route").strip()
+if _route:
+    os.environ["GENIE_LLM_ROUTE"] = _route
 
 if not run_id:
     raise RuntimeError("intake_and_snapshot: run_id parameter is required")

@@ -8,13 +8,48 @@ from typing import Any
 
 import httpx
 
-from backend.services.auth import get_workspace_client
+from backend.services.auth import get_service_principal_client, get_workspace_client
+from backend.services.llm_route import (
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    get_llm_route,
+    is_model_unavailable_404,
+    resolve_chat,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 4
 _RETRY_BACKOFF_BASE = 2  # seconds
 _RETRYABLE_STATUSES = {429, 502, 503}
+
+
+def is_gateway_scope_403(status: int, body_text: str) -> bool:
+    """The user's token lacks the gateway scope ("403 Invalid scope, required scopes:
+    ai-gateway"). Callers MUST gate on the gateway route; the SP retry is gateway-only."""
+    return status == 403 and "scope" in body_text.lower()
+
+
+def _post_with_retries(url: str, body: dict, headers: dict, timeout: float) -> httpx.Response:
+    for attempt in range(_MAX_RETRIES + 1):
+        resp = httpx.post(
+            url,
+            json=body,
+            headers=headers,
+            timeout=timeout,
+        )
+
+        if resp.status_code in _RETRYABLE_STATUSES:
+            if attempt >= _MAX_RETRIES:
+                logger.error("Serving endpoint returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
+                raise RuntimeError(f"Serving endpoint returned {resp.status_code} after {_MAX_RETRIES} retries.")
+            retry_after = resp.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after else _RETRY_BACKOFF_BASE * (2 ** attempt)
+            logger.warning("%d from serving endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
+            time.sleep(delay)
+            continue
+        break
+    return resp
 
 
 def get_llm_model() -> str:
@@ -54,6 +89,7 @@ def call_serving_endpoint(
     model: str | None = None,
     max_tokens: int | None = None,
     timeout: float = 600,
+    component: str = "workbench",
 ) -> str:
     """Call the LLM serving endpoint using httpx with explicit timeout.
 
@@ -83,33 +119,38 @@ def call_serving_endpoint(
     # (PAT, oauth-m2m service principal, OBO user token, etc.)
     auth_headers = client.config.authenticate()
 
-    url = f"{host}/serving-endpoints/{model}/invocations"
+    rc = resolve_chat(host, model, component)
+    url = rc.url
     body: dict = {"messages": messages}
+    if rc.model is not None:
+        body["model"] = rc.model          # gateway puts the model in the body
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
+    headers = {**auth_headers, **rc.extra_headers}
 
     logger.info(f"Calling serving endpoint: {model}")
 
-    for attempt in range(_MAX_RETRIES + 1):
-        resp = httpx.post(
-            url,
-            json=body,
-            headers=auth_headers,
-            timeout=timeout,
-        )
+    resp = _post_with_retries(url, body, headers, timeout)
 
-        if resp.status_code in _RETRYABLE_STATUSES:
-            if attempt >= _MAX_RETRIES:
-                logger.error("Serving endpoint returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
-                raise RuntimeError(f"Serving endpoint returned {resp.status_code} after {_MAX_RETRIES} retries.")
-            retry_after = resp.headers.get("Retry-After")
-            delay = float(retry_after) if retry_after else _RETRY_BACKOFF_BASE * (2 ** attempt)
-            logger.warning("%d from serving endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
-            time.sleep(delay)
-            continue
-        break
+    if (
+        get_llm_route() is LLMRoute.GATEWAY
+        and resp.status_code == 403
+        and is_gateway_scope_403(resp.status_code, resp.text)
+    ):
+        sp_client = get_service_principal_client()
+        if sp_client is not client:
+            logger.warning(
+                "%s: user token lacks the ai-gateway scope; retrying the gateway call as the "
+                "service principal. Verify the app's user_api_scopes if this is unexpected.",
+                component,
+            )
+            sp_headers = {**sp_client.config.authenticate(), **rc.extra_headers}
+            resp = _post_with_retries(url, body, sp_headers, timeout)
 
     if resp.status_code != 200:
+        if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(resp.status_code, ""):
+            logger.warning("Gateway model unavailable/entitlement 404 for %s", model)
+            raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE)
         raise RuntimeError(
             f"Serving endpoint returned {resp.status_code}: {resp.text[:500]}"
         )
