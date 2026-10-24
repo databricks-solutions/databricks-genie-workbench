@@ -15,7 +15,7 @@ import pytest
 
 
 FIXTURES = Path(__file__).parents[2] / "frontend" / "src" / "contracts" / "vc"
-SPEC = Path(__file__).parents[2] / "docs/design/version_control/implementation_plan/contracts.md"
+SPEC = Path(__file__).parent / "fixtures" / "vc_contracts_ports.txt"
 
 
 def contracts():
@@ -45,7 +45,7 @@ def test_all_spec_ports_are_synchronous_and_types_resolve():
     module = contracts()
     import typing
 
-    source = SPEC.read_text().split("```python\n", 1)[1].split("```", 1)[0]
+    source = SPEC.read_text()
     for port in ast.parse(source).body:
         protocol = getattr(module, port.name)
         assert protocol._is_protocol

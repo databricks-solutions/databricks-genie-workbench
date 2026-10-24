@@ -198,8 +198,8 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   Exception: a factual error that would misdirect the next prompt.
 - METRIC VIEW BEST PRACTICES: before authoring or reviewing metric view YAML,
   joins, level-of-detail semantics, validation queries, or Genie-facing MV
-  metadata, read the skills under
-  /Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+  metadata, read the data_product_accelerator skill
+  semantic-layer/01-metric-views-patterns, if installed on this machine
   — SKILL.md plus references/ (yaml-reference, advanced-patterns,
   composability-patterns, level-of-detail, querying-metric-views,
   validation-checklist, validation-queries, implementation-workflow) and

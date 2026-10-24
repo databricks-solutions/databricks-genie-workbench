@@ -239,10 +239,10 @@ empty, and grep for `assert_candidate_write` / `require_candidate_session_for_jo
   base, not a regression.
 - **Not yet done:** frontend build/lint check (`api.ts` auto-merged), Step 6 observe
   capture (blocked on §11 capture-after decision), Step 7 live nonprod validation + PR.
-- **Open cleanup (optional):** the M10 design docs
-  (`docs/design/version_control/implementation_plan/module-10-optimizer-integration.md`,
-  `testing-strategy.md` optimizer_adapter refs) still describe the removed governed-
-  optimizer model — decide whether to prune/annotate them.
+- **Open cleanup (resolved 2026-10-23):** the version-control design notes, including
+  the M10 docs that still described the removed governed-optimizer model, are no longer
+  tracked in the repo (PR #332 review). The port definitions `test_vc_contracts.py`
+  checks now live in `backend/tests/fixtures/vc_contracts_ports.txt`.
 
 ## 15. Step 6 detailed build plan (post-reconnaissance)
 

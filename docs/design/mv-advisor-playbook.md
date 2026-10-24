@@ -221,8 +221,8 @@
      Exception: a factual error that would misdirect the next prompt.
    - METRIC VIEW BEST PRACTICES: before authoring or reviewing metric view YAML,
      joins, level-of-detail semantics, validation queries, or Genie-facing MV
-     metadata, read the skills under
-     /Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+     metadata, read the data_product_accelerator skill
+     semantic-layer/01-metric-views-patterns, if installed on this machine
      — SKILL.md plus references/ (yaml-reference, advanced-patterns,
      composability-patterns, level-of-detail, querying-metric-views,
      validation-checklist, validation-queries, implementation-workflow) and
@@ -3849,7 +3849,7 @@ MEASURE()/MEASURE(); a benchmark-verbatim BEST FOR line MUST be rejected;
 round-trip parse with sqlglot(dialect="databricks") on the wrapping DDL.
 
 For this prompt only, you MAY read the metric-views-patterns skill at
-/Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+<data_product_accelerator skills>/semantic-layer/01-metric-views-patterns
 for reference detail (composability-patterns.md, level-of-detail.md,
 yaml-reference.md, validation-checklist.md). It is a SOURCE, not an authority:
 where it disagrees with MV-D8 or POV Part 4's generation standard, the in-repo

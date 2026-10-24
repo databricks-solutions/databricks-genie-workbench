@@ -279,3 +279,10 @@ docs/design/*
 !docs/design/mv-advisor-gap-report.md
 !docs/design/mv-advisor-exposure-matrix.md
 !docs/design/metric-view-suggestion-engine-pov.md
+
+# Internal working notes, run reports and captures — kept local only. probe.sh
+# writes its report-*.md next to itself, which this also covers.
+scripts/ai-gateway-validation/*.md
+scripts/version_control/TDD.md
+frontend/M09_FIX_VERIFICATION.md
+tests/screenshots/

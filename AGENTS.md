@@ -55,7 +55,7 @@ python scripts/export_gso_job_requirements.py   # regenerate GSO job pins (requi
 python tests/test_e2e_local.py    # E2E create agent tests
 python tests/test_full_schema.py  # Schema validation
 # Deployed E2E tests require: pip install playwright && playwright install chromium
-python tests/test_e2e_deployed.py
+GENIE_E2E_APP_URL=https://<app-url> GENIE_E2E_PROFILE=<profile> python tests/test_e2e_deployed.py
 ```
 
 ## Architecture

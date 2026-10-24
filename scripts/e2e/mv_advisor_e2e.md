@@ -264,8 +264,8 @@ as a gap-report row in `docs/design/mv-advisor-gap-report.md` (MV-D9).
 
 ### 2026-08-24 — Tier 1 (Scenario D)
 
-**Workspace / identity:** `fevm-serverless` profile, primary identity
-`prashanth.subrahmanyam@databricks.com` (OAuth token exported in-shell only;
+**Workspace / identity:** `<profile>` profile, primary identity
+`<primary-identity>` (OAuth token exported in-shell only;
 `current_user.me()` credential gate passed).
 
 **Config present (names only):** `DATABRICKS_HOST`, `DATABRICKS_TOKEN`,
@@ -284,8 +284,8 @@ env-provenance table should say "from `.env.deploy`'s `GENIE_*` keys (remapped)"
 rather than imply the `GSO_*` names live there verbatim.
 
 **Fixtures created via API (exact config, since the assertions depend on it):**
-- `MV_E2E_SUGGEST_SPACE_ID = 01f1a02f907314728c3fc05d5118b516` — title
-  `mv-e2e-suggest-curated`, parent `/Users/prashanth.subrahmanyam@databricks.com`,
+- `MV_E2E_SUGGEST_SPACE_ID = <suggest-space-id>` — title
+  `mv-e2e-suggest-curated`, parent `/Users/<primary-identity>`,
   one table `samples.tpch.lineitem`, **4** `instructions.example_question_sqls`
   each aggregating the same measure
   `SUM(l_extendedprice * (1 - l_discount)) AS discounted_revenue` (total, by
@@ -294,10 +294,10 @@ rather than imply the `GSO_*` names live there verbatim.
   `SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount))`. Never optimized.
   The repeated measure is deliberate: the advisor is recurrence-ranked, so one
   fingerprint recurring across four curated statements clears candidate emission.
-- `MV_E2E_EMPTY_SPACE_ID = 01f1a02f90151e9abc8b8a8914707dab` — title
+- `MV_E2E_EMPTY_SPACE_ID = <empty-space-id>` — title
   `mv-e2e-empty-bare`, one table `samples.tpch.region`, **no**
   `example_question_sqls`, **no** `sql_snippets`, no benchmarks, never queried.
-- Scratch schema `serverless_stable_6t92c3_catalog.mv_advisor_e2e` created for
+- Scratch schema `<catalog>.mv_advisor_e2e` created for
   the BYO leg (empty; no views leaked — see teardown).
 
 **Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
@@ -342,7 +342,7 @@ benchmark eval; `GSO_JOB_ID` was a config gate only.
 
 **Teardown confirmed:** the BYO test failed *before* its `CREATE VIEW` step, so
 the app created nothing and the test's finalizer had nothing to drop. Verified
-directly: `SHOW VIEWS IN serverless_stable_6t92c3_catalog.mv_advisor_e2e`
+directly: `SHOW VIEWS IN <catalog>.mv_advisor_e2e`
 returned `[]`. The two Genie spaces and the empty scratch schema are left in
 place for Tier 2/3 reuse (ids above); delete them when the suite is retired.
 
@@ -353,7 +353,7 @@ deployed app (browser). Pending the reviewer.
 
 ### 2026-08-24 — Tier 1 rerun (Scenario D), after the Prompt 15.1 DDL fix
 
-**Same workspace / identity / D fixtures as the Tier 1 entry above** (`fevm-serverless`
+**Same workspace / identity / D fixtures as the Tier 1 entry above** (`<profile>`
 profile; `MV_E2E_SUGGEST_SPACE_ID`/`MV_E2E_EMPTY_SPACE_ID`/scratch ids unchanged;
 `GENIE_*` remap; `GSO_JOB_ID` resolved from the deployed job; config gate only).
 
@@ -436,7 +436,7 @@ literal-bearing.** **Built 2026-08-24 (Tier 2 prep entry below).**
 
 ### 2026-08-24 — Tier 1 re-rerun (Scenario D), after Prompt 15.2 (MV-D29)
 
-**Same workspace / identity / D fixtures as the entries above** (`fevm-serverless`
+**Same workspace / identity / D fixtures as the entries above** (`<profile>`
 profile; `MV_E2E_SUGGEST_SPACE_ID`/`MV_E2E_EMPTY_SPACE_ID`/scratch ids unchanged;
 `GENIE_*` remap; `GSO_JOB_ID` config gate only). Offline baseline moved to
 638 backend + **1461** GSO (+9 GSO at Prompt 15.2).
@@ -470,15 +470,15 @@ place for reuse.
 
 ### 2026-08-24 — MV_E2E_SPACE_ID built (Tier 2 prep)
 
-**Workspace / identity:** `fevm-serverless` profile, primary identity
-`prashanth.subrahmanyam@databricks.com`. Same `GENIE_*→GSO_*` env remap and
+**Workspace / identity:** `<profile>` profile, primary identity
+`<primary-identity>`. Same `GENIE_*→GSO_*` env remap and
 `GSO_JOB_ID` resolution as the Tier 1 entries.
 
 **Fixture created via API** (`POST /api/2.0/genie/spaces`,
-`warehouse_id=41cfe645e10807a4`, parent
-`/Users/prashanth.subrahmanyam@databricks.com`; serialized_space 8015 bytes):
+`warehouse_id=<warehouse-id>`, parent
+`/Users/<primary-identity>`; serialized_space 8015 bytes):
 
-- `MV_E2E_SPACE_ID = 01f1a04003201e38b6f66cddc8d7d0ee` — title
+- `MV_E2E_SPACE_ID = <tier2-space-id>` — title
   `mv-e2e-tier2-tpch`, two tables `samples.tpch.lineitem` + `samples.tpch.orders`
   (with a join_spec `lineitem.l_orderkey = orders.o_orderkey`,
   `FROM_RELATIONSHIP_TYPE_MANY_TO_ONE`).
@@ -527,21 +527,21 @@ config so the run is reproducible.
 
 **Code under test.** Committed `e65cc5a6` (Prompt 15.3 — view-grained bundles,
 per-measure suppression fan-out, justified EMPTY / MV-D30), **redeployed** to the
-`fevm-serverless-stable` app before this run (the runbook's own redeploy rule —
+dev workspace's app before this run (the runbook's own redeploy rule —
 15.3 changed the proposal grain and generation semantics, so a Tier that
 validates the deployed app must run against the redeployed code). An earlier Tier
-2 attempt on 2026-08-25 (job `893007930871503`, then `run2`) is **VOID** — it ran
+2 attempt on 2026-08-25 (job run `<run-id>`, then `run2`) is **VOID** — it ran
 mid-edit against a tree where `TABLE_MV_SUPPRESSIONS` was not yet importable, so
 `mv_state` failed on import and the result was a stale-tree artifact, not an A/B
 signal. This entry is the clean re-run after commit + redeploy.
 
-**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
-primary identity `prashanth.subrahmanyam@databricks.com` (PAT; `current_user.me()`
-gate passed). GSO `serverless_stable_6t92c3_catalog.genie_space_optimizer`,
-warehouse `41cfe645e10807a4`.
+**Workspace / identity.** `<workspace-host>`,
+primary identity `<primary-identity>` (PAT; `current_user.me()`
+gate passed). GSO `<catalog>.genie_space_optimizer`,
+warehouse `<warehouse-id>`.
 
 **Config present (names only):** Tier 1 config plus `MV_E2E_SPACE_ID =
-01f1a04003201e38b6f66cddc8d7d0ee` (the Tier 2-prep `mv-e2e-tier2-tpch` fixture,
+<tier2-space-id>` (the Tier 2-prep `mv-e2e-tier2-tpch` fixture,
 built in the entry above). `GSO_JOB_ID` is now a **real trigger** (not a gate).
 Scenario B denies the primary identity via `MV_E2E_DENIED_CATALOG/SCHEMA` default
 `samples.tpch`. The app service principal holds `CAN_MANAGE` on the fixture space
@@ -641,7 +641,7 @@ blocker recorded as fixed.
 hydrate-on-mount, first-class Scan / MV-D31) on top of `eb6dc9bf` (Prompt 15.5 —
 servable-body guard + literal-preserving shape render + consent-downgrade stamp),
 with `b44f847f` (`wh_write_stage` uses `INSERT…SELECT`) — **redeployed** to the
-`fevm-serverless-stable` app before this run (the runbook's redeploy rule: 15.5
+dev workspace's app before this run (the runbook's redeploy rule: 15.5
 changed the in-job render/persist and downgrade-stamp, 15.4 added the interactive
 advice stage-row write, so a Tier that validates the deployed app must run against
 the redeployed code).
@@ -658,13 +658,13 @@ entry is the clean rerun after connectivity was restored. Separately, the
 interactive advice stage-row write — caught by the cheap Tier-1 gate, fixed in
 `b44f847f` (`INSERT…SELECT`), and redeployed before this record was written.
 
-**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
-primary identity `prashanth.subrahmanyam@databricks.com` (OAuth token; gate
-passed). GSO `serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
-`41cfe645e10807a4`; app SP holds `CAN_MANAGE` on the fixture space.
+**Workspace / identity.** `<workspace-host>`,
+primary identity `<primary-identity>` (OAuth token; gate
+passed). GSO `<catalog>.genie_space_optimizer`, warehouse
+`<warehouse-id>`; app SP holds `CAN_MANAGE` on the fixture space.
 
 **Config present (names only):** Tier 1 config plus `MV_E2E_SPACE_ID =
-01f1a04003201e38b6f66cddc8d7d0ee`. `GSO_JOB_ID` a **real trigger**. Scenario B
+<tier2-space-id>`. `GSO_JOB_ID` a **real trigger**. Scenario B
 denies the primary identity via `MV_E2E_DENIED_CATALOG/SCHEMA` default
 `samples.tpch`.
 
@@ -721,23 +721,23 @@ app after the small 12c-Part-2 redeploy, before Prompt 16.
 MV-D32 DECIDED) on top of `d77ae7bd` (Prompt 12d — semantic graph data hygiene +
 edge polish), `a05583ab` (Prompt 15.7 — coverage-aware confidence + cross-surface
 enrichment, MV-D32(1)/(3)), and `ced7a2fa` (Prompt 15.6 — proposal lifecycle +
-presentation coherence) — **redeployed** to the `fevm-serverless-stable` app
+presentation coherence) — **redeployed** to the dev workspace's app
 before this run. The redeploy rule applies: 15.7b changed the candidate-row
 persistence (two additive columns) and the interactive suggest write path
 (`wh_upsert_mv_candidate` now carries the two fields), so a Tier that validates
 the deployed app must run against the redeployed code.
 
-**Deploy record.** `./scripts/deploy.sh --update`, `fevm-serverless` profile.
-App `genie-workbench` (`genie-workbench-7474656657532371.aws.databricksapps.com`),
-job `1102443228792203`, SP `a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`, deployer
-`prashanth.subrahmanyam@databricks.com`. App reported **RUNNING** after the deploy.
+**Deploy record.** `./scripts/deploy.sh --update`, `<profile>` profile.
+App `genie-workbench` (`<app-url>`),
+job `<job-id>`, SP `<app-sp-id>`, deployer
+`<primary-identity>`. App reported **RUNNING** after the deploy.
 
-**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
-primary identity `prashanth.subrahmanyam@databricks.com` (OAuth bearer minted from
-the `fevm-serverless` profile; gate passed). GSO
-`serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
-`41cfe645e10807a4`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
-`MV_E2E_EMPTY_SPACE_ID`, scratch `serverless_stable_6t92c3_catalog.mv_advisor_e2e`).
+**Workspace / identity.** `<workspace-host>`,
+primary identity `<primary-identity>` (OAuth bearer minted from
+the `<profile>` profile; gate passed). GSO
+`<catalog>.genie_space_optimizer`, warehouse
+`<warehouse-id>`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
+`MV_E2E_EMPTY_SPACE_ID`, scratch `<catalog>.mv_advisor_e2e`).
 `GSO_JOB_ID` a config gate only (Scenario D triggers no job).
 
 **Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
@@ -783,19 +783,19 @@ Lineage/Impact focus, an unmodeled region, and session-only drag. No scoring or
 persistence change — so the backend contract Scenario D exercises is unchanged; the
 run confirms 12e did not regress the suggest / BYO paths.
 
-**Deploy record.** `./scripts/deploy.sh --update`, `fevm-serverless` profile.
-App `genie-workbench` (`genie-workbench-7474656657532371.aws.databricksapps.com`),
-deployment `01f1a0bc3b3b1005845e11d0fe987860` (SNAPSHOT), job `1102443228792203`,
-SP `a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`, deployer
-`prashanth.subrahmanyam@databricks.com`. App deployment **SUCCEEDED**, app
+**Deploy record.** `./scripts/deploy.sh --update`, `<profile>` profile.
+App `genie-workbench` (`<app-url>`),
+deployment `<deployment-id>` (SNAPSHOT), job `<job-id>`,
+SP `<app-sp-id>`, deployer
+`<primary-identity>`. App deployment **SUCCEEDED**, app
 **RUNNING**.
 
-**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
-primary identity `prashanth.subrahmanyam@databricks.com` (OAuth bearer minted from
-the `fevm-serverless` profile; gate passed). GSO
-`serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
-`41cfe645e10807a4`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
-`MV_E2E_EMPTY_SPACE_ID`, scratch `serverless_stable_6t92c3_catalog.mv_advisor_e2e`).
+**Workspace / identity.** `<workspace-host>`,
+primary identity `<primary-identity>` (OAuth bearer minted from
+the `<profile>` profile; gate passed). GSO
+`<catalog>.genie_space_optimizer`, warehouse
+`<warehouse-id>`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
+`MV_E2E_EMPTY_SPACE_ID`, scratch `<catalog>.mv_advisor_e2e`).
 
 **Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
 (227.66s = 3m48s; serialized; xdist refused). `uv.lock` registry-URL rewrite from

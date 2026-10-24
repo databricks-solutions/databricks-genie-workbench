@@ -1,8 +1,8 @@
 """Phase 0 unit tests for the AI Gateway seam factory (backend copy).
 
 The classic branch MUST be byte-identical to today's call sites; the gateway
-branch is validated shape-only (no network). See
-scripts/ai-gateway-validation/ai-gateway-migration-spec.md Appendix A.1.
+branch is validated shape-only (no network): base URL, model-name mapping, and
+the cost-attribution tag header.
 """
 
 import json
