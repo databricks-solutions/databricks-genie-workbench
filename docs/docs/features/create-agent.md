@@ -7,6 +7,8 @@ description: "Multi-turn, tool-calling LLM agent that builds Genie Agents from r
 
 The Create Agent is a multi-turn, tool-calling LLM agent that walks users from business requirements to a fully configured and deployed Genie Agent. It handles data discovery, profiling, plan generation, config assembly, validation, and agent creation — all through a conversational interface.
 
+Its LLM calls go through Unity AI Gateway by default, as the signed-in user, tagged `create-agent` (and `plan-builder` for plan generation). See [LLM calls](/docs/getting-started/architecture-overview#llm-calls).
+
 ## How It Works
 
 The agent follows a structured progression through eight steps. Each step focuses on gathering specific information before moving to the next:

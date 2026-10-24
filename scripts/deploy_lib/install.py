@@ -18,12 +18,20 @@ from .genie_spaces import optionally_grant_genie_spaces
 from .gso_job import ensure_gso_job
 from .lakebase import ensure_lakebase
 from .uc import ensure_uc_objects_and_grants
-from .verify import verify_app_deployment
+from .verify import verify_ai_gateway, verify_app_deployment
 from .workspace_source import prepare_workspace_source
+from backend.services.version_control.platform.bundles import preflight_deployment
 
 
 def _default_status(message: str) -> None:
     print(f"[genie-workbench install] {message}", flush=True)
+
+
+def llm_route_replacements(cfg: InstallConfig) -> dict[str, str]:
+    return {
+        "GENIE_LLM_ROUTE": cfg.llm_route,
+        "GENIE_BYOK_ENABLED": "true" if cfg.byok_enabled else "false",
+    }
 
 
 def get_deployer_user(w) -> str:
@@ -41,10 +49,18 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status = status_fn or _default_status
     cfg = cfg.normalized()
     cfg.validate()
+    preflight_deployment(Path(cfg.repo_root or ""))
 
     status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
     status(f"Using deployer: {deployer_user}")
+
+    if cfg.llm_route == "gateway":
+        status(f"Checking Unity AI Gateway with model {cfg.llm_model}...")
+        verify_ai_gateway(w, cfg.llm_model)
+        status("AI Gateway reachable.")
+    else:
+        status("LLM route: classic serving endpoints (AI Gateway check skipped).")
 
     status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
     ensure_app(w, cfg)
@@ -75,8 +91,25 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status("Uploading GSO job notebooks, building wheel, and creating/updating job...")
     gso_job = ensure_gso_job(w, cfg, app_sp_client_id, deployer_user)
     status(f"GSO job ready: {gso_job.job_id}")
+    if gso_job.run_as_bound:
+        status("Job run_as set to the app service principal.")
+    else:
+        status(
+            "Job created without run_as (installer lacks servicePrincipal.user on the "
+            "app service principal); the app sets it at startup."
+        )
 
     status("Rendering patched app.yaml into generated workspace source...")
+    # Version Control observe surface: mirror deploy.sh's __VC_OBSERVE_*__ resolution.
+    # WORKSPACE_ID/HOST come from this workspace; CATALOG/CONTROL_SCHEMA from the GSO
+    # location (the VC control tables are colocated in the GSO schema); SP_PRINCIPAL_ID
+    # is the app SP resolved above. If workspace-id/host cannot be resolved, substitute
+    # EMPTY so the observe runtime stays fail-closed rather than blocking the deploy.
+    try:
+        vc_observe_workspace_id = str(w.get_workspace_id())
+    except Exception:  # noqa: BLE001
+        vc_observe_workspace_id = ""
+    vc_observe_host = (getattr(w.config, "host", "") or "").rstrip("/")
     render_app_yaml(
         template_path=Path(cfg.repo_root or "") / "app.yaml",
         output_workspace_path=f"{source_path}/app.yaml",
@@ -86,7 +119,13 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "GSO_JOB_ID": str(gso_job.job_id),
             "LAKEBASE_INSTANCE": cfg.lakebase_instance or "",
             "LLM_MODEL": cfg.llm_model,
+            **llm_route_replacements(cfg),
             "MLFLOW_EXPERIMENT_ID": cfg.mlflow_experiment_id or "",
+            "VC_OBSERVE_WORKSPACE_ID": vc_observe_workspace_id,
+            "VC_OBSERVE_HOST": vc_observe_host,
+            "VC_OBSERVE_CATALOG": cfg.catalog,
+            "VC_OBSERVE_CONTROL_SCHEMA": cfg.gso_schema,
+            "VC_OBSERVE_SP_PRINCIPAL_ID": app_sp_client_id,
         },
         workspace_client=w,
     )

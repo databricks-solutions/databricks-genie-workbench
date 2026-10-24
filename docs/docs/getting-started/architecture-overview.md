@@ -36,7 +36,7 @@ flowchart TB
             direction TB
             subgraph eRow1[" "]
                 direction LR
-                genie["Genie API"] ~~~ uc["Unity Catalog"] ~~~ wh["SQL Warehouse"] ~~~ ms["Model Serving"]
+                genie["Genie API"] ~~~ uc["Unity Catalog"] ~~~ wh["SQL Warehouse"] ~~~ ms["Unity AI Gateway<br/>(LLM calls)"]
             end
             subgraph eRow2[" "]
                 direction LR
@@ -77,7 +77,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 |--------|--------|---------|
 | `analysis.py` | `/api` | Space fetch/parse, app settings, debug auth |
 | `spaces.py` | `/api` | Space listing, scanning, history, starring |
-| `admin.py` | `/api/admin` | Org-wide dashboard, leaderboard, alerts |
+| `admin.py` | `/api/admin` | Dashboard, leaderboard, and alerts over the agents the caller can see |
 | `auth.py` | `/api/auth` | Current user info, health check |
 | `create.py` | `/api/create` | Create agent chat, UC discovery, wizard, session management |
 | `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, and benchmark changes |
@@ -114,11 +114,12 @@ See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint l
 | Create Agent Tools | `services/create_agent_tools.py` | Tool definitions: UC discovery, SQL, config generation |
 | Create Agent Session | `services/create_agent_session.py` | Session persistence (L1 in-memory + L2 Lakebase) |
 | Plan Builder | `services/plan_builder.py` | Parallel LLM plan generation across 5 sections |
-| LLM Utils | `services/llm_utils.py` | OpenAI-compatible LLM client via Databricks model serving |
+| LLM Utils | `services/llm_utils.py` | OpenAI-compatible chat client (`call_serving_endpoint`); the URL, model name and tags come from the LLM route |
+| LLM Route | `services/llm_route.py` | Picks Unity AI Gateway (default) or classic serving endpoints, maps model names, and builds the cost-attribution tags. The GSO package carries a byte-identical copy. See [LLM calls](#llm-calls) |
 | UC Client | `services/uc_client.py` | Unity Catalog browsing (catalogs, schemas, tables) |
 | Lakebase | `services/lakebase.py` | PostgreSQL persistence with in-memory fallback |
 | GSO Lakebase | `services/gso_lakebase.py` | GSO synced table reads from Lakebase |
-| Model Catalog | `services/model_catalog.py` | Curated chat serving endpoints exposed via `/api/models`; `validate_chat_model()` guards per-run overrides |
+| Model Catalog | `services/model_catalog.py` | Curated chat models exposed via `/api/models`; `validate_chat_model()` guards per-run overrides |
 | SQL Executor | `sql_executor.py` | SQL execution via the Databricks SQL warehouse |
 
 ### Prompt Templates
@@ -138,8 +139,8 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 | View | Component | Description |
 |------|-----------|-------------|
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
-| `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
-| `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts, plus lazy-loaded GenieWatch sub-tabs |
+| `detail` | `SpaceDetail` | Space detail with tabs: Score, Model, Optimize, History |
+| `admin` | `AdminDashboard` | Genie Agent health & observability: an overview (stats, leaderboard, alerts) over the agents the caller can see, plus lazy-loaded GenieWatch sub-tabs. Cost and Resources stay workspace-wide (system tables read as the service principal); Feedback reads the same tables but keeps only the agents GenieWatch lists; the Agents sub-tab lists OBO-first |
 | `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
 | `how-it-works` | `HowItWorks` | In-app explanation of the Workbench workflow |
 
@@ -147,6 +148,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 - `components/ui/` — design system primitives (button, card, badge, etc.) using `class-variance-authority`
 - `components/auto-optimize/` — components for the GSO optimization UI
+- `components/model/` — the Model tab: `SemanticModelTab` and `SemanticBlueprint` (the interactive Semantic Blueprint canvas), plus the pure `blueprint/` modules (`model` adapter, `layout`, `routing`, `cardinality`, `annotate`, `advisor`). `SemanticBlueprint` replaced the earlier classic node-graph canvas as the only Model-tab view
 - `pages/` — `SpaceList`, `SpaceDetail`, `AdminDashboard`, `HowItWorks`, `HistoryTab`, `IQScoreTab`
 - `watch/` — GenieWatch UI with its own `api.ts` (base `/api/watch`), types, components, and pages; namespaced to avoid colliding with the workbench API surface, and lazy-loaded as `AdminDashboard` sub-tabs
 - `hooks/` — `useAnalysis`, `useTheme`
@@ -195,15 +197,45 @@ For SSE endpoints, the OBO `ContextVar` is **not** cleared after `call_next` in 
 
 Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is not configured, making the app functional (but non-persistent) without a database.
 
+### LLM calls
+
+Every LLM and embedding call, in the app and in the optimization job, is built by one routing module, `llm_route.py`. The app has `backend/services/llm_route.py`; the GSO package has a byte-identical copy, and a parity test keeps them identical. `get_llm_route()` reads `GENIE_LLM_ROUTE`:
+
+- **`gateway` (the default).** Calls go to Unity AI Gateway at `/ai-gateway/mlflow/v1/chat/completions` or `/ai-gateway/mlflow/v1/embeddings`. Unset, empty or unknown values also mean gateway (an unknown value logs one warning).
+- **`classic`, only when set explicitly.** Calls go to `/serving-endpoints/{name}/invocations`, as before the migration.
+
+Nothing switches from one route to the other on its own.
+
+On the gateway route, `gateway_model_name()` turns a `databricks-<name>` model into `system.ai.<name>` (for example `databricks-claude-sonnet-4-6` becomes `system.ai.claude-sonnet-4-6`). A full Unity Catalog model id (`catalog.schema.model`) is sent unchanged; `validate_chat_model()` accepts one only when `GENIE_BYOK_ENABLED=true`. Each gateway call also carries a `Databricks-Ai-Gateway-Request-Tags` header, so `system.ai_gateway.usage` attributes its cost:
+
+| Caller | `component` tag | Extra tag | Runs as |
+|--------|-----------------|-----------|---------|
+| Create Agent stream (`create_agent._stream_llm`) and its non-streaming calls | `create-agent` | `space_id` when started from an existing space | The signed-in user |
+| Plan builder (`plan_builder.py`) | `plan-builder` | — | The signed-in user |
+| Optimization job (`llm_client.call_llm`, `optimizer_utils._traced_llm_call`) | `gso-optimize` | `run_id` | The app service principal (the job's `run_as`) |
+| Metric-view suggestion embeddings, in the IQ panel and in the job (`mv_scoring`) | `mv-suggest` | — | The app service principal |
+| Leakage-firewall embeddings (`leakage.get_embedding`) | `leakage-embed` | — | The app service principal; no job turns this layer on today |
+
+Every tag also includes `application: genie-workbench`.
+
+Two gateway responses get special handling:
+
+- **403 for a missing scope.** If the gateway refuses a user token because it lacks the `ai-gateway` scope, Create Agent and the plan builder retry the call once as the app service principal and log a warning.
+- **404.** A 404 on a configured model means the model doesn't exist on the gateway or the caller isn't entitled to it. The gateway hides models a caller can't use, so it never answers 403 for this. The app surfaces it as `Model unavailable or access not granted.`
+
+`backend/tests/test_llm_route_contract.py` fails if any backend or GSO source file makes a raw LLM call outside the routing module. See [Model access for LLM calls](/docs/platform/authentication#model-access-for-llm-calls) for permissions, and [LLM usage and cost attribution](/docs/platform/operations#llm-usage-and-cost-attribution) for querying the tags.
+
 ## Key Design Decisions
 
-1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and model serving endpoints that are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
+1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and Unity AI Gateway, which are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
 
 2. **Two install paths** — the recommended notebook path (`notebooks/install.py`) provisions the app and the GSO job entirely through the SDK/Jobs API, deploying from a generated workspace source folder. The local terminal path uses `deploy.sh` for the app (create, sync, `databricks apps deploy`) with the GSO job managed by DABs (`databricks bundle deploy -t app`). Do not mix the two paths for one app instance. See the [Deployment Guide](/docs/getting-started/deployment-guide).
 
 3. **Pydantic/TypeScript model sync** — `backend/models.py` and `frontend/src/types/index.ts` must be kept in sync manually. There is no code generation step.
 
 4. **Root `package.json` is a no-op** — exists solely to satisfy the Databricks Apps platform build hook. The real frontend build happens in `frontend/`.
+
+5. **Unity AI Gateway by default, with no automatic fallback** — every LLM call goes through the gateway so its cost is attributed per feature. Classic serving endpoints are an explicit operator setting (`llm_route=classic` / `GENIE_LLM_ROUTE=classic`), for workspaces without the gateway or for a custom serving endpoint that has no `system.ai` name. See [LLM calls](#llm-calls).
 
 ## Next Steps
 

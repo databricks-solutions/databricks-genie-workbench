@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -110,6 +111,22 @@ class OBOAuthMiddleware(BaseHTTPMiddleware):
             else:
                 logger.info("OBO: no x-forwarded-access-token, using SP for %s", request.url.path)
             request.state.user_token = token
+
+            # Version Control observe surface: derive the per-request VC actor from
+            # the Databricks Apps forwarded-identity headers, only when the observe
+            # runtime is integrated (else the VC routers are not mounted at all). This
+            # MUST run on the /api/ path — every VC route is under /api/version-control.
+            observe = getattr(request.app.state, "vc_observe", None)
+            if observe is not None:
+                from backend.services.version_control.platform.app_observe import (
+                    vc_auth_from_request,
+                )
+
+                vc_auth = vc_auth_from_request(
+                    request.headers, observe.workspace_id,
+                    dev_email=os.environ.get("DEV_USER_EMAIL"))
+                if vc_auth is not None:
+                    request.state.vc_auth = vc_auth
         else:
             request.state.user_token = ""
 
@@ -133,11 +150,55 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    from backend.services.lakebase import init_pool
+    await init_pool()
+    from backend.services.create_agent_session import _ensure_table
+    await _ensure_table()
+    _ensure_gso_job_run_as()
+    try:
+        # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
+        # case on a cold warehouse). Run in a worker thread so we don't pin
+        # the event loop during startup and stall healthcheck responses.
+        from backend.routers.auto_optimize import probe_iterations_schema
+        await asyncio.to_thread(probe_iterations_schema)
+    except Exception:
+        logger.warning("iterations schema probe failed", exc_info=True)
+
+    # Pre-warm the Cost-tab overview cache in the background since it
+    # takes a long time to run.
+    asyncio.create_task(asyncio.to_thread(warm_cost_overview_cache, 7))
+
+    yield
+
+    # Shutdown
+    from backend.services.lakebase import close_pool
+    await close_pool()
+
+
 app = FastAPI(
     title="Genie Workbench",
     description="Unified Databricks Genie Agent management platform",
     version="1.0.0",
+    lifespan=lifespan,
 )
+
+from backend.services.version_control.platform import compose
+from backend.services.version_control.platform.app_observe import observe_config_from_env
+from backend.services.version_control.platform.observe_seams import resolve_observe_runtime
+
+app.state.version_control = compose()
+
+# Version Control observe-only surface. Fully fail-closed: unless the trusted-workspace
+# control-plane env vars are set (deploy-only), this resolves to None and no VC routes
+# are mounted, so the app behaves exactly as before. See platform/app_observe.py.
+app.state.vc_observe = resolve_observe_runtime(observe_config_from_env(os.environ))
+if app.state.vc_observe is not None:
+    logger.info("VC observe surface integrated (workspace=%s)", app.state.vc_observe.workspace_id)
+else:
+    logger.info("VC observe surface not configured; VC routes disabled")
 
 if _mlflow_configured:
     try:
@@ -181,33 +242,6 @@ def _ensure_gso_job_run_as() -> None:
         logger.warning("Could not verify GSO job run_as", exc_info=True)
 
 
-@app.on_event("startup")
-async def startup():
-    from backend.services.lakebase import init_pool
-    await init_pool()
-    from backend.services.create_agent_session import _ensure_table
-    await _ensure_table()
-    _ensure_gso_job_run_as()
-    try:
-        # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
-        # case on a cold warehouse). Run in a worker thread so we don't pin
-        # the event loop during startup and stall healthcheck responses.
-        from backend.routers.auto_optimize import probe_iterations_schema
-        await asyncio.to_thread(probe_iterations_schema)
-    except Exception:
-        logger.warning("iterations schema probe failed", exc_info=True)
-
-    # Pre-warm the Cost-tab overview cache in the background since it
-    # takes a long time ro run.
-    asyncio.create_task(asyncio.to_thread(warm_cost_overview_cache, 7))
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    from backend.services.lakebase import close_pool
-    await close_pool()
-
-
 # Mount all routers
 app.include_router(analysis_router)
 app.include_router(spaces_router)
@@ -225,6 +259,12 @@ app.include_router(watch_feedback_router)
 app.include_router(watch_resources_router)
 app.include_router(watch_settings_router)
 app.include_router(watch_admin_router)
+
+# Version Control observe surface routers — only when the runtime is integrated.
+if app.state.vc_observe is not None:
+    from backend.services.version_control.platform.app_observe import mount_observe_routers
+
+    mount_observe_routers(app, app.state.vc_observe)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

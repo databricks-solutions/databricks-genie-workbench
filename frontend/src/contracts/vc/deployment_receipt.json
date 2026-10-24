@@ -1,0 +1,105 @@
+{
+  "type": "DeploymentReceipt",
+  "examples": [
+    {
+      "schema_version": "VC/1.0",
+      "release_id": "00000000-0000-4000-8000-000000000004",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "target_binding": {
+        "binding_id": "00000000-0000-4000-8000-000000000001",
+        "binding_revision": 1,
+        "space_key": "sales",
+        "workspace_id": "123",
+        "space_id": null,
+        "environment": "dev"
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000005",
+      "generation": 2,
+      "coordination_backend": "delta",
+      "approval_id": "00000000-0000-4000-8000-000000000006",
+      "approval_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_version_id": "00000000-0000-4000-8000-000000000002",
+      "package_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mapping_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "intended_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "rendered_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "observed_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "pre_version_id": "00000000-0000-4000-8000-000000000007",
+      "post_version_id": null,
+      "transformer_version": "vc-transform/1",
+      "canonicalizer_version": "vc-c14n/1",
+      "executor_id": "target-service",
+      "job_run_id": "456",
+      "validation_evidence_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "benchmark_evidence_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "status": "applied_unverified",
+      "compensation_operation_id": null,
+      "recorded_at": "2026-09-06T00:00:00Z"
+    },
+    {
+      "schema_version": "VC/1.0",
+      "release_id": "00000000-0000-4000-8000-000000000004",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "target_binding": {
+        "binding_id": "00000000-0000-4000-8000-000000000001",
+        "binding_revision": 1,
+        "space_key": "sales",
+        "workspace_id": "123",
+        "space_id": null,
+        "environment": "dev"
+      },
+      "attempt_id": "00000000-0000-4000-8000-000000000005",
+      "generation": 2,
+      "coordination_backend": "delta",
+      "approval_id": "00000000-0000-4000-8000-000000000006",
+      "approval_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_version_id": "00000000-0000-4000-8000-000000000002",
+      "package_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mapping_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "intended_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "rendered_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "observed_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "pre_version_id": "00000000-0000-4000-8000-000000000007",
+      "post_version_id": "00000000-0000-4000-8000-000000000009",
+      "transformer_version": "vc-transform/1",
+      "canonicalizer_version": "vc-c14n/1",
+      "executor_id": "target-service",
+      "job_run_id": "456",
+      "validation_evidence_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "benchmark_evidence_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "status": "confirmed",
+      "compensation_operation_id": "00000000-0000-4000-8000-000000000010",
+      "recorded_at": "2026-09-06T00:00:00Z"
+    }
+  ]
+}

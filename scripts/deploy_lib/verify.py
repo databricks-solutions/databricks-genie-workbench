@@ -23,6 +23,31 @@ def _api_do(w, method: str, path: str, body: dict[str, Any] | None = None) -> An
     return w.api_client.do(method=method, path=path, body=body)
 
 
+def verify_ai_gateway(w, llm_model: str) -> None:
+    """Fail the install early when the gateway route can't serve the default model.
+
+    Runs as the installing user: the app SP has no credentials the installer can
+    use, and a gateway-wide failure (region, preview, model name) shows up for
+    either identity.
+    """
+    from backend.services.llm_route import gateway_model_name
+
+    model = gateway_model_name(llm_model)
+    try:
+        _api_do(w, "POST", "/ai-gateway/mlflow/v1/chat/completions", {
+            "model": model,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "ping"}],
+        })
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unity AI Gateway check failed for model '{model}': {exc}. "
+            "The Workbench sends LLM calls through AI Gateway by default. Pick a "
+            "model available on the gateway, or reinstall with llm_route=classic "
+            "(GENIE_LLM_ROUTE=classic for deploy.sh) to use serving endpoints."
+        ) from exc
+
+
 def workspace_path_exists(w, path: str) -> bool:
     try:
         _api_do(

@@ -1,5 +1,6 @@
-"""Admin router - org-wide statistics, leaderboard, and alerts."""
+"""Admin router - statistics, leaderboard, and alerts over the caller's agents."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -7,18 +8,21 @@ from fastapi import APIRouter, HTTPException
 from backend.services.lakebase import get_all_scan_summaries
 from backend.services.genie_client import list_genie_spaces
 from backend.models import AdminDashboardStats, LeaderboardEntry, AlertItem
+from genie_space_optimizer.iq_scan.scoring import viewer_safe_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
 
+LISTING_UNAVAILABLE = "Could not list your Genie Agents. Reload to try again."
 
-def _list_genie_spaces_safe() -> list[dict]:
-    """Fetch all Genie Agents, returning empty list on failure (non-critical for admin views)."""
+
+async def _list_visible_spaces() -> list[dict]:
+    """The agents the caller can see. A failure is an error, never zero agents."""
     try:
-        return list_genie_spaces()
-    except Exception as e:
-        logger.error(f"Failed to list spaces: {e}")
-        return []
+        return await asyncio.to_thread(list_genie_spaces, sp_fallback=False)
+    except Exception as exc:
+        logger.error("Admin listing failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail=LISTING_UNAVAILABLE)
 
 
 def _get_display_name(space_id: str, spaces_map: dict) -> str:
@@ -28,10 +32,9 @@ def _get_display_name(space_id: str, spaces_map: dict) -> str:
 
 @router.get("/dashboard")
 async def get_dashboard() -> AdminDashboardStats:
-    """Get org-wide statistics for the admin dashboard."""
+    """Get statistics over the caller's agents for the admin dashboard."""
     try:
-        # Get all spaces from Databricks
-        all_spaces = _list_genie_spaces_safe()
+        all_spaces = await _list_visible_spaces()
         total_spaces = len(all_spaces)
 
         # Get all scan summaries from Lakebase
@@ -65,8 +68,10 @@ async def get_dashboard() -> AdminDashboardStats:
             critical_count=critical_count,
             maturity_distribution=maturity_dist,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Failed to get dashboard stats: {e}")
+        logger.error("Failed to get dashboard stats: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to get dashboard stats")
 
 
@@ -74,7 +79,7 @@ async def get_dashboard() -> AdminDashboardStats:
 async def get_leaderboard(top_n: int = 5) -> dict:
     """Get top and bottom N spaces by IQ score."""
     try:
-        all_spaces = _list_genie_spaces_safe()
+        all_spaces = await _list_visible_spaces()
         spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
@@ -97,8 +102,10 @@ async def get_leaderboard(top_n: int = 5) -> dict:
         bottom = [make_entry(s) for s in sorted_summaries[-top_n:][::-1]]
 
         return {"top": [e.model_dump() for e in top], "bottom": [e.model_dump() for e in bottom]}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Failed to get leaderboard: {e}")
+        logger.error("Failed to get leaderboard: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to get leaderboard")
 
 
@@ -106,7 +113,7 @@ async def get_leaderboard(top_n: int = 5) -> dict:
 async def get_alerts() -> list[AlertItem]:
     """Get spaces with 'Not Ready' maturity."""
     try:
-        all_spaces = _list_genie_spaces_safe()
+        all_spaces = await _list_visible_spaces()
         spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
@@ -119,12 +126,15 @@ async def get_alerts() -> list[AlertItem]:
                 space_id=s["space_id"],
                 display_name=_get_display_name(s["space_id"], spaces_map),
                 score=s["score"],
-                top_finding=s["findings"][0] if s.get("findings") else None,
+                top_finding=next(
+                    (t for t in map(viewer_safe_text, s.get("findings") or []) if t), None),
             )
             for s in critical[:20]  # max 20 alerts
         ]
 
         return alerts
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Failed to get alerts: {e}")
+        logger.error("Failed to get alerts: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to get alerts")

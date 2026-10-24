@@ -1,0 +1,12 @@
+{
+  "submitted": {
+    "version": 2,
+    "data_sources": {"tables": [{"identifier": "cat.sch.sales"}], "metric_views": [{"identifier": "cat.sch.mv_revenue"}]},
+    "instructions": {"text_instructions": [{"id": "b", "content": ["Segment = Enterprise"]}, {"id": "a", "content": ["Be helpful"]}]}
+  },
+  "observed": {
+    "version": 2,
+    "data_sources": {"tables": [{"identifier": "cat.sch.mv_revenue"}, {"identifier": "cat.sch.sales"}]},
+    "instructions": {"text_instructions": [{"id": "a", "content": ["Be ", "helpful"]}, {"id": "b", "content": ["Segment = ", "'Enterprise'"]}]}
+  }
+}

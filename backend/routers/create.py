@@ -16,6 +16,8 @@ from backend.services.uc_client import (
     get_table_columns,
 )
 from backend.genie_creator import create_genie_space
+from backend.services.space_access import SpaceAccessLevel, require_space_access
+from backend.services.version_control.platform.app_observe import capture_initial_version
 
 router = APIRouter(prefix="/api/create")
 logger = logging.getLogger(__name__)
@@ -141,9 +143,10 @@ async def validate_config(body: ValidateRequest):
 # ── Space creation ────────────────────────────────────────────────────────────
 
 @router.post("", response_model=CreateSpaceResponse)
-async def create_space_endpoint(body: CreateSpaceRequest):
+async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
     try:
-        result = create_genie_space(
+        result = await asyncio.to_thread(
+            create_genie_space,
             display_name=body.display_name,
             merged_config=body.serialized_space,
             parent_path=body.parent_path,
@@ -160,8 +163,10 @@ async def create_space_endpoint(body: CreateSpaceRequest):
         raise HTTPException(status_code=500, detail="Failed to create Genie Agent")
 
     # genie_creator returns genie_space_id; our response model uses space_id
+    space_id = result["genie_space_id"]
+    await asyncio.to_thread(capture_initial_version, request, space_id)  # best-effort, never raises
     return CreateSpaceResponse(
-        space_id=result["genie_space_id"],
+        space_id=space_id,
         display_name=result["display_name"],
         space_url=result["space_url"],
     )
@@ -178,7 +183,11 @@ class AgentChatRequest(BaseModel):
     message: str = Field("", max_length=10000)
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
-    space_id: str | None = Field(None, description="Pre-seed session with existing space ID for fix/update flows")
+    space_id: str | None = Field(
+        None,
+        pattern=r"^[0-9a-zA-Z_-]{1,128}$",
+        description="Pre-seed session with existing space ID for fix/update flows",
+    )
     model: str | None = Field(None, max_length=256, description="Optional serving endpoint name for this session.")
 
 
@@ -201,6 +210,9 @@ async def agent_chat(body: AgentChatRequest, request: Request):
     )
     from backend.services.auth import get_workspace_client, set_obo_user_token, clear_obo_user_token
     from backend.services.model_catalog import ModelValidationError, validate_chat_model
+
+    if body.space_id and not body.session_id:
+        await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
 
     agent = get_create_agent()
 
@@ -266,7 +278,8 @@ async def agent_chat(body: AgentChatRequest, request: Request):
             yield _sse_event("session", {"session_id": session.session_id})
 
             async with session._lock:
-                agent_iter = agent.chat(session, user_message, selections=selections).__aiter__()
+                vc_capture = lambda sid: capture_initial_version(request, sid)
+                agent_iter = agent.chat(session, user_message, selections=selections, vc_capture=vc_capture).__aiter__()
                 next_coro = None
                 while True:
                     if next_coro is None:

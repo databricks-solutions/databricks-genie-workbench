@@ -20,9 +20,10 @@ import json
 import logging
 
 from backend.services.auth import get_service_principal_client, get_workspace_client
+# GenieWatch is outside MV-D109 (flagged); it keeps the SP scope fallback.
 from backend.services.genie_client import (
     call_with_sp_fallback,
-    get_genie_space,
+    get_genie_space_with_sp_fallback as get_genie_space,
     list_genie_spaces,
     normalize_metric_view_sources,
 )

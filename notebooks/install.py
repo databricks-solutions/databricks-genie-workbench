@@ -63,6 +63,7 @@ dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
 dbutils.widgets.text("lakebase_project_name", "")
+dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
 
 # COMMAND ----------
 # MAGIC %md
@@ -76,6 +77,9 @@ dbutils.widgets.text("lakebase_project_name", "")
 # MAGIC - [ ] The selected SQL warehouse exists and you have `CAN_USE`.
 # MAGIC - [ ] The selected Unity Catalog exists and you can create/use the target schema.
 # MAGIC - [ ] If `lakebase_mode` is not `skip`, Lakebase Autoscaling is available.
+# MAGIC - [ ] If `llm_route` is `gateway` (the default), the workspace is in a Unity AI Gateway region.
+# MAGIC   The installer checks this with one small request and stops early if it fails; choose
+# MAGIC   `classic` to use serving endpoints instead.
 
 # COMMAND ----------
 from datetime import datetime
@@ -132,6 +136,7 @@ cfg = InstallConfig(
     app_name=app_name,
     catalog=dbutils.widgets.get("catalog").strip(),
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
+    llm_route=dbutils.widgets.get("llm_route").strip(),
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,

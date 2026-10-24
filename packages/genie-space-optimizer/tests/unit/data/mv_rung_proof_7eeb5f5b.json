@@ -1,0 +1,785 @@
+{
+  "about": "Each body was created in Unity Catalog on a SQL warehouse and passed every check listed under proven_at (MV-D124). test_mv_rung_proof.py regenerates each body from its inputs through mv_yaml.generate.",
+  "rungs": [
+    {
+      "strategy": "direct",
+      "view": "m7f_mv_direct",
+      "trap": "m7f_customer row 1 (SCD2 non-current duplicate key); the is_current guard in 'on' must stop the fan-out",
+      "candidate": {
+        "space_id": "m7f_proof",
+        "concept": "orders",
+        "measure_expr": "SUM(amount)",
+        "source_tables": [
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders"
+        ],
+        "benchmark_question_ids": []
+      },
+      "profiling": {
+        "source_table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders",
+        "table_columns": {
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders": [
+            {
+              "name": "order_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "product_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "store_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "branch_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "amount",
+              "data_type": "DECIMAL(10,2)",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer": [
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "segment",
+              "data_type": "STRING",
+              "comment": ""
+            },
+            {
+              "name": "region_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "cust_region_name",
+              "data_type": "STRING",
+              "comment": ""
+            },
+            {
+              "name": "is_current",
+              "data_type": "BOOLEAN",
+              "comment": ""
+            },
+            {
+              "name": "version",
+              "data_type": "INT",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_product": [
+            {
+              "name": "product_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "category",
+              "data_type": "STRING",
+              "comment": ""
+            }
+          ]
+        },
+        "uniqueness": [
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer",
+            "column": "customer_id",
+            "kind": "EXACT",
+            "row_count": 5,
+            "distinct_count": 4,
+            "detail": ""
+          },
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_product",
+            "column": "product_id",
+            "kind": "EXACT",
+            "row_count": 2,
+            "distinct_count": 2,
+            "detail": ""
+          }
+        ],
+        "hops": [
+          {
+            "alias": "dim_customer",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer",
+            "left_key": "customer_id",
+            "right_key": "customer_id",
+            "parent": null,
+            "is_current_column": "is_current",
+            "description": "customer attributes, SCD2"
+          },
+          {
+            "alias": "dim_product",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_product",
+            "left_key": "product_id",
+            "right_key": "product_id",
+            "parent": null,
+            "is_current_column": null,
+            "description": "product attributes"
+          }
+        ],
+        "attributes": [
+          {
+            "name": "segment",
+            "column": "segment",
+            "hop_alias": "dim_customer",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          },
+          {
+            "name": "category",
+            "column": "category",
+            "hop_alias": "dim_product",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          }
+        ],
+        "measures": [
+          {
+            "name": "total_amount",
+            "expr": "SUM(amount)",
+            "comment": "Total order amount.",
+            "display_name": "",
+            "format_type": "",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          },
+          {
+            "name": "order_count",
+            "expr": "COUNT(order_id)",
+            "comment": "Number of orders.",
+            "display_name": "",
+            "format_type": "number",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          }
+        ],
+        "capabilities": {
+          "mv_nested_joins": "UNKNOWN"
+        },
+        "domain": "m7f proof",
+        "row_counts": {}
+      },
+      "yaml_text": "version: '1.1'\ncomment: |\n  PURPOSE: orders metrics over m7f_orders\n\n  BEST FOR: total amount overall | total amount by segment | total amount by category\n\n  NOT FOR: Row-level inspection or record lookup (query serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders directly instead)\n\n  DIMENSIONS: segment, category\n\n  MEASURES: total_amount, order_count\n\n  SOURCE: m7f_orders (m7f proof domain)\n\n  JOINS: dim_customer (customer attributes, SCD2), dim_product (product attributes)\n\n  NOTE: Joined dimensions are current-version only where the dimension is versioned\nsource: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_orders`'\njoins:\n  - name: dim_customer\n    source: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_customer`'\n    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n  - name: dim_product\n    source: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_product`'\n    'on': source.`product_id` = dim_product.`product_id`\n    rely:\n      at_most_one_match: true\ndimensions:\n  - name: segment\n    expr: dim_customer.`segment`\n    comment: Segment for slicing orders.\n    display_name: Segment\n    synonyms:\n      - segment\n      - orders segment\n      - orders\n  - name: category\n    expr: dim_product.`category`\n    comment: Category for slicing orders.\n    display_name: Category\n    synonyms:\n      - category\n      - orders category\n      - orders\nmeasures:\n  - name: total_amount\n    expr: SUM(source.`amount`)\n    comment: Total order amount.\n    display_name: Total Amount\n    format:\n      type: currency\n      currency_code: USD\n      decimal_places:\n        type: exact\n        places: 2\n      abbreviation: compact\n    synonyms:\n      - total amount\n      - amount\n      - orders total amount\n      - orders\n  - name: order_count\n    expr: COUNT(source.`order_id`)\n    comment: Number of orders.\n    display_name: Order Count\n    format:\n      type: number\n      decimal_places:\n        type: all\n      abbreviation: compact\n    synonyms:\n      - order count\n      - count\n      - orders order count\n      - orders\n",
+      "proven_at": {
+        "date": "2026-10-02",
+        "base": "7eeb5f5b",
+        "warehouse": "fda7c3ad00bfac47",
+        "dbsql_version": "2026.36",
+        "checks": [
+          "body_identical",
+          "create_ddl",
+          "confirm_metric_view",
+          "describe_json_metric_view",
+          "measures_match_plain_sql",
+          "fan_out_smoke",
+          "deepest_attribute_groups",
+          "trap_defeated",
+          "existing_view_matches"
+        ]
+      }
+    },
+    {
+      "strategy": "denormalized",
+      "view": "m7f_mv_denormalized",
+      "trap": "the depth-2 attribute is read from m7f_customer.cust_region_name; m7f_region (duplicate key, different names) must never be joined",
+      "candidate": {
+        "space_id": "m7f_proof",
+        "concept": "orders",
+        "measure_expr": "SUM(amount)",
+        "source_tables": [
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders"
+        ],
+        "benchmark_question_ids": []
+      },
+      "profiling": {
+        "source_table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders",
+        "table_columns": {
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders": [
+            {
+              "name": "order_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "product_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "store_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "branch_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "amount",
+              "data_type": "DECIMAL(10,2)",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer": [
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "segment",
+              "data_type": "STRING",
+              "comment": ""
+            },
+            {
+              "name": "region_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "cust_region_name",
+              "data_type": "STRING",
+              "comment": ""
+            },
+            {
+              "name": "is_current",
+              "data_type": "BOOLEAN",
+              "comment": ""
+            },
+            {
+              "name": "version",
+              "data_type": "INT",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_region": [
+            {
+              "name": "region_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "region_name",
+              "data_type": "STRING",
+              "comment": ""
+            }
+          ]
+        },
+        "uniqueness": [
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer",
+            "column": "customer_id",
+            "kind": "EXACT",
+            "row_count": 5,
+            "distinct_count": 4,
+            "detail": ""
+          },
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_region",
+            "column": "region_id",
+            "kind": "EXACT",
+            "row_count": 3,
+            "distinct_count": 2,
+            "detail": ""
+          }
+        ],
+        "hops": [
+          {
+            "alias": "dim_customer",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_customer",
+            "left_key": "customer_id",
+            "right_key": "customer_id",
+            "parent": null,
+            "is_current_column": "is_current",
+            "description": "customer attributes, SCD2"
+          },
+          {
+            "alias": "dim_region",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_region",
+            "left_key": "region_id",
+            "right_key": "region_id",
+            "parent": "dim_customer",
+            "is_current_column": null,
+            "description": "region attributes"
+          }
+        ],
+        "attributes": [
+          {
+            "name": "segment",
+            "column": "segment",
+            "hop_alias": "dim_customer",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          },
+          {
+            "name": "region_name",
+            "column": "region_name",
+            "hop_alias": "dim_region",
+            "denormalized_on": "dim_customer",
+            "denormalized_column": "cust_region_name",
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          }
+        ],
+        "measures": [
+          {
+            "name": "total_amount",
+            "expr": "SUM(amount)",
+            "comment": "Total order amount.",
+            "display_name": "",
+            "format_type": "",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          },
+          {
+            "name": "order_count",
+            "expr": "COUNT(order_id)",
+            "comment": "Number of orders.",
+            "display_name": "",
+            "format_type": "number",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          }
+        ],
+        "capabilities": {
+          "mv_nested_joins": "UNKNOWN"
+        },
+        "domain": "m7f proof",
+        "row_counts": {}
+      },
+      "yaml_text": "version: '1.1'\ncomment: |\n  PURPOSE: orders metrics over m7f_orders\n\n  BEST FOR: total amount overall | total amount by segment | total amount by region name\n\n  NOT FOR: Row-level inspection or record lookup (query serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders directly instead)\n\n  DIMENSIONS: segment, region_name\n\n  MEASURES: total_amount, order_count\n\n  SOURCE: m7f_orders (m7f proof domain)\n\n  JOINS: dim_customer (customer attributes, SCD2)\n\n  NOTE: Far-dimension attributes are read from the denormalized copy on the near dimension\nsource: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_orders`'\njoins:\n  - name: dim_customer\n    source: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_customer`'\n    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\ndimensions:\n  - name: segment\n    expr: dim_customer.`segment`\n    comment: Segment for slicing orders.\n    display_name: Segment\n    synonyms:\n      - segment\n      - orders segment\n      - orders\n  - name: region_name\n    expr: dim_customer.`cust_region_name`\n    comment: Region Name for slicing orders.\n    display_name: Region Name\n    synonyms:\n      - region name\n      - name\n      - orders region name\n      - orders\nmeasures:\n  - name: total_amount\n    expr: SUM(source.`amount`)\n    comment: Total order amount.\n    display_name: Total Amount\n    format:\n      type: currency\n      currency_code: USD\n      decimal_places:\n        type: exact\n        places: 2\n      abbreviation: compact\n    synonyms:\n      - total amount\n      - amount\n      - orders total amount\n      - orders\n  - name: order_count\n    expr: COUNT(source.`order_id`)\n    comment: Number of orders.\n    display_name: Order Count\n    format:\n      type: number\n      decimal_places:\n        type: all\n      abbreviation: compact\n    synonyms:\n      - order count\n      - count\n      - orders order count\n      - orders\n",
+      "proven_at": {
+        "date": "2026-10-02",
+        "base": "7eeb5f5b",
+        "warehouse": "fda7c3ad00bfac47",
+        "dbsql_version": "2026.36",
+        "checks": [
+          "body_identical",
+          "create_ddl",
+          "confirm_metric_view",
+          "describe_json_metric_view",
+          "measures_match_plain_sql",
+          "fan_out_smoke",
+          "deepest_attribute_groups",
+          "trap_defeated",
+          "existing_view_matches"
+        ]
+      }
+    },
+    {
+      "strategy": "nested",
+      "view": "m7f_mv_nested",
+      "trap": "distinct depth-2 values, so a silently dropped nested join (failure mode A) groups everything under NULL; unreferenced store/city rows must not appear",
+      "candidate": {
+        "space_id": "m7f_proof",
+        "concept": "orders",
+        "measure_expr": "SUM(amount)",
+        "source_tables": [
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders"
+        ],
+        "benchmark_question_ids": []
+      },
+      "profiling": {
+        "source_table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders",
+        "table_columns": {
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders": [
+            {
+              "name": "order_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "product_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "store_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "branch_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "amount",
+              "data_type": "DECIMAL(10,2)",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_store": [
+            {
+              "name": "store_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "city_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "store_name",
+              "data_type": "STRING",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_city": [
+            {
+              "name": "city_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "city_name",
+              "data_type": "STRING",
+              "comment": ""
+            }
+          ]
+        },
+        "uniqueness": [
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_store",
+            "column": "store_id",
+            "kind": "EXACT",
+            "row_count": 4,
+            "distinct_count": 4,
+            "detail": ""
+          },
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_city",
+            "column": "city_id",
+            "kind": "EXACT",
+            "row_count": 4,
+            "distinct_count": 4,
+            "detail": ""
+          }
+        ],
+        "hops": [
+          {
+            "alias": "dim_store",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_store",
+            "left_key": "store_id",
+            "right_key": "store_id",
+            "parent": null,
+            "is_current_column": null,
+            "description": "store attributes"
+          },
+          {
+            "alias": "dim_city",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_city",
+            "left_key": "city_id",
+            "right_key": "city_id",
+            "parent": "dim_store",
+            "is_current_column": null,
+            "description": "city attributes"
+          }
+        ],
+        "attributes": [
+          {
+            "name": "store_name",
+            "column": "store_name",
+            "hop_alias": "dim_store",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          },
+          {
+            "name": "city_name",
+            "column": "city_name",
+            "hop_alias": "dim_city",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          }
+        ],
+        "measures": [
+          {
+            "name": "total_amount",
+            "expr": "SUM(amount)",
+            "comment": "Total order amount.",
+            "display_name": "",
+            "format_type": "",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          },
+          {
+            "name": "order_count",
+            "expr": "COUNT(order_id)",
+            "comment": "Number of orders.",
+            "display_name": "",
+            "format_type": "number",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          }
+        ],
+        "capabilities": {
+          "mv_nested_joins": "GRANTED"
+        },
+        "domain": "m7f proof",
+        "row_counts": {}
+      },
+      "yaml_text": "version: '1.1'\ncomment: |\n  PURPOSE: orders metrics over m7f_orders\n\n  BEST FOR: total amount overall | total amount by store name | total amount by city name\n\n  NOT FOR: Row-level inspection or record lookup (query serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders directly instead)\n\n  DIMENSIONS: store_name, city_name\n\n  MEASURES: total_amount, order_count\n\n  SOURCE: m7f_orders (m7f proof domain)\n\n  JOINS: dim_store (store attributes)\n\n  NOTE: Snowflake attributes are reached through nested joins; every intermediate key is 1:1\nsource: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_orders`'\njoins:\n  - name: dim_store\n    source: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_store`'\n    'on': source.`store_id` = dim_store.`store_id`\n    rely:\n      at_most_one_match: true\n    joins:\n      - name: dim_city\n        source: '`serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_city`'\n        'on': dim_store.`city_id` = dim_city.`city_id`\n        rely:\n          at_most_one_match: true\ndimensions:\n  - name: store_name\n    expr: dim_store.`store_name`\n    comment: Store Name for slicing orders.\n    display_name: Store Name\n    synonyms:\n      - store name\n      - name\n      - orders store name\n      - orders\n  - name: city_name\n    expr: dim_store.dim_city.`city_name`\n    comment: City Name for slicing orders.\n    display_name: City Name\n    synonyms:\n      - city name\n      - name\n      - orders city name\n      - orders\nmeasures:\n  - name: total_amount\n    expr: SUM(source.`amount`)\n    comment: Total order amount.\n    display_name: Total Amount\n    format:\n      type: currency\n      currency_code: USD\n      decimal_places:\n        type: exact\n        places: 2\n      abbreviation: compact\n    synonyms:\n      - total amount\n      - amount\n      - orders total amount\n      - orders\n  - name: order_count\n    expr: COUNT(source.`order_id`)\n    comment: Number of orders.\n    display_name: Order Count\n    format:\n      type: number\n      decimal_places:\n        type: all\n      abbreviation: compact\n    synonyms:\n      - order count\n      - count\n      - orders order count\n      - orders\n",
+      "proven_at": {
+        "date": "2026-10-02",
+        "base": "7eeb5f5b",
+        "warehouse": "fda7c3ad00bfac47",
+        "dbsql_version": "2026.36",
+        "checks": [
+          "body_identical",
+          "create_ddl",
+          "confirm_metric_view",
+          "describe_json_metric_view",
+          "measures_match_plain_sql",
+          "fan_out_smoke",
+          "deepest_attribute_groups",
+          "trap_defeated",
+          "existing_view_matches"
+        ]
+      }
+    },
+    {
+      "strategy": "subquery_source",
+      "view": "m7f_mv_subquery_source",
+      "trap": "m7f_branch rows 1-2: a duplicate current key (the dedup must collapse it) and a non-current row whose MAX would win without the is_current guard",
+      "candidate": {
+        "space_id": "m7f_proof",
+        "concept": "orders",
+        "measure_expr": "SUM(amount)",
+        "source_tables": [
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders"
+        ],
+        "benchmark_question_ids": []
+      },
+      "profiling": {
+        "source_table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders",
+        "table_columns": {
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders": [
+            {
+              "name": "order_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "customer_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "product_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "store_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "branch_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "amount",
+              "data_type": "DECIMAL(10,2)",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_branch": [
+            {
+              "name": "branch_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "area_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "branch_name",
+              "data_type": "STRING",
+              "comment": ""
+            },
+            {
+              "name": "is_current",
+              "data_type": "BOOLEAN",
+              "comment": ""
+            },
+            {
+              "name": "version",
+              "data_type": "INT",
+              "comment": ""
+            }
+          ],
+          "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_area": [
+            {
+              "name": "area_id",
+              "data_type": "INT",
+              "comment": ""
+            },
+            {
+              "name": "area_name",
+              "data_type": "STRING",
+              "comment": ""
+            }
+          ]
+        },
+        "uniqueness": [
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_branch",
+            "column": "branch_id",
+            "kind": "EXACT",
+            "row_count": 5,
+            "distinct_count": 3,
+            "detail": ""
+          },
+          {
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_area",
+            "column": "area_id",
+            "kind": "EXACT",
+            "row_count": 2,
+            "distinct_count": 2,
+            "detail": ""
+          }
+        ],
+        "hops": [
+          {
+            "alias": "dim_branch",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_branch",
+            "left_key": "branch_id",
+            "right_key": "branch_id",
+            "parent": null,
+            "is_current_column": "is_current",
+            "description": "branch attributes, SCD2"
+          },
+          {
+            "alias": "dim_area",
+            "table": "serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_area",
+            "left_key": "area_id",
+            "right_key": "area_id",
+            "parent": "dim_branch",
+            "is_current_column": null,
+            "description": "area attributes"
+          }
+        ],
+        "attributes": [
+          {
+            "name": "branch_name",
+            "column": "branch_name",
+            "hop_alias": "dim_branch",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          },
+          {
+            "name": "area_name",
+            "column": "area_name",
+            "hop_alias": "dim_area",
+            "denormalized_on": null,
+            "denormalized_column": null,
+            "comment": "",
+            "display_name": "",
+            "synonyms": []
+          }
+        ],
+        "measures": [
+          {
+            "name": "total_amount",
+            "expr": "SUM(amount)",
+            "comment": "Total order amount.",
+            "display_name": "",
+            "format_type": "",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          },
+          {
+            "name": "order_count",
+            "expr": "COUNT(order_id)",
+            "comment": "Number of orders.",
+            "display_name": "",
+            "format_type": "number",
+            "currency_code": "USD",
+            "decimal_places": null,
+            "synonyms": []
+          }
+        ],
+        "capabilities": {
+          "mv_nested_joins": "GRANTED"
+        },
+        "domain": "m7f proof",
+        "row_counts": {}
+      },
+      "yaml_text": "version: '1.1'\ncomment: |\n  PURPOSE: orders metrics over m7f_orders\n\n  BEST FOR: total amount overall | total amount by branch name | total amount by area name\n\n  NOT FOR: Row-level inspection or record lookup (query serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold.m7f_orders directly instead)\n\n  DIMENSIONS: branch_name, area_name\n\n  MEASURES: total_amount, order_count\n\n  SOURCE: m7f_orders (m7f proof domain)\n\n  JOINS: pre-joined in the source subquery, deduplicated on the join key (dim_branch, dim_area)\n\n  NOTE: Dimension attributes are pre-joined and deduplicated on the join key, so a duplicated dimension row contributes one value rather than fanning out the fact\nsource: |\n  SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n  FROM `serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_orders` AS fact\n  LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` FROM `serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch ON fact.`branch_id` = dim_branch.`branch_id`\n  LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `serverless_stable_6t92c3_catalog`.`prashanth_wanderbricks_gold`.`m7f_area` GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`\ndimensions:\n  - name: branch_name\n    expr: source.`branch_name`\n    comment: Branch Name for slicing orders.\n    display_name: Branch Name\n    synonyms:\n      - branch name\n      - name\n      - orders branch name\n      - orders\n  - name: area_name\n    expr: source.`area_name`\n    comment: Area Name for slicing orders.\n    display_name: Area Name\n    synonyms:\n      - area name\n      - name\n      - orders area name\n      - orders\nmeasures:\n  - name: total_amount\n    expr: SUM(source.`amount`)\n    comment: Total order amount.\n    display_name: Total Amount\n    format:\n      type: currency\n      currency_code: USD\n      decimal_places:\n        type: exact\n        places: 2\n      abbreviation: compact\n    synonyms:\n      - total amount\n      - amount\n      - orders total amount\n      - orders\n  - name: order_count\n    expr: COUNT(source.`order_id`)\n    comment: Number of orders.\n    display_name: Order Count\n    format:\n      type: number\n      decimal_places:\n        type: all\n      abbreviation: compact\n    synonyms:\n      - order count\n      - count\n      - orders order count\n      - orders\n",
+      "proven_at": {
+        "date": "2026-10-02",
+        "base": "7eeb5f5b",
+        "warehouse": "fda7c3ad00bfac47",
+        "dbsql_version": "2026.36",
+        "checks": [
+          "body_identical",
+          "create_ddl",
+          "confirm_metric_view",
+          "describe_json_metric_view",
+          "measures_match_plain_sql",
+          "fan_out_smoke",
+          "deepest_attribute_groups",
+          "trap_defeated",
+          "existing_view_matches"
+        ]
+      }
+    }
+  ]
+}

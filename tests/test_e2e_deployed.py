@@ -2,15 +2,27 @@
 
 Same tests as test_e2e_local.py but targeting the deployed app URL.
 Uses Databricks CLI token for OBO authentication.
+
+    GENIE_E2E_APP_URL=https://<app-url> GENIE_E2E_PROFILE=<profile> \\
+        python tests/test_e2e_deployed.py
 """
 import json
+import os
 import subprocess
 import sys
 import time
 import requests
 
-APP_URL = "https://genie-workbench-v0-2-7474649446784190.aws.databricksapps.com"
-PROFILE = "fevm-genie-workbench-dev"
+
+def _required_env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        sys.exit(f"{name} is not set; see the usage line in this file's docstring.")
+    return value
+
+
+APP_URL = _required_env("GENIE_E2E_APP_URL").rstrip("/")
+PROFILE = _required_env("GENIE_E2E_PROFILE")
 
 
 def get_token():

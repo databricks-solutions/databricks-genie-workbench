@@ -1,0 +1,201 @@
+"""Site-3 (GSO call_llm) AI-Gateway routing tests."""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from genie_space_optimizer.optimization import llm_client
+
+
+@pytest.fixture(autouse=True)
+def _reset(monkeypatch):
+    llm_client._openai_client_cache.clear()
+    monkeypatch.setattr(llm_client, "get_llm_endpoint", lambda: "databricks-claude-sonnet-4-6")
+    yield
+    llm_client._openai_client_cache.clear()
+
+
+def _fake_wc():
+    return SimpleNamespace(config=SimpleNamespace(
+        host="https://example.databricks.com/", token="tok",
+        authenticate=lambda: {"Authorization": "Bearer tok"}))
+
+
+def _fake_openai_client(monkeypatch):
+    completions = MagicMock()
+    completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), api_key="tok")
+    monkeypatch.setattr(llm_client, "get_openai_client", lambda w: client)
+    return completions
+
+
+def test_get_openai_client_base_url_by_route(monkeypatch):
+    import openai
+    seen = {}
+
+    class FakeOpenAI:
+        def __init__(self, api_key=None, base_url=None):
+            seen["base_url"] = base_url
+            self.api_key = api_key
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(llm_client, "_resolve_bearer_token", lambda wc: "tok")
+
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    llm_client.get_openai_client(_fake_wc())
+    assert seen["base_url"] == "https://example.databricks.com/serving-endpoints"
+
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    llm_client.get_openai_client(_fake_wc())
+    assert seen["base_url"] == "https://example.databricks.com/ai-gateway/mlflow/v1"
+
+
+def test_call_llm_classic_no_headers_unmapped_model(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    completions = _fake_openai_client(monkeypatch)
+    llm_client.call_llm(_fake_wc(), messages=[{"role": "user", "content": "hi"}])
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "databricks-claude-sonnet-4-6"
+    assert "extra_headers" not in kwargs
+
+
+def test_call_llm_gateway_maps_model_and_tags_with_run_id(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GSO_RUN_ID", "run-42")
+    completions = _fake_openai_client(monkeypatch)
+    llm_client.call_llm(_fake_wc(), messages=[{"role": "user", "content": "hi"}])
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "system.ai.claude-sonnet-4-6"
+    tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "gso-optimize", "run_id": "run-42"}
+
+
+def test_call_llm_gateway_tags_without_run_id(monkeypatch):
+    """Absent GSO_RUN_ID: tags carry no run_id key (empty scoped extras dropped)."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.delenv("GSO_RUN_ID", raising=False)
+    completions = _fake_openai_client(monkeypatch)
+    llm_client.call_llm(_fake_wc(), messages=[{"role": "user", "content": "hi"}])
+    kwargs = completions.create.call_args.kwargs
+    tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "gso-optimize"}
+
+
+class _FakeNotFound(Exception):
+    status_code = 404
+
+
+def _fake_404_client(monkeypatch):
+    """Fake OpenAI client whose chat.completions.create raises a 404 error."""
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), api_key="tok")
+    monkeypatch.setattr(llm_client, "get_openai_client", lambda w: client)
+    return completions
+
+
+def test_call_llm_gateway_404_downgrades(monkeypatch):
+    """Gateway route: a 404 is downgraded to the clean MODEL_UNAVAILABLE_MESSAGE.
+
+    ``max_retries=1`` (not 0): with no ``response_format`` the loop runs
+    ``total_attempts = max_retries + 0`` times, so exactly one attempt executes,
+    raises, sets ``last_err``, and falls through to the final raise.
+    """
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    _fake_404_client(monkeypatch)
+    with pytest.raises(RuntimeError) as ei:
+        llm_client.call_llm(
+            _fake_wc(), messages=[{"role": "user", "content": "hi"}], max_retries=1
+        )
+    assert str(ei.value) == llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_call_llm_classic_404_raises_original(monkeypatch):
+    """Classic route: a 404 keeps its original error, not the clean message."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    _fake_404_client(monkeypatch)
+    with pytest.raises(_FakeNotFound) as ei:
+        llm_client.call_llm(
+            _fake_wc(), messages=[{"role": "user", "content": "hi"}], max_retries=1
+        )
+    assert str(ei.value) != llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+# --- optimizer_utils._traced_llm_call (space-description call) -------------------
+
+class _FakeSpan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def set_inputs(self, *_a, **_k):
+        pass
+
+    def set_outputs(self, *_a, **_k):
+        pass
+
+    def add_event(self, *_a, **_k):
+        pass
+
+    def set_attribute(self, *_a, **_k):
+        pass
+
+
+def _traced(monkeypatch, completions):
+    import mlflow
+
+    from genie_space_optimizer.optimization import optimizer_utils
+
+    monkeypatch.setattr(mlflow, "start_span", lambda **_k: _FakeSpan())
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), api_key="tok")
+    monkeypatch.setattr(optimizer_utils, "_get_openai_client", lambda w: client)
+    return lambda: optimizer_utils._traced_llm_call(
+        _fake_wc(), "system", "prompt", span_name="t", max_retries=1
+    )
+
+
+def test_traced_llm_call_gateway_maps_model_and_tags_with_run_id(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GSO_RUN_ID", "run-7")
+    completions = MagicMock()
+    completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    _traced(monkeypatch, completions)()
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "system.ai.claude-sonnet-4-6"
+    tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "gso-optimize", "run_id": "run-7"}
+
+
+def test_traced_llm_call_classic_unmapped_and_untagged(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    completions = MagicMock()
+    completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    _traced(monkeypatch, completions)()
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs["model"] == "databricks-claude-sonnet-4-6"
+    assert "extra_headers" not in kwargs
+
+
+def test_traced_llm_call_gateway_404_downgrades(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    with pytest.raises(RuntimeError) as ei:
+        _traced(monkeypatch, completions)()
+    assert str(ei.value) == llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_traced_llm_call_classic_404_raises_original(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    with pytest.raises(_FakeNotFound):
+        _traced(monkeypatch, completions)()

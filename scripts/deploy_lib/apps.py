@@ -14,6 +14,7 @@ APP_SCOPES = [
     "sql",
     "dashboards.genie",
     "serving.serving-endpoints",
+    "ai-gateway",
     "catalog.catalogs:read",
     "catalog.schemas:read",
     "catalog.tables:read",

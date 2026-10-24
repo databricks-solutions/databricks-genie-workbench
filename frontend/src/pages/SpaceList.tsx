@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink, Filter } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
+import { describeScanError } from "@/lib/space-access"
 import { MATURITY_COLORS, getAccuracyBadgeClass } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 import { WelcomeHero } from "@/components/WelcomeHero"
@@ -20,6 +21,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
   const [search, setSearch] = useState("")
   const [starredOnly, setStarredOnly] = useState(false)
   const [scanning, setScanning] = useState<Set<string>>(new Set())
+  const [scanErrors, setScanErrors] = useState<Map<string, string>>(new Map())
   const [maturityFilter, setMaturityFilter] = useState<Set<string>>(new Set())
   const [hasLoaded, setHasLoaded] = useState(false)
 
@@ -62,6 +64,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
 
   const handleScan = async (e: React.MouseEvent, spaceId: string) => {
     e.stopPropagation()
+    setScanErrors(prev => { const next = new Map(prev); next.delete(spaceId); return next })
     setScanning(prev => new Set(prev).add(spaceId))
     try {
       const result: ScanResult = await scanSpace(spaceId)
@@ -72,6 +75,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
       ))
     } catch (e) {
       console.error("Scan failed:", e)
+      setScanErrors(prev => new Map(prev).set(spaceId, describeScanError(e)))
     } finally {
       setScanning(prev => { const s = new Set(prev); s.delete(spaceId); return s })
     }
@@ -194,79 +198,105 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
       ) : (
         <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4${hasLoaded ? "" : " animate-stagger"}`}>
           {filteredSpaces.map(space => (
-            <div
+            <SpaceCard
               key={space.space_id}
-              onClick={() => onSelectSpace(space.space_id, space.display_name, space.space_url ?? undefined)}
-              className="group bg-surface border border-default rounded-xl hover:border-accent/40 cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5"
-            >
-              <div className="p-4">
-                {/* Name + star */}
-                <div className="flex items-center gap-2 mb-3">
-                  <h3 className="text-sm font-semibold text-primary truncate flex-1">
-                    {space.display_name}
-                  </h3>
-                  <button
-                    onClick={(e) => handleToggleStar(e, space)}
-                    className="transition-colors"
-                  >
-                    <Star className={`w-4 h-4 ${space.is_starred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"}`} />
-                  </button>
-                </div>
-
-                {/* Status pills */}
-                <div className="flex flex-wrap items-center gap-1.5 mb-3">
-                  {space.score != null ? (
-                    <>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${MATURITY_COLORS[space.maturity ?? ""]?.badge ?? "bg-elevated text-muted border-default"}`}>
-                        {space.score}/12 · {space.maturity}
-                      </span>
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${getAccuracyBadgeClass(space.optimization_accuracy)}`}>
-                        {space.optimization_accuracy != null
-                          ? `${Math.round(space.optimization_accuracy * 100)}% acc.`
-                          : "Not optimized"}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-default bg-elevated text-muted">
-                      Unscanned
-                    </span>
-                  )}
-                </div>
-
-                {/* Footer */}
-                <div className="pt-3 border-t border-default flex items-center justify-between gap-2">
-                  {space.space_url ? (
-                    <a
-                      href={space.space_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs text-muted font-mono min-w-0 truncate hover:text-accent transition-colors inline-flex items-center gap-1"
-                    >
-                      {space.space_id}
-                      <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                    </a>
-                  ) : (
-                    <span className="text-xs text-muted font-mono min-w-0 truncate">{space.space_id}</span>
-                  )}
-                  <button
-                    onClick={(e) => handleScan(e, space.space_id)}
-                    disabled={scanning.has(space.space_id)}
-                    className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-default hover:border-accent/40 hover:text-accent text-muted transition-colors disabled:opacity-50"
-                  >
-                    {scanning.has(space.space_id) ? (
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Zap className="w-3 h-3" />
-                    )}
-                    {scanning.has(space.space_id) ? "Scanning..." : "Scan"}
-                  </button>
-                </div>
-              </div>
-            </div>
+              space={space}
+              scanning={scanning.has(space.space_id)}
+              scanError={scanErrors.get(space.space_id) ?? null}
+              onSelect={() => onSelectSpace(space.space_id, space.display_name, space.space_url ?? undefined)}
+              onToggleStar={(e) => handleToggleStar(e, space)}
+              onScan={(e) => handleScan(e, space.space_id)}
+            />
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+interface SpaceCardProps {
+  space: SpaceListItem
+  scanning: boolean
+  scanError: string | null
+  onSelect: () => void
+  onToggleStar: (e: React.MouseEvent) => void
+  onScan: (e: React.MouseEvent) => void
+}
+
+export function SpaceCard({ space, scanning, scanError, onSelect, onToggleStar, onScan }: SpaceCardProps) {
+  return (
+    <div
+      onClick={onSelect}
+      className="group bg-surface border border-default rounded-xl hover:border-accent/40 cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5"
+    >
+      <div className="p-4">
+        {/* Name + star */}
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-semibold text-primary truncate flex-1">
+            {space.display_name}
+          </h3>
+          <button
+            onClick={onToggleStar}
+            className="transition-colors"
+          >
+            <Star className={`w-4 h-4 ${space.is_starred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"}`} />
+          </button>
+        </div>
+
+        {/* Status pills */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          {space.score != null ? (
+            <>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${MATURITY_COLORS[space.maturity ?? ""]?.badge ?? "bg-elevated text-muted border-default"}`}>
+                {space.score}/12 · {space.maturity}
+              </span>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${getAccuracyBadgeClass(space.optimization_accuracy)}`}>
+                {space.optimization_accuracy != null
+                  ? `${Math.round(space.optimization_accuracy * 100)}% acc.`
+                  : "Not optimized"}
+              </span>
+            </>
+          ) : (
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-default bg-elevated text-muted">
+              Unscanned
+            </span>
+          )}
+        </div>
+
+        {scanError && (
+          <p role="alert" className="mb-2 text-[11px] text-red-500 dark:text-red-400">{scanError}</p>
+        )}
+
+        {/* Footer */}
+        <div className="pt-3 border-t border-default flex items-center justify-between gap-2">
+          {space.space_url ? (
+            <a
+              href={space.space_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs text-muted font-mono min-w-0 truncate hover:text-accent transition-colors inline-flex items-center gap-1"
+            >
+              {space.space_id}
+              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+            </a>
+          ) : (
+            <span className="text-xs text-muted font-mono min-w-0 truncate">{space.space_id}</span>
+          )}
+          <button
+            onClick={onScan}
+            disabled={scanning}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-default hover:border-accent/40 hover:text-accent text-muted transition-colors disabled:opacity-50"
+          >
+            {scanning ? (
+              <RefreshCw className="w-3 h-3 animate-spin" />
+            ) : (
+              <Zap className="w-3 h-3" />
+            )}
+            {scanning ? "Scanning..." : "Scan"}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

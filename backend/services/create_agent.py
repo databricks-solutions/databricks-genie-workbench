@@ -10,14 +10,22 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Generator
+from typing import AsyncGenerator, Callable, Generator
 
 from backend.models import MAX_DESCRIPTION_CHARS
-from backend.services.llm_utils import get_llm_model, normalize_message_content
-from backend.services.auth import get_workspace_client, run_in_context
+from backend.services.llm_utils import get_llm_model, is_gateway_scope_403, normalize_message_content
+from backend.services.auth import get_service_principal_client, get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
+from backend.services.llm_route import (
+    resolve_chat,
+    is_reasoning_effort_400,
+    get_llm_route,
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    is_model_unavailable_404,
+)
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -112,6 +120,7 @@ class CreateGenieAgent:
         session: AgentSession,
         user_message: str,
         selections: dict | None = None,
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Process a user message (or empty continuation) and stream events.
 
@@ -164,7 +173,7 @@ class CreateGenieAgent:
                 sel = self._extract_selections(user_message)  # Fallback: parse from message
             if sel and sel.get("action") == "create" and sel.get("edited_plan"):
                 logger.info("Fast path triggered: action=create, plan keys=%s", list(sel["edited_plan"].keys()))
-                async for event in self._fast_create(session, sel):
+                async for event in self._fast_create(session, sel, vc_capture):
                     yield event
                 return
 
@@ -207,7 +216,9 @@ class CreateGenieAgent:
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
             effective_model = self._effective_model(session)
-            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs, model=effective_model):
+            async for chunk in self._async_stream_llm(
+                messages, tools=step_tool_defs, model=effective_model, space_id=session.space_id
+            ):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -356,6 +367,7 @@ class CreateGenieAgent:
                             "url": result["space_url"],
                             "display_name": result.get("display_name", ""),
                         }}
+                        await self._maybe_capture(session, vc_capture)
 
                     if tool_name == "update_space" and result.get("success"):
                         yield {"event": "updated", "data": {
@@ -410,7 +422,7 @@ class CreateGenieAgent:
                             if not v_result.get("errors"):
                                 dn = self._derive_display_name(None, tool_args, session)
                                 desc = self._derive_description(None, tool_args, session, config)
-                                async for event in self._create_space_with_repair(session, config, dn, desc):
+                                async for event in self._create_space_with_repair(session, config, dn, desc, vc_capture):
                                     yield event
                                 tools_used.append("create_space")
 
@@ -455,6 +467,18 @@ class CreateGenieAgent:
             )
 
         yield {"event": "done", "data": {"needs_continuation": needs_continuation}}
+
+    async def _maybe_capture(self, session, vc_capture) -> None:
+        """Fire the best-effort initial-capture hook for a just-created space.
+        Runs in a thread with the current context (OBO token) propagated; never
+        breaks the SSE stream."""
+        if not vc_capture or not session.space_id:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, run_in_context(vc_capture, session.space_id))
+        except Exception:
+            logger.warning("initial VC capture failed for %s", session.space_id, exc_info=True)
 
     _TOOL_RESULT_CHAR_LIMIT = 3000
     _COMPRESSIBLE_TOOLS = frozenset({
@@ -703,6 +727,7 @@ class CreateGenieAgent:
                 [{"role": "user", "content": prompt}],
                 model=model or get_llm_model(),
                 max_tokens=16000,
+                component="create-agent",
             )
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config
@@ -907,6 +932,7 @@ class CreateGenieAgent:
         config: dict,
         display_name: str,
         description: str = "",
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run create_space with automatic LLM repair on config errors.
 
@@ -976,6 +1002,7 @@ class CreateGenieAgent:
                 "url": result["space_url"],
                 "display_name": result.get("display_name", display_name),
             }}
+            await self._maybe_capture(session, vc_capture)
         elif result.get("error"):
             yield {"event": "error", "data": {"message": result["error"]}}
 
@@ -983,6 +1010,7 @@ class CreateGenieAgent:
         self,
         session: AgentSession,
         selections: dict,
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Deterministic create path — skips the LLM entirely.
 
@@ -1069,7 +1097,7 @@ class CreateGenieAgent:
 
                 # Step 3: create_space (with LLM repair on failure)
                 description = self._derive_description(selections, None, session, config)
-                async for event in self._create_space_with_repair(session, config, display_name, description):
+                async for event in self._create_space_with_repair(session, config, display_name, description, vc_capture):
                     yield event
 
                 if session.space_id:
@@ -1092,6 +1120,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
@@ -1114,7 +1143,10 @@ class CreateGenieAgent:
             body["tools"] = effective_tools
 
         effective_model = model or get_llm_model()
-        url = f"{host}/serving-endpoints/{effective_model}/invocations"
+        rc = resolve_chat(host, effective_model, "create-agent", space_id=space_id)
+        url = rc.url
+        if rc.model is not None:
+            body["model"] = rc.model
         logger.info("Streaming LLM call to %s with %d messages", effective_model, len(messages))
         if logger.isEnabledFor(logging.DEBUG):
             for i, m in enumerate(messages):
@@ -1128,23 +1160,67 @@ class CreateGenieAgent:
                         logger.debug("    tc[%d] id=%s fn=%s args_len=%d", j, tc.get("id", "?"), tc.get("function", {}).get("name", "?"), len(tc.get("function", {}).get("arguments", "")))
 
         _RETRYABLE_STATUSES = {429, 502, 503}
+
+        def _post_with_retries(session):
+            for attempt in range(self._MAX_LLM_RETRIES + 1):
+                resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
+                if resp.status_code in _RETRYABLE_STATUSES:
+                    resp.close()
+                    if attempt >= self._MAX_LLM_RETRIES:
+                        logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
+                        raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
+                    time.sleep(delay)
+                    continue
+                break
+            return resp
+
         session = client.api_client._api_client._session
-        for attempt in range(self._MAX_LLM_RETRIES + 1):
-            resp = session.post(url, json=body, stream=True, timeout=120)
-            if resp.status_code in _RETRYABLE_STATUSES:
+        resp = _post_with_retries(session)
+
+        # Gateway-only and 403-only, status first: ``resp.text`` is read on that 403 and
+        # never on a streaming 200.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 403
+            and is_gateway_scope_403(resp.status_code, resp.text)
+        ):
+            sp_client = get_service_principal_client()
+            if sp_client is not client:
                 resp.close()
-                if attempt >= self._MAX_LLM_RETRIES:
-                    logger.error("LLM endpoint returned %d after %d retries, giving up", resp.status_code, self._MAX_LLM_RETRIES)
-                    raise RuntimeError(f"LLM endpoint returned {resp.status_code} after {self._MAX_LLM_RETRIES} retries.")
-                retry_after = resp.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
-                logger.warning("%d from LLM endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, self._MAX_LLM_RETRIES)
-                time.sleep(delay)
-                continue
-            break
+                logger.warning(
+                    "create-agent: user token lacks the ai-gateway scope; retrying the gateway "
+                    "call as the service principal. Verify the app's user_api_scopes if this is unexpected."
+                )
+                session = sp_client.api_client._api_client._session
+                resp = _post_with_retries(session)
+
+        # reasoning_effort retry (§2): reasoning-backed models 400 on tool calls unless
+        # reasoning_effort='none' is sent; non-reasoning models 400 if it IS sent. So send
+        # plain first, and retry once only when the 400 body names reasoning_effort.
+        #
+        # Gateway-only, 400-only, and short-circuit ordered: the ``status_code == 400``
+        # term MUST precede the ``is_reasoning_effort_400(..., resp.text)`` term so that
+        # ``resp.text`` is never evaluated on a 200 — reading it forces ``.content``
+        # (a full ``iter_content`` buffer) and would defeat incremental SSE streaming.
+        # On classic the behavior stays byte-identical to before this phase (fail-safe).
+        # This retry POST is deliberately outside the 429/502/503 backoff loop above.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 400
+            and is_reasoning_effort_400(resp.status_code, resp.text)
+        ):
+            resp.close()
+            body = {**body, "reasoning_effort": "none"}
+            resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
 
         try:
             if not resp.ok:
+                if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(resp.status_code, ""):
+                    logger.warning("Gateway model unavailable/entitlement 404 for %s", effective_model)
+                    raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE)
                 error_body = resp.text[:1000]
                 logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
                 raise RuntimeError(
@@ -1170,6 +1246,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async.
 
@@ -1179,7 +1256,7 @@ class CreateGenieAgent:
         import contextvars as _cv
         loop = asyncio.get_event_loop()
         ctx = _cv.copy_context()
-        gen = self._stream_llm(messages, tools=tools, model=model)
+        gen = self._stream_llm(messages, tools=tools, model=model, space_id=space_id)
         _sentinel = object()
 
         while True:

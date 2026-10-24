@@ -3389,9 +3389,42 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
             json.dumps({"op": "add", "section": "mv_dimensions", "mv": target, "dimension": patch.get("previous_dimension", {})}),
         )
     if patch_type == "update_mv_yaml":
+        # Issue #331: this is the one path by which LLM-authored metric view YAML
+        # enters the system, and it used to transport ``new_text`` verbatim while
+        # every engine-generated path was checked by ``mv_yaml.validate``. Gate it
+        # with the same validator. RuntimeError is the established refusal signal
+        # (see the Lever-6 snippet gate above): apply_patch_set records the patch
+        # as dropped_validation and keeps applying the rest of the set.
+        from genie_space_optimizer.optimization import mv_yaml as _mv_yaml
+
+        _report = _mv_yaml.validate(new_text)
+        if not _report.ok:
+            raise RuntimeError(
+                f"Refusing to apply {patch_type} for {target or '?'}: metric view "
+                f"YAML failed validation — {'; '.join(_report.errors)}"
+            )
         return action(
             json.dumps({"op": "update", "section": "mv_yaml", "mv": target, "new_yaml": new_text}),
             json.dumps({"op": "update", "section": "mv_yaml", "mv": target, "new_yaml": old_text}),
+        )
+
+    # ── Metric view attachment (MV-D2 / MV-D16) ───────────────────
+    # A real config mutation, unlike the Lever-2 uc_artifact MV types above:
+    # this shelves an already-created UC metric view onto the space so Genie can
+    # query it. ``asset`` carries the full data-source entry when the caller has
+    # one (description, column_configs); a bare identifier is enough.
+    if patch_type == "mv_attach_data_source":
+        asset = patch.get("asset") or {}
+        identifier = str(asset.get("identifier") or target or new_text or "")
+        if not identifier:
+            raise RuntimeError(
+                "Refusing to apply mv_attach_data_source without an identifier: "
+                "the attach phase must name the metric view the backend created"
+            )
+        asset = {**asset, "identifier": identifier}
+        return action(
+            json.dumps({"op": "add", "section": "metric_views", "asset": asset}),
+            json.dumps({"op": "remove", "section": "metric_views", "identifier": identifier}),
         )
 
     # ── Unknown type ──────────────────────────────────────────────
@@ -3885,6 +3918,46 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                     return True
             return False
 
+    # ── Metric view data sources (MV-D16) ─────────────────────────
+    # The genuine mutation the attach patch needs. ``data_sources.metric_views``
+    # is the second shelf alongside ``tables`` and takes the same entry shape, so
+    # this mirrors the tables branch — including the sort, which the Genie API
+    # enforces on both collections.
+    if section == "metric_views":
+        metric_views = config.setdefault("data_sources", {}).setdefault("metric_views", [])
+        if op == "add":
+            asset = cmd.get("asset", {})
+            identifier = asset.get("identifier", "")
+            if not identifier:
+                return False
+            wanted = identifier.strip().lower()
+            shelves = config.get("data_sources", {})
+            if any(
+                str(entry.get("identifier") or "").strip().lower() == wanted
+                for key in ("metric_views", "tables")
+                for entry in shelves.get(key) or ()
+                if isinstance(entry, dict)
+            ):
+                # Already attached on either shelf: Genie exports an attached view
+                # under ``tables``. A no-op, not a success, so the apply log does
+                # not claim an attach that changed nothing.
+                return False
+            metric_views.append(asset)
+            sort_genie_config(config)
+            return True
+        if op == "remove":
+            wanted = str(cmd.get("identifier") or "").strip().lower()
+            if not wanted:
+                return False
+            # Either shelf, any case: the add treats both as attached (MV-D121).
+            for key in ("metric_views", "tables"):
+                shelf = config.get("data_sources", {}).get(key) or []
+                for i, entry in enumerate(shelf):
+                    if isinstance(entry, dict) and str(entry.get("identifier") or "").strip().lower() == wanted:
+                        shelf.pop(i)
+                        return True
+            return False
+
     # ── Default Filters ───────────────────────────────────────────
     if section == "default_filters":
         filters = config.setdefault("default_filters", [])
@@ -4020,6 +4093,12 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
 
 
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+# MV-D16: patch types whose only expression is a space-config edit, whatever
+# ``apply_mode`` a run was launched with. Attaching a metric view rewrites
+# ``data_sources.metric_views`` and has no UC-side equivalent, so letting
+# ``_resolve_scope`` route it to ``uc_artifact`` would silently apply nothing.
+_ALWAYS_GENIE_CONFIG_PATCH_TYPES: frozenset[str] = frozenset({"mv_attach_data_source"})
 
 
 def apply_patch_set(
@@ -4181,11 +4260,12 @@ def apply_patch_set(
         patch_type = str(patch.get("type", ""))
         risk = classify_risk(patch.get("type", ""))
         lever = patch.get("lever", 5)
-        scope = (
-            "genie_space"
-            if patch_type == "update_space_description"
-            else _resolve_scope(lever, apply_mode)
-        )
+        if patch_type == "update_space_description":
+            scope = "genie_space"
+        elif patch_type in _ALWAYS_GENIE_CONFIG_PATCH_TYPES:
+            scope = "genie_config"
+        else:
+            scope = _resolve_scope(lever, apply_mode)
 
         try:
             rendered = render_patch(patch, space_id, config)
@@ -4196,10 +4276,10 @@ def apply_patch_set(
             # continue applying the rest of the patch set rather than
             # aborting the whole AG.
             logger.warning(
-                "Refusing patch at idx=%d (type=%s, target=%s): %s",
+                "Refusing patch at idx=%d (type=%s, target=%s) (%s)",
                 idx, patch.get("type", "?"),
                 patch.get("target_table") or patch.get("target", "?"),
-                _render_err,
+                type(_render_err).__name__,
             )
             early_dropped_patches.append({
                 "index": idx,
@@ -4230,8 +4310,11 @@ def apply_patch_set(
                         w, space_id, str(cmd.get("new_text") or ""),
                     )
                 ok = True
-            except Exception:
-                logger.exception("Genie Agent metadata action failed for %s", patch_type)
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Genie Agent metadata action failed for %s (%s)",
+                    patch_type, type(exc).__name__,
+                )
                 ok = False
         else:
             if scope in ("genie_config", "both"):
@@ -4311,6 +4394,7 @@ def apply_patch_set(
             "validation_errors": [],
             "patch_deployed": True,
             "patch_error": "",
+            "patch_error_type": "",
             "dropped_patches": early_dropped_patches + leak_dropped_patches,
             "applier_decisions": [d.__dict__ for d in applier_decisions],
         }
@@ -4422,6 +4506,7 @@ def apply_patch_set(
             "validation_errors": validation_errors,
             "patch_deployed": False,
             "patch_error": f"Validation failed: {validation_errors}",
+            "patch_error_type": "",
             # Surface the last-mile Bug #4 drops even on the validation-fail
             # path so the dropped set is never silently lost.
             "dropped_patches": early_dropped_patches + leak_dropped_patches,
@@ -4429,17 +4514,20 @@ def apply_patch_set(
 
     patch_deployed = False
     patch_error: str = ""
+    patch_error_type: str = ""
     dropped_patches: list[dict] = []
 
     if w is not None and config_applied:
         try:
             patch_space_config(w, space_id, config)
             patch_deployed = True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             patch_error = str(exc)
-            logger.exception(
+            patch_error_type = type(exc).__name__
+            logger.error(
                 "Failed to PATCH Genie Agent config after retries — "
-                "patches were NOT deployed remotely",
+                "patches were NOT deployed remotely (%s)",
+                patch_error_type,
             )
 
             join_spec_entries = [
@@ -4472,6 +4560,7 @@ def apply_patch_set(
                         patch_space_config(w, space_id, config_retry)
                         patch_deployed = True
                         patch_error = ""
+                        patch_error_type = ""
                         config = config_retry
                         dropped_patches = [e["patch"] for e in join_spec_entries]
                         applied = applied_retry
@@ -4482,9 +4571,12 @@ def apply_patch_set(
                             "%d patches deployed",
                             len(join_spec_entries), len(applied_retry),
                         )
-                    except Exception as exc2:
+                    except Exception as exc2:  # noqa: BLE001 - best-effort; logged by type only
                         patch_error = str(exc2)
-                        logger.exception("Retry without join specs also failed")
+                        patch_error_type = type(exc2).__name__
+                        logger.error(
+                            "Retry without join specs also failed (%s)", patch_error_type,
+                        )
     elif applied:
         patch_deployed = True
 
@@ -4508,17 +4600,17 @@ def apply_patch_set(
                 if w is not None and patch_deployed:
                     try:
                         patch_space_config(w, space_id, config)
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
                         logger.warning(
                             "Failed to push canonicalized instructions "
                             "to Genie API — local snapshot is correct, "
-                            "but next read may regress",
-                            exc_info=True,
+                            "but next read may regress (%s)",
+                            type(exc).__name__,
                         )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "Canonicalize-and-dedup pass failed (non-fatal)",
-                exc_info=True,
+                "Canonicalize-and-dedup pass failed (non-fatal) (%s)",
+                type(exc).__name__,
             )
 
     return {
@@ -4533,6 +4625,7 @@ def apply_patch_set(
         "validation_errors": [],
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
+        "patch_error_type": patch_error_type,
         "dropped_patches": dropped_patches + early_dropped_patches + leak_dropped_patches,
         # Task 3 — per-patch applier decision audit so the unified loop can
         # reconcile cap-selected vs applier-applied identity sets and
@@ -4574,8 +4667,10 @@ def rollback(
         if has_description:
             try:
                 live_snapshot = fetch_space_config(w, space_id)
-            except Exception:
-                logger.exception("Failed to capture live state before rollback")
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Failed to capture live state before rollback (%s)", type(exc).__name__,
+                )
                 return {
                     "status": "error",
                     "executed_count": 0,
@@ -4585,8 +4680,8 @@ def rollback(
 
         try:
             patch_space_config(w, space_id, restored)
-        except Exception:
-            logger.exception("Failed to PATCH rollback config")
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+            logger.error("Failed to PATCH rollback config (%s)", type(exc).__name__)
             return {
                 "status": "error",
                 "executed_count": 0,
@@ -4604,9 +4699,10 @@ def rollback(
                 target_description = "" if target_description is None else str(target_description)
             try:
                 update_space_description(w, space_id, target_description)
-            except Exception:
-                logger.exception(
-                    "Failed to PATCH rollback description; compensating live state"
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Failed to PATCH rollback description; compensating live state (%s)",
+                    type(exc).__name__,
                 )
                 compensation_errors: list[str] = []
                 if live_snapshot is not None:
@@ -4614,7 +4710,7 @@ def rollback(
                         patch_space_config(w, space_id, live_snapshot)
                     except Exception as exc:
                         compensation_errors.append(
-                            f"serialized_space compensation failed: {exc}"
+                            f"serialized_space compensation failed: {type(exc).__name__}"
                         )
                     try:
                         live_description = live_snapshot.get("description")
@@ -4629,7 +4725,7 @@ def rollback(
                         update_space_description(w, space_id, live_description)
                     except Exception as exc:
                         compensation_errors.append(
-                            f"description compensation failed: {exc}"
+                            f"description compensation failed: {type(exc).__name__}"
                         )
                 errors = ["Failed to apply rollback description via API"]
                 errors.extend(compensation_errors)

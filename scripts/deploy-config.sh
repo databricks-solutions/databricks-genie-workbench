@@ -12,11 +12,14 @@
 #   GENIE_APP_NAME           (optional)  Databricks App name          [default: genie-workbench]
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
 #   GENIE_LLM_MODEL          (optional)  Default LLM serving endpoint [default: databricks-claude-sonnet-4-6]
+#   GENIE_LLM_ROUTE          (optional)  gateway | classic            [default: gateway]
+#   GENIE_BYOK_ENABLED       (optional)  true | false (gateway only)  [default: false]
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
 #
 # After sourcing, the following variables are available:
-#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL, MLFLOW_EXPERIMENT_ID
+#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL, LLM_ROUTE,
+#   BYOK_ENABLED, MLFLOW_EXPERIMENT_ID
 # ---------------------------------------------------------------------------
 
 # ── Load .env.deploy if present (in project root) ─────────────────────────
@@ -36,6 +39,8 @@ GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
+LLM_ROUTE="$(echo "${GENIE_LLM_ROUTE:-gateway}" | tr '[:upper:]' '[:lower:]')"
+BYOK_ENABLED="$(echo "${GENIE_BYOK_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 
@@ -59,6 +64,16 @@ if [ -z "$CATALOG" ]; then
     exit 1
 fi
 
+if [ "$LLM_ROUTE" != "gateway" ] && [ "$LLM_ROUTE" != "classic" ]; then
+    echo "ERROR: GENIE_LLM_ROUTE must be 'gateway' or 'classic' (got '$GENIE_LLM_ROUTE')." >&2
+    exit 1
+fi
+
+if [ "$BYOK_ENABLED" != "true" ] && [ "$BYOK_ENABLED" != "false" ]; then
+    echo "ERROR: GENIE_BYOK_ENABLED must be 'true' or 'false' (got '$GENIE_BYOK_ENABLED')." >&2
+    exit 1
+fi
+
 # ── Print config summary ─────────────────────────────────────────────────
 _print_config() {
     echo "  ┌─ Configuration ─────────────────────────────────────────┐"
@@ -68,6 +83,7 @@ _print_config() {
     echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA}"
     echo "  │  Warehouse ID: $WAREHOUSE_ID"
     echo "  │  Default LLM:  $LLM_MODEL"
+    echo "  │  LLM route:    $LLM_ROUTE (BYOK: $BYOK_ENABLED)"
     echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
     echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
     echo "  └─────────────────────────────────────────────────────────┘"

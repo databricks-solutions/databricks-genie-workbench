@@ -33,7 +33,9 @@ from .workspace_source import (
 # the local-terminal deploy passes it via `--var llm_model` (deploy.sh) and the
 # notebook installer defaults it to cfg.llm_model, so the operator-selected
 # serving endpoint reaches each task (every v2 entrypoint honors the llm_model
-# widget). See build_job_settings for the parameter declarations.
+# widget). `genie_llm_route` is the second such extra: deploy.sh passes
+# `--var genie_llm_route` and the installer defaults it to cfg.llm_route.
+# See build_job_settings for the parameter declarations.
 TASKS = [
     (
         "intake_and_snapshot",
@@ -44,6 +46,7 @@ TASKS = [
             "levers", "max_attempts", "target_accuracy",
             "benchmark_repair_max_tries", "triggered_by",
             "benchmark_policy", "warehouse_id", "workload_warehouse_ids", "llm_model",
+            "genie_llm_route",
         ],
     ),
     (
@@ -53,6 +56,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "benchmark_repair_max_tries", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -64,6 +68,12 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_policy", "warehouse_id", "llm_model",
+            "genie_llm_route",
+            # Metric view advisor phase inputs (MV-D5). Present as base_parameters
+            # so run_optimize.py's widgets receive real job values — a job
+            # parameter omitted here silently resolves to the widget default.
+            "enable_metric_view_suggestions", "mv_action_mode",
+            "mv_attach_views", "mv_consent_id", "mv_min_confidence",
         ],
     ),
     (
@@ -73,6 +83,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -100,6 +111,15 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
+    "genie_llm_route": "gateway",  # AI Gateway route (spec §4); build_job_settings uses cfg.llm_route
+    # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
+    # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
+    # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
 }
 
 
@@ -232,6 +252,7 @@ def build_job_settings(
 ) -> dict[str, Any]:
     cfg = cfg.normalized()
     tasks = [_task_payload(*task, notebooks_path) for task in TASKS]
+    cfg_defaults = {"llm_model": cfg.llm_model, "genie_llm_route": cfg.llm_route}
     return {
         "name": cfg.gso_job_name,
         "description": (
@@ -251,7 +272,7 @@ def build_job_settings(
         "parameters": [
             {
                 "name": name,
-                "default": cfg.llm_model if name == "llm_model" else default,
+                "default": cfg_defaults.get(name, default),
             }
             for name, default in JOB_PARAMETERS.items()
         ],
@@ -363,7 +384,20 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
     wheel_path = upload_gso_wheel(w, cfg)
     requirements_path = upload_gso_requirements(w, cfg, wheel_path)
     settings = build_job_settings(cfg, notebooks_path, wheel_path, requirements_path)
-    job_id = upsert_job(w, settings)
+    if not app_sp_client_id:
+        raise ValueError("Explicit app service principal required for Job run_as")
+    # Binding run_as to the app SP needs servicePrincipal.user on it. Without
+    # that role, create the job without run_as; the app sets it at startup.
+    settings["run_as"] = {"service_principal_name": app_sp_client_id}
+    run_as_bound = True
+    try:
+        job_id = upsert_job(w, settings)
+    except Exception as exc:
+        if "servicePrincipal.user" not in str(exc):
+            raise
+        del settings["run_as"]
+        run_as_bound = False
+        job_id = upsert_job(w, settings)
     set_job_permissions(w, job_id, deployer_user, app_sp_client_id)
     grant_directory_permissions(w, notebooks_path, app_sp_client_id)
     return GsoJobInfo(
@@ -371,4 +405,5 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
         job_name=cfg.gso_job_name,
         notebooks_path=notebooks_path,
         wheel_path=wheel_path,
+        run_as_bound=run_as_bound,
     )

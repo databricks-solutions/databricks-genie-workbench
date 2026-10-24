@@ -58,6 +58,7 @@ export function attemptModeLabel(mode: string | null | undefined): string {
   const m = mode.toLowerCase()
   if (m === "coverage" || m === "enrichment" || m === "legacy") return "Pre-loop enrichment"
   if (m === "surgical" || m === "llm_patch" || m === "patch") return "Patch"
+  if (m === "metric_view_attach") return "Metric view attach"
   return mode.charAt(0).toUpperCase() + mode.slice(1)
 }
 

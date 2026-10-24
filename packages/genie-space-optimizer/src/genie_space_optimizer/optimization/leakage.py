@@ -27,6 +27,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+import httpx
+
+from genie_space_optimizer.optimization.llm_route import (
+    LLMRoute,
+    get_llm_route,
+    resolve_embeddings,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +74,11 @@ _TRAILING_SEMI_RE = re.compile(r";+\s*$")
 _QUOTED_ALIAS_RE = re.compile(r"\bAS\s+`[^`]+`", re.IGNORECASE)
 
 
+def _fold_identifier_quotes(text: str) -> str:
+    """Identifier quoting is cosmetic to the firewall; fold it on both sides."""
+    return text.replace("`", "")
+
+
 def _strip_sql(sql: str) -> str:
     """Remove comments, normalize whitespace, lower-case. Preserves
     identifiers (they're compared case-insensitively against the canonical
@@ -76,6 +89,7 @@ def _strip_sql(sql: str) -> str:
     s = _LINE_COMMENT_RE.sub(" ", s)
     s = _TRAILING_SEMI_RE.sub("", s)
     s = _QUOTED_ALIAS_RE.sub("AS _alias", s)
+    s = _fold_identifier_quotes(s)
     s = _WHITESPACE_RE.sub(" ", s).strip().lower()
     return s
 
@@ -83,10 +97,17 @@ def _strip_sql(sql: str) -> str:
 def canonicalize_sql(sql: str) -> str:
     """Return a stable SHA-256 fingerprint for ``sql``.
 
-    Two SQL strings that differ only in whitespace, comments, case, or
-    quoted-alias syntax produce the same fingerprint. Identifier-level
+    Two SQL strings that differ only in whitespace, comments, case,
+    quoted-alias syntax, or identifier quoting produce the same fingerprint. Identifier-level
     differences (different column names, different tables) produce
     different fingerprints — those are legitimately different queries.
+
+    **Literals are PRESERVED here**, deliberately: this function hunts verbatim
+    benchmark text, so the values *are* the evidence. That is the inverse of
+    ``mv_fingerprint.canonicalize_sql_ast``, which erases every literal because
+    two queries differing only in a date are one measure shape and a literal in
+    shipped metric-view metadata is a firewall violation. The two are not
+    interchangeable in either direction.
     """
     stripped = _strip_sql(sql)
     if not stripped:
@@ -102,6 +123,10 @@ def _tokenize(text: str, n: int = 3) -> set[str]:
     if len(t) < n:
         return set()
     return {t[i : i + n] for i in range(len(t) - n + 1)}
+
+
+def _sql_shingles(text: str) -> set[str]:
+    return _tokenize(_fold_identifier_quotes(text)) if isinstance(text, str) else set()
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -151,7 +176,7 @@ class BenchmarkCorpus:
             corpus.expected_sqls.append(sql)
             corpus.question_ids.append(qid)
             corpus.question_shingles.append(_tokenize(q))
-            corpus.sql_shingles.append(_tokenize(sql))
+            corpus.sql_shingles.append(_sql_shingles(sql))
             fp = canonicalize_sql(sql)
             if fp:
                 corpus.sql_fingerprints.add(fp)
@@ -179,7 +204,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
-def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float] | None:
+def get_embedding(text: str, w: Any, endpoint: str | None = None, *, component: str = "leakage-embed") -> list[float] | None:
     """Return an embedding for ``text`` via Databricks Foundation Model API.
 
     Returns ``None`` on any failure so callers fall back to the n-gram +
@@ -189,13 +214,28 @@ def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float]
     if not text or not text.strip() or w is None:
         return None
     ep = endpoint or EMBEDDING_ENDPOINT
+    route = get_llm_route()
     try:
-        resp = w.serving_endpoints.query(name=ep, input=[text])
+        if route is LLMRoute.GATEWAY:
+            host = w.config.host.rstrip("/")
+            rc = resolve_embeddings(host, ep, component, route=route)
+            r = httpx.post(
+                rc.url,
+                json={"model": rc.model, "input": [text]},
+                headers={**w.config.authenticate(), **rc.extra_headers},
+                timeout=30,
+            )
+            if r.status_code != 200:
+                logger.debug("get_embedding gateway HTTP %s for endpoint=%s", r.status_code, ep)
+                return None
+            resp = r.json()
+        else:
+            resp = w.serving_endpoints.query(name=ep, input=[text])
     except Exception as exc:
         logger.debug("get_embedding failed for endpoint=%s: %s", ep, exc)
         return None
-    # Databricks serving endpoints return either OpenAI-compatible shape
-    # (data[0].embedding) or a raw list. Handle both defensively.
+    # Databricks serving endpoints AND the gateway embeddings route both return
+    # the OpenAI-compatible shape (data[0].embedding) — or a raw list. Parse both.
     try:
         data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
         if data and isinstance(data, list):
@@ -337,33 +377,25 @@ def _check_string_against_corpus(
         if fp and fp in corpus.sql_fingerprints:
             return True, "sql_fingerprint_match", 1.0
 
-    shingles = _tokenize(text)
-    if not shingles:
+    # Each probe is normalized the way its corpus side was, whatever the field:
+    # SQL shingles fold identifier quotes, question shingles stay raw.
+    sql_pass = (_sql_shingles(text), corpus.sql_shingles, "sql")
+    question_pass = (_tokenize(text), corpus.question_shingles, "question")
+    if not sql_pass[0] and not question_pass[0]:
         return False, "", 0.0
-
-    comparison_sets = (
-        corpus.sql_shingles if is_sql else corpus.question_shingles
-    )
-    other_sets = (
-        corpus.question_shingles if is_sql else corpus.sql_shingles
-    )
 
     best_score = 0.0
     best_idx = -1
     best_src = ""
-    for idx, sh in enumerate(comparison_sets):
-        score = _jaccard(shingles, sh)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-            best_src = "sql" if is_sql else "question"
-
-    for idx, sh in enumerate(other_sets):
-        score = _jaccard(shingles, sh)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-            best_src = "question" if is_sql else "sql"
+    for shingles, comparison_sets, src in (
+        (sql_pass, question_pass) if is_sql else (question_pass, sql_pass)
+    ):
+        for idx, sh in enumerate(comparison_sets):
+            score = _jaccard(shingles, sh)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+                best_src = src
 
     if best_score >= NGRAM_SIMILARITY_THRESHOLD:
         return (
@@ -820,7 +852,7 @@ class LeakageOracle:
                     _question_token_set_jaccard(question, benchmark_q),
                 )
 
-            sql_shingles = _tokenize(sql)
+            sql_shingles = _sql_shingles(sql)
             if sql_shingles:
                 for shingles in corpus.sql_shingles:
                     best_sql_score = max(

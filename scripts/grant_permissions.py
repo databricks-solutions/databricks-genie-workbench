@@ -211,6 +211,56 @@ def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str
         )
 
 
+# Version Control control-plane objects colocated in the GSO schema. The app SP
+# already holds schema-level SELECT/MODIFY/CREATE_TABLE/CREATE_VOLUME/MANAGE (see
+# SP_SCHEMA_PRIVILEGES), so these tables/Volume need only to EXIST — no per-object
+# grants. The DDL bytes are owner-authored in backend/version_control_ddl/ and are
+# transcribed here, never edited. Only the observe-surface objects are created;
+# the approval/promotion Volumes belong to the governed-write path, not observe.
+_VC_DDL_FILES = (
+    "01-versions.sql", "02-registry.sql", "03-snapshots-volume.sql",
+    "05-coordination.sql", "06-operations.sql",
+)
+
+
+def _ensure_vc_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
+    """Create the Version Control observe control-plane tables + Volume (idempotent).
+
+    Colocated in the GSO schema so the app SP's existing schema grants cover them.
+    """
+    ddl_root = os.path.join(_SCRIPT_DIR, os.pardir, "backend", "version_control_ddl")
+    failed: list[str] = []
+    for filename in _VC_DDL_FILES:
+        path = os.path.abspath(os.path.join(ddl_root, filename))
+        text = open(path, encoding="utf-8").read()
+        # Drop full-line comments so they don't bleed across the ';' split.
+        body = "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("--")
+        )
+        for part in body.split(";"):
+            stmt = part.strip()
+            if not stmt:
+                continue
+            rendered = stmt.replace("${catalog}", catalog).replace("${control_schema}", schema)
+            result = _sql_exec(profile=profile, warehouse_id=warehouse_id, statement=rendered)
+            state = (result.get("status") or {}).get("state", "")
+            if state != "SUCCEEDED":
+                err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
+                failed.append(f"{filename}: {err_msg}")
+                print(
+                    f"[grant-permissions] ERROR: VC statement failed ({state}) "
+                    f"from {filename}: {err_msg}",
+                    file=sys.stderr,
+                )
+    if failed:
+        raise RuntimeError(
+            f"Failed to apply {len(failed)} Version Control DDL statement(s): "
+            f"{'; '.join(failed)}. Check warehouse accessibility and privileges on "
+            f"{catalog}.{schema}."
+        )
+    print(f"[grant-permissions] Version Control control plane ensured in {catalog}.{schema}")
+
+
 def _update_grants(
     *,
     profile: str,
@@ -310,6 +360,10 @@ def main() -> int:
             schema=args.schema, warehouse_id=args.warehouse_id,
         )
         _ensure_tables(
+            profile=args.profile, catalog=args.catalog,
+            schema=args.schema, warehouse_id=args.warehouse_id,
+        )
+        _ensure_vc_tables(
             profile=args.profile, catalog=args.catalog,
             schema=args.schema, warehouse_id=args.warehouse_id,
         )

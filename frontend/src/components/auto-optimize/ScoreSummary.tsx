@@ -17,6 +17,11 @@ interface ScoreSummaryProps {
    */
   bestIteration?: number | null
   /**
+   * Scope of the winning candidate. ``"metric_view"`` or ``"enrichment"`` with
+   * ``bestIteration == 0`` is an improvement, not a retained baseline.
+   */
+  bestEvalScope?: string | null
+  /**
    * Run status — needed to disambiguate "in progress" (show "—" + tooltip)
    * from "ran to completion and baseline won" (show baseline).
    */
@@ -33,6 +38,7 @@ export function ScoreSummary({
   baselineScore,
   optimizedScore,
   bestIteration = null,
+  bestEvalScope = null,
   status = null,
   needsReviewCount = null,
 }: ScoreSummaryProps) {
@@ -41,6 +47,7 @@ export function ScoreSummary({
     baselineScore,
     optimizedScore,
     bestIteration,
+    bestEvalScope,
     status,
   })
 
