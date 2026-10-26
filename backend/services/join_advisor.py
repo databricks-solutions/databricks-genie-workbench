@@ -14,18 +14,23 @@ Candidates are grounded, in increasing strength, in:
       ``from.from_col`` values present in ``to.to_col`` — which is the score the
       inset renders as the validated/partial/unverified verdict bar.
 
-Everything here is read-only: column metadata comes from
-``system.information_schema`` and the containment probe is a single ``SELECT``
-per candidate (guarded by ``sql_executor``'s read-only validator). No warehouse,
-or a probe that errors, yields ``probe=None`` — honest-empty, never a silent 0.
+Everything here is read-only: table columns and foreign keys come from the Unity
+Catalog Tables API (one ``tables.get`` per table, as the requesting user — no
+warehouse involved), and the containment probe is a single ``SELECT`` per
+candidate (guarded by ``sql_executor``'s read-only validator). No warehouse, or a
+probe that errors, yields ``probe=None`` — honest-empty, never a silent 0.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from databricks.sdk.service.catalog import TableInfo
+
+from backend.services.auth import get_workspace_client
 from backend.sql_executor import execute_sql
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,8 @@ logger = logging.getLogger(__name__)
 _MAX_PROBES = 12
 # Cap the candidate pool the UI renders even when unprobed.
 _MAX_CANDIDATES = 24
+# Parallel ``tables.get`` calls per request (one per in-scope table).
+_UC_FETCH_WORKERS = 8
 
 # A column name is "key-like" (a plausible join key) when it ends in one of these
 # suffixes or IS one of these bare names. Join keys are the only columns we ever
@@ -55,6 +62,11 @@ def _fqn_parts(identifier: str) -> tuple[str, str, str] | None:
     """``(catalog, schema, table)`` for a three-part UC name, else ``None``."""
     parts = [p for p in (identifier or "").replace("`", "").strip().split(".") if p]
     return (parts[0], parts[1], parts[2]) if len(parts) == 3 else None
+
+
+def _fqn_key(identifier: str) -> str:
+    """Case- and quote-insensitive comparison key for a UC identifier."""
+    return (identifier or "").replace("`", "").strip().lower()
 
 
 def is_key_like(column: str) -> bool:
@@ -95,64 +107,90 @@ def _table_identifiers(space_data: dict) -> list[str]:
     return out
 
 
-def _declared_pairs(space_data: dict) -> set[frozenset[str]]:
-    """Undirected ``{fromTableShort.col, toTableShort.col}`` pairs already declared
-    as ``join_specs`` — so the advisor never re-proposes an existing relationship.
+def _join_side_identifier(spec: dict, side: str) -> str:
+    """A join spec side's table identifier — the ``left``/``right`` dict, or the
+    legacy ``*_table_name`` field — read the way the optimizer's applier reads it."""
+    entry = spec.get(side)
+    if isinstance(entry, dict):
+        return str(entry.get("identifier") or "")
+    return str(spec.get(f"{side}_table_name") or "")
 
-    Keyed on short-name.column (the alias-qualified form the ON predicate uses),
-    lower-cased, so it matches the endpoints candidate generation produces."""
+
+def _declared_pairs(space_data: dict) -> set[frozenset[str]]:
+    """Undirected ``{fqn_a, fqn_b}`` TABLE pairs already joined by a ``join_spec``,
+    as ``_fqn_key`` values — so the advisor never proposes a join on them.
+
+    Keyed on the table pair, not the column pair, to match the optimizer: its
+    applier skips ``add_join_spec`` for any pair already joined, so a second key
+    between the same two tables could never land. Sides come from the spec's
+    ``left``/``right`` identifiers. The ON predicate's qualifiers are aliases
+    (``dim_date_2``), so they are only a fallback for a spec without identifiers,
+    resolved through the in-scope tables' short names."""
     instructions = space_data.get("instructions") if isinstance(space_data, dict) else None
     join_specs = (instructions or {}).get("join_specs") if isinstance(instructions, dict) else None
+    by_short = {_short_name(i).lower(): _fqn_key(i) for i in _table_identifiers(space_data)}
     pairs: set[frozenset[str]] = set()
     _eq = re.compile(r"([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)")
     for j in join_specs or []:
         if not isinstance(j, dict):
             continue
+        left, right = _join_side_identifier(j, "left"), _join_side_identifier(j, "right")
+        if left and right:
+            pairs.add(frozenset({_fqn_key(left), _fqn_key(right)}))
+            continue
         sql = j.get("sql") if isinstance(j.get("sql"), list) else []
         predicate = re.sub(r"\s+", " ", (sql[0] if sql else "").replace("`", "")).strip()
-        for q1, c1, q2, c2 in _eq.findall(predicate):
-            pairs.add(frozenset({f"{q1.lower()}.{c1.lower()}", f"{q2.lower()}.{c2.lower()}"}))
+        for q1, _c1, q2, _c2 in _eq.findall(predicate):
+            a, b = by_short.get(q1.lower()), by_short.get(q2.lower())
+            if a and b:
+                pairs.add(frozenset({a, b}))
     return pairs
 
 
-def _columns_by_table(identifiers: list[str]) -> dict[str, list[dict[str, str]]]:
-    """``{identifier: [{name, type}]}`` for the in-scope tables via information_schema.
+def _table_infos(identifiers: list[str]) -> dict[str, TableInfo]:
+    """``{identifier: TableInfo}`` for the in-scope tables via the UC Tables API.
 
-    One batched query across all (catalog, schema, table) triples. Returns ``{}``
-    on any failure (no warehouse, no access) — the caller degrades to honest-empty.
-    """
-    triples = [p for p in (_fqn_parts(i) for i in identifiers) if p]
-    if not triples:
+    One ``tables.get`` per table, fetched in parallel with the requesting user's
+    client (resolved here, on the calling thread — the per-request client lives
+    in a contextvar the pool threads do not inherit). A table that cannot be read
+    (missing, no access) is skipped; this never raises."""
+    if not identifiers:
         return {}
-    # Build an OR of (catalog, schema, table) equality triples, escaped.
-    def esc(v: str) -> str:
-        return v.replace("'", "''")
+    try:
+        client = get_workspace_client()
+    except Exception:
+        logger.info("join_advisor: no workspace client for table metadata", exc_info=True)
+        return {}
 
-    conds = " OR ".join(
-        f"(lower(table_catalog)='{esc(c.lower())}' AND lower(table_schema)='{esc(s.lower())}' "
-        f"AND lower(table_name)='{esc(t.lower())}')"
-        for c, s, t in triples
-    )
-    sql = (
-        "SELECT table_catalog, table_schema, table_name, column_name, data_type "
-        "FROM system.information_schema.columns "
-        f"WHERE {conds} ORDER BY table_catalog, table_schema, table_name, ordinal_position"
-    )
-    result = execute_sql(sql)
-    if result.get("error"):
-        logger.info("join_advisor: column metadata query failed: %s", result["error"])
-        return {}
-    # Map lower-cased fqn back to the original identifier casing.
-    by_lower = {f"{c}.{s}.{t}".lower(): i for i, (c, s, t) in zip(identifiers, (p for p in (_fqn_parts(i) for i in identifiers) if p))}
+    def fetch(ident: str) -> tuple[str, TableInfo | None]:
+        try:
+            return ident, client.tables.get(full_name=ident.replace("`", ""))
+        except Exception as exc:
+            logger.info("join_advisor: tables.get failed for %s: %s", ident, exc)
+            return ident, None
+
+    with ThreadPoolExecutor(max_workers=min(_UC_FETCH_WORKERS, len(identifiers))) as pool:
+        fetched = list(pool.map(fetch, identifiers))
+    return {ident: info for ident, info in fetched if info is not None}
+
+
+def _columns_by_table(infos: dict[str, TableInfo]) -> dict[str, list[dict[str, str]]]:
+    """``{identifier: [{name, type}]}`` from each table's UC column metadata.
+
+    ``type`` is the column's type text (``bigint``, ``decimal(10,2)``), falling
+    back to its type name (``LONG``); ``_norm_type`` folds both into one family.
+    Tables with no readable columns are dropped — the caller degrades to
+    honest-empty when none remain."""
     out: dict[str, list[dict[str, str]]] = {}
-    for row in result.get("data", []):
-        if len(row) < 5:
-            continue
-        fqn_lower = f"{row[0]}.{row[1]}.{row[2]}".lower()
-        ident = by_lower.get(fqn_lower)
-        if not ident:
-            continue
-        out.setdefault(ident, []).append({"name": row[3], "type": row[4] or ""})
+    for ident, info in infos.items():
+        cols = []
+        for c in info.columns or []:
+            if not c.name:
+                continue
+            type_name = getattr(c.type_name, "value", c.type_name) or ""
+            cols.append({"name": c.name, "type": c.type_text or str(type_name)})
+        if cols:
+            out[ident] = cols
     return out
 
 
@@ -168,12 +206,15 @@ def candidate_pairs(
     one/parent side) is inferred from the column stem: a ``customer_id`` column
     points ``to`` the table whose short name matches ``customer`` (singular or
     plural); when neither side matches, tables are ordered lexically for a stable
-    result. Already-declared endpoint pairs are skipped."""
+    result. A table pair already joined (``declared``, from ``_declared_pairs``)
+    is skipped entirely."""
     idents = list(columns_by_table.keys())
     out: list[dict[str, Any]] = []
     for i in range(len(idents)):
         for k in range(i + 1, len(idents)):
             a, b = idents[i], idents[k]
+            if frozenset({_fqn_key(a), _fqn_key(b)}) in declared:
+                continue
             a_cols = {c["name"].lower(): c for c in columns_by_table[a]}
             b_cols = {c["name"].lower(): c for c in columns_by_table[b]}
             shared = sorted(set(a_cols) & set(b_cols))
@@ -181,10 +222,6 @@ def candidate_pairs(
                 if not is_key_like(col):
                     continue
                 if _norm_type(a_cols[col]["type"]) != _norm_type(b_cols[col]["type"]):
-                    continue
-                # Skip an already-declared endpoint pair (undirected, short-name.col).
-                key = frozenset({f"{_short_name(a).lower()}.{col}", f"{_short_name(b).lower()}.{col}"})
-                if key in declared:
                     continue
                 frm, to = _orient(a, b, col)
                 out.append({
@@ -228,55 +265,27 @@ def _actual_col(cols: list[dict[str, str]], lower_name: str) -> str:
     return lower_name
 
 
-def foreign_key_pairs(identifiers: list[str]) -> set[frozenset[str]]:
-    """Declared UC foreign keys among the in-scope tables, as undirected
-    ``{childShort.col, parentShort.col}`` endpoint pairs (best-effort).
+def foreign_key_pairs(infos: dict[str, TableInfo]) -> set[frozenset[str]]:
+    """Declared UC foreign keys on the in-scope tables, as undirected
+    ``{childShort.col, parentShort.col}`` endpoint pairs.
 
-    Databricks exposes informational FK constraints in
-    ``system.information_schema``. A candidate coinciding with one of these is
-    upgraded to ``match="fk"`` — the strongest structural grounding. Any failure
-    returns an empty set; name-type candidates still stand."""
-    triples = [p for p in (_fqn_parts(i) for i in identifiers) if p]
-    if not triples:
-        return set()
-
-    def esc(v: str) -> str:
-        return v.replace("'", "''")
-
-    schemas = sorted({(c.lower(), s.lower()) for c, s, _ in triples})
-    scope = " OR ".join(
-        f"(lower(rc.constraint_catalog)='{esc(c)}' AND lower(rc.constraint_schema)='{esc(s)}')"
-        for c, s in schemas
-    )
-    # Join referential_constraints -> child key_column_usage + parent
-    # constraint_column_usage to recover (child.col) references (parent.col).
-    sql = (
-        "SELECT kcu.table_name AS child_table, kcu.column_name AS child_col, "
-        "ccu.table_name AS parent_table, ccu.column_name AS parent_col "
-        "FROM system.information_schema.referential_constraints rc "
-        "JOIN system.information_schema.key_column_usage kcu "
-        "  ON rc.constraint_catalog = kcu.constraint_catalog "
-        "  AND rc.constraint_schema = kcu.constraint_schema "
-        "  AND rc.constraint_name = kcu.constraint_name "
-        "JOIN system.information_schema.constraint_column_usage ccu "
-        "  ON rc.unique_constraint_catalog = ccu.constraint_catalog "
-        "  AND rc.unique_constraint_schema = ccu.constraint_schema "
-        "  AND rc.unique_constraint_name = ccu.constraint_name "
-        f"WHERE {scope}"
-    )
-    result = execute_sql(sql)
-    if result.get("error"):
-        logger.info("join_advisor: FK discovery query failed: %s", result["error"])
-        return set()
+    Read from each child table's informational ``table_constraints``. A candidate
+    coinciding with one of these is upgraded to ``match="fk"`` — the strongest
+    structural grounding. Composite keys are skipped: a candidate joins one
+    column on each side."""
     pairs: set[frozenset[str]] = set()
-    for row in result.get("data", []):
-        if len(row) < 4 or not all(row):
-            continue
-        child_t, child_c, parent_t, parent_c = (str(v) for v in row[:4])
-        pairs.add(frozenset({
-            f"{child_t.lower()}.{child_c.lower()}",
-            f"{parent_t.lower()}.{parent_c.lower()}",
-        }))
+    for ident, info in infos.items():
+        for constraint in info.table_constraints or []:
+            fk = constraint.foreign_key_constraint
+            if not fk or not fk.parent_table:
+                continue
+            child_cols, parent_cols = fk.child_columns or [], fk.parent_columns or []
+            if len(child_cols) != 1 or len(parent_cols) != 1:
+                continue
+            pairs.add(frozenset({
+                f"{_short_name(ident).lower()}.{child_cols[0].lower()}",
+                f"{_short_name(fk.parent_table).lower()}.{parent_cols[0].lower()}",
+            }))
     return pairs
 
 
@@ -287,7 +296,7 @@ def containment_sql(from_fqn: str, from_col: str, to_fqn: str, to_col: str) -> s
     ``matched`` (how many of those exist in ``to.to_col``). The containment ratio
     is ``matched / from_distinct``. Also returns ``to_unique`` so a fully-unique
     parent key can be rendered ``1:1`` rather than ``N:1``. Identifiers are
-    backtick-quoted; ``from_col``/``to_col`` come from information_schema (never
+    backtick-quoted; ``from_col``/``to_col`` come from UC column metadata (never
     user free-text)."""
     def q(fqn: str) -> str:
         return ".".join(f"`{p}`" for p in fqn.replace("`", "").split("."))
@@ -337,18 +346,20 @@ def _probe_rank(cand: dict[str, Any]) -> tuple:
 def discover_candidates(space_data: dict) -> dict[str, Any]:
     """Discover Join Advisor candidates for a space (the ``/join-candidates`` core).
 
-    Pipeline: read in-scope table columns → generate name+type candidates →
-    upgrade FK-backed ones to ``match="fk"`` → containment-probe the top
-    ``_MAX_PROBES``. Returns ``{"status", "candidates"}`` where ``status`` is the
-    honest-empty discriminator the inset renders. Never raises — degrades to a
-    truthful empty/unverified state."""
+    Pipeline: read in-scope table metadata once from Unity Catalog (columns and
+    FK constraints) → generate name+type candidates → upgrade FK-backed ones to
+    ``match="fk"`` → containment-probe the top ``_MAX_PROBES``. Returns
+    ``{"status", "candidates"}`` where ``status`` is the honest-empty
+    discriminator the inset renders. Never raises — degrades to a truthful
+    empty/unverified state."""
     identifiers = _table_identifiers(space_data)
     if len(identifiers) < 2:
         return {"status": "fully_connected" if identifiers else "no_candidates", "candidates": []}
 
-    columns_by_table = _columns_by_table(identifiers)
+    infos = _table_infos(identifiers)
+    columns_by_table = _columns_by_table(infos)
     if not columns_by_table:
-        return {"status": "no_warehouse", "candidates": []}
+        return {"status": "no_metadata", "candidates": []}
 
     declared = _declared_pairs(space_data)
     cands = candidate_pairs(columns_by_table, declared)
@@ -356,7 +367,7 @@ def discover_candidates(space_data: dict) -> dict[str, Any]:
         return {"status": "fully_connected", "candidates": []}
 
     # Upgrade FK-backed candidates to match="fk" (strongest grounding).
-    fks = foreign_key_pairs(identifiers)
+    fks = foreign_key_pairs(infos)
     if fks:
         for c in cands:
             key = frozenset({
