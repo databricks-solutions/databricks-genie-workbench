@@ -155,29 +155,37 @@ def execute_sql(
             "error": str(e),
         }
 
+    from databricks.sdk.service.sql import ExecuteStatementRequestOnWaitTimeout
+
     client = get_workspace_client()
 
     try:
         logger.info(f"Executing SQL on warehouse {warehouse_id}")
 
-        # Use the Statement Execution API
-        # The SDK's execute_statement method handles polling automatically
+        # The call blocks up to WAIT_TIMEOUT and does not poll past it. CANCEL
+        # stops a statement that outlives the wait; the API default (CONTINUE)
+        # leaves it running on the warehouse with nobody reading the result.
         response = client.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=sql,
             wait_timeout=WAIT_TIMEOUT,
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,
             row_limit=row_limit,
         )
 
-        # Check execution status
         if response.status and response.status.state:
             state = response.status.state.value
-            if state == "FAILED":
-                error_msg = (
-                    response.status.error.message
-                    if response.status.error
-                    else "Execution failed"
-                )
+            if state != "SUCCEEDED":
+                if state == "FAILED":
+                    error_msg = (
+                        response.status.error.message
+                        if response.status.error
+                        else "Execution failed"
+                    )
+                elif state == "CANCELED":
+                    error_msg = f"Query did not finish within {WAIT_TIMEOUT} and was cancelled"
+                else:
+                    error_msg = f"Query ended in state {state}"
                 return {
                     "columns": [],
                     "data": [],

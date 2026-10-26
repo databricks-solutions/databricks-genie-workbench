@@ -7,15 +7,19 @@ tests pin the offline seams without a warehouse or Databricks:
 - **Heuristics**: ``is_key_like`` / ``_norm_type`` (what may be a join key, and
   when two column types are join-compatible).
 - **Config reads**: ``_table_identifiers`` (in-scope FQNs) and ``_declared_pairs``
-  (existing join_specs the advisor must never re-propose).
+  (table pairs already joined — keyed like the optimizer's applier, so aliased
+  join_specs are recognised).
+- **Table metadata**: ``_table_infos`` (parallel UC ``tables.get``, unreadable
+  tables skipped) and the pure ``_columns_by_table`` / ``foreign_key_pairs``
+  mappings over SDK ``TableInfo`` objects.
 - **Candidate generation** (``candidate_pairs``): pure, deterministic; only
   key-like, type-compatible, shared columns; oriented child→parent; declared
-  pairs skipped.
+  table pairs skipped entirely.
 - **Containment probe**: ``containment_sql`` is a single read-only SELECT;
   ``_probe_candidate`` maps its row to a probe ratio and upgrades N:1→1:1.
 - **Discovery pipeline** (``discover_candidates``): the honest-empty ``status``
-  discriminator (no_candidates / fully_connected / no_warehouse / ok) and the FK
-  upgrade, driven by a stubbed ``execute_sql``.
+  discriminator (no_candidates / fully_connected / no_metadata / no_warehouse /
+  ok) and the FK upgrade, driven by stubbed ``_table_infos`` and ``execute_sql``.
 - **Persistence**: ``lakebase.save_join_advice`` / ``get_join_advice`` round-trip
   and clear (in-memory fallback).
 - **Endpoints**: ``/join-candidates`` and ``/join-advice`` (GET/POST) shapes,
@@ -24,14 +28,22 @@ tests pin the offline seams without a warehouse or Databricks:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from databricks.sdk.service.catalog import (
+    ColumnInfo,
+    ColumnTypeName,
+    ForeignKeyConstraint,
+    PrimaryKeyConstraint,
+    TableConstraint,
+    TableInfo,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
-from backend.services import join_advisor
-from backend.services import lakebase
-
+from backend.services import join_advisor, lakebase
 
 # ── Heuristics ───────────────────────────────────────────────────────────────
 
@@ -92,16 +104,49 @@ def test_table_identifiers_only_three_part_names_deduped_in_order():
     ]
 
 
-def test_declared_pairs_extracts_equality_endpoints_short_name_lowercased():
+def test_declared_pairs_keys_aliased_spec_on_its_table_identifiers():
+    # The Genie API shape: the ON predicate qualifies by alias (dim_destination_2),
+    # so only the left/right identifiers name the tables actually joined.
     space = {
+        "instructions": {
+            "join_specs": [{
+                "left": {"identifier": "Cat.Sch.dim_property", "alias": "dim_property"},
+                "right": {"identifier": "`cat`.`sch`.`dim_destination`", "alias": "dim_destination_2"},
+                "sql": [
+                    "`dim_property`.`destination_id` = `dim_destination_2`.`destination_id`",
+                    "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--",
+                ],
+            }]
+        }
+    }
+    assert join_advisor._declared_pairs(space) == {
+        frozenset({"cat.sch.dim_property", "cat.sch.dim_destination"})
+    }
+
+
+def test_declared_pairs_reads_legacy_table_name_fields():
+    space = {
+        "instructions": {
+            "join_specs": [{"left_table_name": "c.s.orders", "right_table_name": "c.s.customer"}]
+        }
+    }
+    assert join_advisor._declared_pairs(space) == {frozenset({"c.s.orders", "c.s.customer"})}
+
+
+def test_declared_pairs_sql_only_spec_resolves_qualifiers_through_short_names():
+    space = {
+        "data_sources": {"tables": [{"identifier": "cat.sch.order_items"}, {"identifier": "cat.sch.orders"}]},
         "instructions": {
             "join_specs": [
                 {"sql": ["`order_items`.`order_id` = `orders`.`order_id`"]},
+                # An alias that names no in-scope table cannot be resolved → skipped.
+                {"sql": ["`order_items`.`order_id` = `orders_2`.`order_id`"]},
             ]
-        }
+        },
     }
-    pairs = join_advisor._declared_pairs(space)
-    assert frozenset({"order_items.order_id", "orders.order_id"}) in pairs
+    assert join_advisor._declared_pairs(space) == {
+        frozenset({"cat.sch.order_items", "cat.sch.orders"})
+    }
 
 
 # ── Candidate generation (pure) ──────────────────────────────────────────────
@@ -149,11 +194,108 @@ def test_candidate_pairs_skips_type_mismatch_and_non_key_and_declared():
         "cat.sch.a": _cols(("thing_id", "bigint")),
         "cat.sch.b": _cols(("thing_id", "bigint")),
     }
-    # Undirected declared pair on short-name.col must suppress the candidate.
-    declared = {frozenset({"a.thing_id", "b.thing_id"})}
+    # A declared (undirected) table pair must suppress the candidate.
+    declared = {frozenset({"cat.sch.b", "cat.sch.a"})}
     assert join_advisor.candidate_pairs(columns2, declared) == []
     # Without the declaration, the candidate returns.
     assert len(join_advisor.candidate_pairs(columns2, declared=set())) == 1
+
+
+def test_candidate_pairs_skips_every_key_of_an_already_joined_pair():
+    # The optimizer's applier never adds a second join between two tables already
+    # joined, so a different shared key on a declared pair is not a candidate —
+    # while an unjoined pair sharing the same key still is.
+    columns = {
+        "cat.sch.dim_property": _cols(("destination_id", "bigint"), ("host_id", "bigint")),
+        "cat.sch.fact_booking": _cols(("destination_id", "bigint"), ("host_id", "bigint")),
+        "cat.sch.fact_review": _cols(("host_id", "bigint")),
+    }
+    declared = {frozenset({"cat.sch.dim_property", "cat.sch.fact_booking"})}
+    cands = join_advisor.candidate_pairs(columns, declared)
+    pairs = {frozenset({c["from"], c["to"]}) for c in cands}
+    assert frozenset({"cat.sch.dim_property", "cat.sch.fact_booking"}) not in pairs
+    assert pairs == {
+        frozenset({"cat.sch.dim_property", "cat.sch.fact_review"}),
+        frozenset({"cat.sch.fact_booking", "cat.sch.fact_review"}),
+    }
+
+
+# ── Table metadata (UC Tables API) ───────────────────────────────────────────
+
+
+def _info(*columns, constraints=()):
+    """A ``TableInfo`` with ``(name, type_text, type_name)`` columns."""
+    return TableInfo(
+        columns=[ColumnInfo(name=n, type_text=t, type_name=tn) for n, t, tn in columns],
+        table_constraints=list(constraints),
+    )
+
+
+def _fk(child_columns, parent_table, parent_columns):
+    return TableConstraint(foreign_key_constraint=ForeignKeyConstraint(
+        name="fk", child_columns=child_columns, parent_table=parent_table, parent_columns=parent_columns,
+    ))
+
+
+def test_columns_by_table_prefers_type_text_and_falls_back_to_type_name():
+    infos = {
+        "c.s.orders": _info(
+            ("order_id", "bigint", ColumnTypeName.LONG),
+            ("customer_id", None, ColumnTypeName.LONG),  # no type text → type name
+        ),
+        "c.s.empty": _info(),  # no readable columns → dropped
+    }
+    cols = join_advisor._columns_by_table(infos)
+    assert cols == {
+        "c.s.orders": [
+            {"name": "order_id", "type": "bigint"},
+            {"name": "customer_id", "type": "LONG"},
+        ]
+    }
+    # The type-name fallback still lands in the integer join family.
+    assert join_advisor._norm_type(cols["c.s.orders"][1]["type"]) == join_advisor._norm_type("bigint")
+
+
+def test_foreign_key_pairs_reads_single_column_constraints_only():
+    infos = {
+        "c.s.fact_booking": _info(constraints=[
+            TableConstraint(primary_key_constraint=PrimaryKeyConstraint(name="pk", child_columns=["booking_id"])),
+            _fk(["destination_id"], "c.s.dim_destination", ["destination_id"]),
+            # Differently named key columns are still a declared FK.
+            _fk(["check_in_date"], "c.s.dim_date", ["date"]),
+            # Composite keys cannot match a one-column candidate → skipped.
+            _fk(["a_id", "b_id"], "c.s.dim_ab", ["a_id", "b_id"]),
+        ]),
+        "c.s.dim_destination": _info(),
+    }
+    assert join_advisor.foreign_key_pairs(infos) == {
+        frozenset({"fact_booking.destination_id", "dim_destination.destination_id"}),
+        frozenset({"fact_booking.check_in_date", "dim_date.date"}),
+    }
+
+
+def test_table_infos_skips_unreadable_tables(monkeypatch):
+    calls = []
+
+    def get(full_name):
+        calls.append(full_name)
+        if full_name.endswith("secret"):
+            raise PermissionError("no access")
+        return _info(("id", "bigint", ColumnTypeName.LONG))
+
+    client = SimpleNamespace(tables=SimpleNamespace(get=get))
+    monkeypatch.setattr(join_advisor, "get_workspace_client", lambda: client)
+    infos = join_advisor._table_infos(["c.s.orders", "`c`.`s`.`secret`"])
+    assert sorted(calls) == ["c.s.orders", "c.s.secret"]  # backticks stripped
+    assert list(infos) == ["c.s.orders"]
+
+
+def test_table_infos_empty_without_a_client(monkeypatch):
+    def boom():
+        raise RuntimeError("no auth")
+
+    monkeypatch.setattr(join_advisor, "get_workspace_client", boom)
+    assert join_advisor._table_infos(["c.s.a", "c.s.b"]) == {}
 
 
 # ── Containment probe ────────────────────────────────────────────────────────
@@ -215,10 +357,48 @@ def test_discover_needs_two_tables():
     assert join_advisor.discover_candidates(one) == {"status": "fully_connected", "candidates": []}
 
 
-def test_discover_no_warehouse_when_columns_unavailable(monkeypatch):
+def test_discover_no_metadata_when_no_table_is_readable(monkeypatch):
     space = {"data_sources": {"tables": [{"identifier": "c.s.a"}, {"identifier": "c.s.b"}]}}
-    monkeypatch.setattr(join_advisor, "_columns_by_table", lambda ids: {})
-    assert join_advisor.discover_candidates(space) == {"status": "no_warehouse", "candidates": []}
+    monkeypatch.setattr(join_advisor, "_table_infos", lambda ids: {})
+    assert join_advisor.discover_candidates(space) == {"status": "no_metadata", "candidates": []}
+
+
+def test_discover_fetches_metadata_once_for_columns_and_fks(monkeypatch):
+    space = {"data_sources": {"tables": [{"identifier": "c.s.orders"}, {"identifier": "c.s.customer"}]}}
+    calls = []
+
+    def infos(ids):
+        calls.append(list(ids))
+        return {
+            "c.s.orders": _info(("customer_id", "bigint", ColumnTypeName.LONG)),
+            "c.s.customer": _info(("customer_id", "bigint", ColumnTypeName.LONG)),
+        }
+
+    monkeypatch.setattr(join_advisor, "_table_infos", infos)
+    monkeypatch.setattr(join_advisor, "execute_sql", lambda sql: {"data": [[10, 10, True]], "error": None})
+    assert join_advisor.discover_candidates(space)["status"] == "ok"
+    assert calls == [["c.s.orders", "c.s.customer"]]
+
+
+def test_discover_skips_an_aliased_declared_join(monkeypatch):
+    # The live Wanderbricks shape that re-proposed declared joins: the ON predicate
+    # qualifies the parent by alias, and the parent carries the matching UC FK.
+    space = {
+        "data_sources": {"tables": [{"identifier": "c.s.dim_property"}, {"identifier": "c.s.dim_destination"}]},
+        "instructions": {"join_specs": [{
+            "left": {"identifier": "c.s.dim_property", "alias": "dim_property"},
+            "right": {"identifier": "c.s.dim_destination", "alias": "dim_destination_2"},
+            "sql": ["`dim_property`.`destination_id` = `dim_destination_2`.`destination_id`"],
+        }]},
+    }
+    monkeypatch.setattr(join_advisor, "_table_infos", lambda ids: {
+        "c.s.dim_property": _info(
+            ("destination_id", "bigint", ColumnTypeName.LONG),
+            constraints=[_fk(["destination_id"], "c.s.dim_destination", ["destination_id"])],
+        ),
+        "c.s.dim_destination": _info(("destination_id", "bigint", ColumnTypeName.LONG)),
+    })
+    assert join_advisor.discover_candidates(space) == {"status": "fully_connected", "candidates": []}
 
 
 def test_discover_ok_probes_candidates_and_upgrades_fk(monkeypatch):
@@ -227,17 +407,16 @@ def test_discover_ok_probes_candidates_and_upgrades_fk(monkeypatch):
             "tables": [{"identifier": "c.s.orders"}, {"identifier": "c.s.customer"}]
         }
     }
+    # A declared UC FK on this endpoint pair upgrades match to "fk".
     monkeypatch.setattr(
-        join_advisor, "_columns_by_table",
+        join_advisor, "_table_infos",
         lambda ids: {
-            "c.s.orders": _cols(("customer_id", "bigint")),
-            "c.s.customer": _cols(("customer_id", "bigint")),
+            "c.s.orders": _info(
+                ("customer_id", "bigint", ColumnTypeName.LONG),
+                constraints=[_fk(["customer_id"], "c.s.customer", ["customer_id"])],
+            ),
+            "c.s.customer": _info(("customer_id", "bigint", ColumnTypeName.LONG)),
         },
-    )
-    # A declared FK on this endpoint pair upgrades match to "fk".
-    monkeypatch.setattr(
-        join_advisor, "foreign_key_pairs",
-        lambda ids: {frozenset({"orders.customer_id", "customer.customer_id"})},
     )
     monkeypatch.setattr(
         join_advisor, "execute_sql", lambda sql: {"data": [[50, 50, True]], "error": None}
@@ -258,13 +437,12 @@ def test_discover_no_warehouse_when_candidates_unprobed(monkeypatch):
         }
     }
     monkeypatch.setattr(
-        join_advisor, "_columns_by_table",
+        join_advisor, "_table_infos",
         lambda ids: {
-            "c.s.orders": _cols(("customer_id", "bigint")),
-            "c.s.customer": _cols(("customer_id", "bigint")),
+            "c.s.orders": _info(("customer_id", "bigint", ColumnTypeName.LONG)),
+            "c.s.customer": _info(("customer_id", "bigint", ColumnTypeName.LONG)),
         },
     )
-    monkeypatch.setattr(join_advisor, "foreign_key_pairs", lambda ids: set())
     # Probe fails for every candidate → honest "no_warehouse" but candidates kept.
     monkeypatch.setattr(
         join_advisor, "execute_sql", lambda sql: {"data": [], "error": "down"}

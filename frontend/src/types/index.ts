@@ -1384,7 +1384,7 @@ export interface JoinCandidate {
 
 export interface JoinCandidatesResponse {
   space_id: string
-  status: "ok" | "fully_connected" | "no_candidates" | "no_warehouse"
+  status: "ok" | "fully_connected" | "no_candidates" | "no_metadata" | "no_warehouse"
   candidates: JoinCandidate[]
 }
 

@@ -760,13 +760,14 @@ class JoinCandidatesResponse(BaseModel):
 
     ``status`` is the honest-empty discriminator the inset renders:
     ``ok`` (candidates found), ``fully_connected`` (no unjoined key-like column
-    pairs remain), ``no_candidates`` (nothing name/FK-matched), or
+    pairs remain), ``no_candidates`` (nothing name/FK-matched), ``no_metadata``
+    (no in-scope table's Unity Catalog metadata could be read), or
     ``no_warehouse`` (candidates exist but none could be containment-probed, so
     every ``probe`` is ``None``). Candidates are never applied — they are seeded
     as advice via ``POST /join-advice``."""
 
     space_id: str
-    status: Literal["ok", "fully_connected", "no_candidates", "no_warehouse"] = "ok"
+    status: Literal["ok", "fully_connected", "no_candidates", "no_metadata", "no_warehouse"] = "ok"
     candidates: list[JoinCandidate] = Field(default_factory=list)
 
 
