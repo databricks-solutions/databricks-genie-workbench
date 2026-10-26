@@ -54,7 +54,7 @@ cachetools==7.0.5
     # via
     #   mlflow-skinny
     #   mlflow-tracing
-certifi==2026.2.25
+certifi==2026.10.18
     # via
     #   httpcore
     #   httpx
