@@ -227,8 +227,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   queries use MEASURE(`name`) with GROUP BY — never SELECT *, never a
   re-typed aggregate. Fan-out smoke test on every join.
 - Every new module ships with pytest tests in the same PR-sized commit.
-  The repo has NO test CI — run the suites locally and report results in
-  every VERIFY section.
+  Test CI (.github/workflows/test.yml) runs on pull requests but is not a
+  required check — run the suites locally and report results in every
+  VERIFY section.
 
 - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
   `uv run --frozen --extra dev`. Expected baseline: 1805 backend + 2261 GSO,
