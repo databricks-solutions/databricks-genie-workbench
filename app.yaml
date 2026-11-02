@@ -64,15 +64,15 @@ env:
   # observe runtime stays fail-closed rather than blocking the core deploy.
   # ---------------------------------------------------------------------------
   - name: VC_OBSERVE_WORKSPACE_ID
-    value: "__VC_OBSERVE_WORKSPACE_ID__"
+    value: ""
   - name: VC_OBSERVE_HOST
-    value: "__VC_OBSERVE_HOST__"
+    value: ""
   - name: VC_OBSERVE_CATALOG
-    value: "__VC_OBSERVE_CATALOG__"
+    value: ""
   - name: VC_OBSERVE_CONTROL_SCHEMA
-    value: "__VC_OBSERVE_CONTROL_SCHEMA__"
+    value: ""
   - name: VC_OBSERVE_SP_PRINCIPAL_ID
-    value: "__VC_OBSERVE_SP_PRINCIPAL_ID__"
+    value: ""
   - name: VC_OBSERVE_WAREHOUSE_ID
     valueFrom: sql-warehouse
   - name: VC_OBSERVE_ENVIRONMENT
@@ -83,13 +83,13 @@ env:
   - name: MLFLOW_TRACKING_URI
     value: "databricks"
   - name: MLFLOW_EXPERIMENT_ID
-    value: "__MLFLOW_EXPERIMENT_ID__"
+    value: ""
 
   # ---------------------------------------------------------------------------
   # LLM Model
   # ---------------------------------------------------------------------------
   - name: LLM_MODEL
-    value: "__LLM_MODEL__"
+    value: "databricks-claude-sonnet-4-6"
 
   # ---------------------------------------------------------------------------
   # AI Gateway route (spec §0): "gateway" sends LLM calls to
@@ -99,7 +99,7 @@ env:
   # backend/services/llm_route.py and forwarded to every optimization run.
   # ---------------------------------------------------------------------------
   - name: GENIE_LLM_ROUTE
-    value: "__GENIE_LLM_ROUTE__"
+    value: "classic"
 
   # ---------------------------------------------------------------------------
   # BYOK (bring-your-own-model) acceptance (spec §2, §9 Decision 2): only when
@@ -109,7 +109,7 @@ env:
   # backend/services/model_catalog.py.
   # ---------------------------------------------------------------------------
   - name: GENIE_BYOK_ENABLED
-    value: "__GENIE_BYOK_ENABLED__"
+    value: "false"
 
   # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".
@@ -134,31 +134,30 @@ env:
     value: ""
 
   # ---------------------------------------------------------------------------
-  # Lakebase PostgreSQL — connect manually via Databricks Apps UI.
-  # Add a postgres resource named "postgres" in the Apps UI. The platform
-  # injects the host via valueFrom. The app auto-creates all required tables.
-  # Without Lakebase, the app uses in-memory storage (ephemeral).
+  # Lakebase PostgreSQL — SKIPPED (lakebase_mode=skip).
+  # No `postgres` app resource is provisioned, so LAKEBASE_HOST is left unset
+  # and the app falls back to in-memory storage (ephemeral). To enable Lakebase,
+  # add a postgres resource named "postgres" in the Apps UI and restore the
+  # `valueFrom: postgres` wiring below.
   # ---------------------------------------------------------------------------
-  - name: LAKEBASE_HOST
-    valueFrom: postgres
-  - name: LAKEBASE_PORT
-    value: "5432"
-  - name: LAKEBASE_DATABASE
-    value: "databricks_postgres"
-  - name: LAKEBASE_INSTANCE_NAME
-    value: "__LAKEBASE_INSTANCE__"
+  # - name: LAKEBASE_HOST
+  #   valueFrom: postgres
+  # - name: LAKEBASE_PORT
+  #   value: "5432"
+  # - name: LAKEBASE_DATABASE
+  #   value: "databricks_postgres"
+  # - name: LAKEBASE_INSTANCE_NAME
+  #   value: "__LAKEBASE_INSTANCE__"
 
   # ---------------------------------------------------------------------------
   # Auto-Optimize (GSO Engine)
-  # These are placeholder values. The deploy script patches them with real
-  # values (from bundle state) on workspace before running `apps deploy`.
   # ---------------------------------------------------------------------------
   - name: GSO_CATALOG
-    value: "__GSO_CATALOG__"
+    value: "dev"
   - name: GSO_SCHEMA
     value: "genie_space_optimizer"
   - name: GSO_JOB_ID
-    value: "__GSO_JOB_ID__"
+    value: "537791170250790"
   - name: GSO_WAREHOUSE_ID
     valueFrom: sql-warehouse
 
@@ -169,7 +168,7 @@ resources:
   - name: sql-warehouse
     description: "SQL Warehouse for queries and catalog discovery"
     sql_warehouse:
-      id: "__WAREHOUSE_ID__"
+      id: "7de1f8929b25d05d"
       permission: CAN_USE
 
 # ---------------------------------------------------------------------------
