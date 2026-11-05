@@ -65,6 +65,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from backend.app_version import read_version
 from backend.services.auth import is_running_on_databricks_apps, set_obo_user_token, clear_obo_user_token
 from backend.routers.analysis import router as analysis_router
 from backend.routers.spaces import router as spaces_router
@@ -181,7 +182,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Genie Workbench",
     description="Unified Databricks Genie Agent management platform",
-    version="1.0.0",
+    version=read_version(),
     lifespan=lifespan,
 )
 
