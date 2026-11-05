@@ -1707,3 +1707,13 @@ def test_notebook_installer_offers_the_update_check_widget():
     notebook_source = Path("notebooks/install.py").read_text()
     assert 'dbutils.widgets.dropdown("update_check", "auto", ["auto", "yes", "no"])' in notebook_source
     assert 'update_check=dbutils.widgets.get("update_check").strip()' in notebook_source
+
+
+def test_deployment_guide_has_the_anchors_the_app_links_to():
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    assert "\n## Upgrading an existing install\n" in guide
+    assert "\n## Release update check\n" in guide
+    assert "| `update_check` |" in guide
+    assert "| `GENIE_UPDATE_CHECK` |" in guide
+    copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
+    assert "#release-update-check" in copy_ts and "#upgrading-an-existing-install" in copy_ts

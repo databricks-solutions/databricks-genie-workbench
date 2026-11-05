@@ -82,6 +82,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
 | `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
+| `update_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks workspace admins in the app if there was none. `yes` / `no` set it explicitly |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
@@ -147,12 +148,13 @@ The installer will:
 3. Ask for catalog (auto-discovered from your workspace)
 4. Ask for SQL warehouse (auto-discovered)
 5. Optionally configure MLflow tracing (creates or links an experiment)
-6. Ask for app name
-7. Ask for the Lakebase Autoscaling project (create / existing / skip)
-8. Write `.env.deploy` with your configuration (including the default LLM endpoint)
-9. Run `scripts/deploy.sh` to build and deploy the app
-10. Resolve the app's service principal
-11. Optionally grant the SP access to your existing Genie Agents
+6. Ask whether to enable the [daily release check](#release-update-check) (default yes)
+7. Ask for app name
+8. Ask for the Lakebase Autoscaling project (create / existing / skip)
+9. Write `.env.deploy` with your configuration (including the default LLM endpoint)
+10. Run `scripts/deploy.sh` to build and deploy the app
+11. Resolve the app's service principal
+12. Optionally grant the SP access to your existing Genie Agents
 
 ## Lakebase (automated)
 
@@ -171,6 +173,30 @@ The notebook path reads the Lakebase project from the `lakebase_mode` / `lakebas
 :::note
 The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 :::
+
+## Upgrading an existing install
+
+- **Notebook install:** pull the latest changes in the Databricks Git folder, then rerun `notebooks/install.py` from the top with the same widget values. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
+- **Terminal install:** run `git pull` in your clone, then `./scripts/deploy.sh --update`.
+
+Admin -> Settings shows the installed version, commit, and deploy date, so you can confirm the upgrade landed.
+
+## Release update check
+
+Genie Workbench can tell workspace admins when a newer release is available.
+
+- **What is called:** `https://api.github.com/repos/databricks-solutions/databricks-genie-workbench/releases/latest`, at most once a day per admin browser, plus whenever an admin clicks **Check now** in Admin -> Settings.
+- **Who calls it:** the workspace admin's browser. The app server never calls the internet. Users who are not workspace admins never trigger the check.
+- **What is sent:** nothing about your workspace. The request carries no referrer and no cookies, and the installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
+- **What admins see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
+
+**Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `update_check` widget. A `true` or `false` chosen at install is locked: admins see the state in Admin -> Settings but cannot change it in the app.
+
+**Upgrading from an earlier version.** If no choice was recorded at install, the first workspace admin to open the app sees a one-time banner and can turn the check on or decline. With Lakebase, the answer applies to the whole app. Without Lakebase, each admin's browser remembers its own answer.
+
+**Turning it off later.** Set `GENIE_UPDATE_CHECK=false` in `.env.deploy` and run `./scripts/deploy.sh --update`, or set the notebook `update_check` widget to `no` and rerun the installer.
+
+**Restricted networks.** If a browser cannot reach `api.github.com` (blocked, offline, or rate limited), nothing breaks: Admin -> Settings shows "Couldn't reach GitHub" and the browser tries again a day later.
 
 ## What `deploy.sh` Does
 
@@ -230,6 +256,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` (Unity AI Gateway) or `classic` (serving endpoints directly) |
 | `GENIE_BYOK_ENABLED` | No | `false` | `true` accepts a Unity Catalog model id as the model on the gateway route |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project name (auto-provisioned by deploy); installer suggests `<app-name>-lakebase` |
+| `GENIE_UPDATE_CHECK` | No | empty | `true` / `false` for the [daily release check](#release-update-check). Empty: workspace admins are asked in the app |
 
 ## Manual Setup (Method 2, without installer)
 
