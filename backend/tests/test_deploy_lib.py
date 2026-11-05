@@ -1,4 +1,5 @@
 import io
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,15 @@ from scripts.deploy_lib.install import (
     resolve_update_check,
 )
 from scripts.deploy_lib.workspace_source import read_workspace_text, source_path_for
+from scripts.deploy_lib.install import (
+    app_env,
+    app_warehouse_id,
+    describe_upgrade_settings,
+    prior_app_yaml_paths,
+    require_upgrade_lakebase,
+    run_install,
+    settings_for_existing_app,
+)
 
 from scripts.deploy_lib.workspace_source import (
     mkdirs,
@@ -1782,3 +1792,198 @@ def test_env_var_reference_documents_the_release_check_and_build_info():
     assert "`update_check`" not in ref
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
     assert "`Origin: null`" in guide
+
+
+# Spec 11: one-field notebook upgrade.
+_APP_YAML_02 = """\
+command: ["uvicorn", "backend.main:app"]
+env:
+  - name: LLM_MODEL
+    value: "databricks-claude-opus-4-6"
+  - name: GENIE_LLM_ROUTE
+    value: "classic"
+  - name: GENIE_BYOK_ENABLED
+    value: "true"
+  - name: MLFLOW_EXPERIMENT_ID
+    value: "1234"
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "team-lakebase"
+  - name: GSO_CATALOG
+    value: "prod_catalog"
+"""
+_APP = {"name": "gwb", "resources": [{"name": "sql-warehouse", "sql_warehouse": {"id": "wh-123", "permission": "CAN_USE"}}]}
+_UPGRADE = InstallConfig(app_name="gwb", catalog="", warehouse_id="", repo_root="/r", upgrade=True)
+_FULL = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r", lakebase_mode="create")
+
+
+def test_app_env_skips_empty_values_placeholders_and_value_from():
+    text = (
+        'env:\n  - name: A\n    value: "x"\n  - name: B\n    value: ""\n'
+        '  - name: C\n    value: "__C__"\n  - name: D\n    valueFrom: sql-warehouse\n'
+    )
+    assert app_env(text) == {"A": "x"}
+    assert app_env(None) == {}
+    assert app_env(": [") == {}
+    assert app_env("- a\n- b\n") == {}
+
+
+def test_app_warehouse_id_reads_the_sql_warehouse_resource():
+    assert app_warehouse_id(_APP) == "wh-123"
+    assert app_warehouse_id({"resources": [{"name": "postgres", "postgres": {}}]}) is None
+    assert app_warehouse_id({}) is None
+    assert app_warehouse_id(None) is None
+
+
+def test_upgrade_takes_every_setting_from_the_app():
+    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=["/x"]).normalized()
+    assert (cfg.catalog, cfg.warehouse_id) == ("prod_catalog", "wh-123")
+    assert (cfg.lakebase_mode, cfg.lakebase_instance) == ("existing", "team-lakebase")
+    assert (cfg.llm_route, cfg.llm_model, cfg.byok_enabled, cfg.mlflow_experiment_id) == (
+        "classic",
+        "databricks-claude-opus-4-6",
+        True,
+        "1234",
+    )
+    cfg.validate()
+
+
+def test_upgrade_ignores_filled_in_widgets():
+    filled = replace(
+        _UPGRADE, catalog="other", warehouse_id="wh-other", lakebase_mode="create", lakebase_instance="new-lb", llm_route="gateway"
+    )
+    cfg = settings_for_existing_app(filled, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    assert (cfg.catalog, cfg.warehouse_id, cfg.lakebase_instance, cfg.llm_route) == (
+        "prod_catalog",
+        "wh-123",
+        "team-lakebase",
+        "classic",
+    )
+
+
+def test_upgrade_keeps_the_release_check_widget():
+    cfg = settings_for_existing_app(replace(_UPGRADE, release_check="no"), _APP, _APP_YAML_02, looked_in=[])
+    assert cfg.release_check == "no"
+
+
+def test_upgrade_of_an_app_without_lakebase_keeps_it_off():
+    text = _APP_YAML_02.replace('value: "team-lakebase"', 'value: ""')
+    cfg = settings_for_existing_app(_UPGRADE, _APP, text, looked_in=[]).normalized()
+    assert (cfg.lakebase_mode, cfg.lakebase_instance) == ("skip", None)
+
+
+def test_upgrade_defaults_for_settings_the_app_does_not_record():
+    text = 'env:\n  - name: GSO_CATALOG\n    value: "c"\n  - name: LLM_MODEL\n    value: "__LLM_MODEL__"\n'
+    cfg = settings_for_existing_app(_UPGRADE, _APP, text, looked_in=[]).normalized()
+    default_model = InstallConfig(app_name="x", catalog="c", warehouse_id="w").llm_model
+    assert (cfg.llm_route, cfg.llm_model, cfg.byok_enabled, cfg.mlflow_experiment_id) == (
+        "gateway",
+        default_model,
+        False,
+        None,
+    )
+
+
+def test_upgrade_stops_when_the_app_does_not_exist():
+    with pytest.raises(
+        RuntimeError,
+        match=r"No app named 'gwb' in this workspace\. Check app_name, or set upgrade = no to install a new app\.",
+    ):
+        settings_for_existing_app(_UPGRADE, None, None, looked_in=[])
+
+
+def test_upgrade_stops_when_the_apps_settings_cannot_be_read():
+    with pytest.raises(
+        RuntimeError,
+        match=r"Couldn't read the current settings of app 'gwb' \(looked in /a/app\.yaml, /b/app\.yaml\)\. "
+        r"Run with upgrade = no and fill in the widgets\.",
+    ):
+        settings_for_existing_app(_UPGRADE, _APP, None, looked_in=["/a", "/b"])
+
+
+@pytest.mark.parametrize(
+    "app,text,missing",
+    [
+        (_APP, 'env:\n  - name: GSO_CATALOG\n    value: "__GSO_CATALOG__"\n', "catalog"),
+        ({"resources": []}, _APP_YAML_02, "warehouse_id"),
+        ({"resources": []}, "env: []\n", "catalog and warehouse_id"),
+    ],
+)
+def test_upgrade_stops_when_a_required_setting_is_missing(app, text, missing):
+    with pytest.raises(
+        RuntimeError, match=rf"Couldn't read {missing} from app 'gwb'\. Run with upgrade = no and fill in {missing}\."
+    ):
+        settings_for_existing_app(_UPGRADE, app, text, looked_in=[])
+
+
+def test_upgrade_stops_when_the_recorded_lakebase_project_is_gone():
+    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    gone = SimpleNamespace(postgres=FakePostgres(project_exists=False))
+    with pytest.raises(
+        RuntimeError,
+        match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses no longer exists\. "
+        r"To create a new, empty one, run with upgrade = no and lakebase_mode = create\.",
+    ):
+        require_upgrade_lakebase(gone, cfg)
+    assert gone.postgres.created_projects == []
+    require_upgrade_lakebase(SimpleNamespace(postgres=FakePostgres()), cfg)  # present: no error
+    require_upgrade_lakebase(gone, _FULL.normalized())  # not upgrade mode: not checked here
+
+
+def test_describe_upgrade_settings_lists_what_is_kept():
+    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    lines = describe_upgrade_settings(cfg)
+    assert lines[0] == "Upgrade mode: using the app's current settings; other widgets are ignored."
+    for line in ("  catalog: prod_catalog", "  warehouse_id: wh-123", "  Lakebase project: team-lakebase", "  MLflow experiment: 1234"):
+        assert line in lines
+
+
+def test_rerun_with_a_blank_lakebase_name_reuses_the_apps_project():
+    cfg = settings_for_existing_app(_FULL, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    assert cfg.lakebase_instance == "team-lakebase"
+    assert cfg.catalog == "c"  # a full rerun keeps its widget values for everything else
+
+
+def test_new_app_with_a_blank_lakebase_name_still_gets_the_default_project():
+    assert settings_for_existing_app(_FULL, None, None, looked_in=[]).normalized().lakebase_instance == "gwb-lakebase"
+
+
+def test_rerun_lakebase_reuse_only_applies_to_a_blank_create():
+    explicit = replace(_FULL, lakebase_instance="mine")
+    assert settings_for_existing_app(explicit, _APP, _APP_YAML_02, looked_in=[]).lakebase_instance == "mine"
+    skip = replace(_FULL, lakebase_mode="skip")
+    assert settings_for_existing_app(skip, _APP, _APP_YAML_02, looked_in=[]).normalized().lakebase_instance is None
+    no_record = _APP_YAML_02.replace('value: "team-lakebase"', 'value: ""')
+    assert settings_for_existing_app(_FULL, _APP, no_record, looked_in=[]).normalized().lakebase_instance == "gwb-lakebase"
+
+
+def test_prior_app_yaml_paths_lists_the_candidates_in_order():
+    app = {"active_deployment": {"source_code_path": "/Workspace/A/"}, "default_source_code_path": "/Workspace/B"}
+    assert prior_app_yaml_paths(app, _CFG.normalized(), "me@example.com") == [
+        "/Workspace/A",
+        "/Workspace/B",
+        "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app",
+    ]
+
+
+def test_run_install_rejects_a_bad_app_name_before_calling_the_workspace():
+    with pytest.raises(ValueError, match="app_name must be lowercase"):
+        run_install(SimpleNamespace(), replace(_UPGRADE, app_name="My App"))
+
+
+def test_run_install_resolves_upgrade_settings_before_validating_or_creating():
+    import inspect
+
+    from scripts.deploy_lib import install
+
+    src = inspect.getsource(install.run_install)
+    assert src.index("settings_for_existing_app(") < src.index("cfg.validate()") < src.index("ensure_app(")
+    assert src.index("require_upgrade_lakebase(") < src.index("ensure_app(")
+    assert "cfg.release_check" in src
+
+
+def test_notebook_leaves_a_blank_create_lakebase_name_to_the_installer():
+    src = Path("notebooks/install.py").read_text()
+    assert "# create + blank: the installer reuses the existing app's project" in src
+    assert 'elif lakebase_mode == "existing":\n    lakebase_instance = f"{app_name}-lakebase"' in src

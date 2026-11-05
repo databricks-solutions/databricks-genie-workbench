@@ -12,6 +12,10 @@ LLM_ROUTES = ("gateway", "classic")
 RELEASE_CHECK_CHOICES = ("auto", "yes", "no")
 
 APP_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+APP_NAME_ERROR = (
+    "app_name must be lowercase letters, numbers, and hyphens, "
+    "1-63 chars, and cannot start or end with a hyphen"
+)
 GSO_JOB_BASENAME = "gso-optimization-job"
 
 
@@ -94,10 +98,7 @@ class InstallConfig:
         cfg = self.normalized()
         errors: list[str] = []
         if not APP_NAME_RE.match(cfg.app_name):
-            errors.append(
-                "app_name must be lowercase letters, numbers, and hyphens, "
-                "1-63 chars, and cannot start or end with a hyphen"
-            )
+            errors.append(APP_NAME_ERROR)
         if not cfg.catalog:
             errors.append("catalog is required")
         if not cfg.warehouse_id:

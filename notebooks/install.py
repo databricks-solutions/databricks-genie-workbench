@@ -136,8 +136,12 @@ if lakebase_mode == "skip":
     lakebase_instance = None
 elif explicit_lakebase:
     lakebase_instance = explicit_lakebase
-else:
+elif lakebase_mode == "existing":
     lakebase_instance = f"{app_name}-lakebase"
+else:
+    # create + blank: the installer reuses the existing app's project, or uses
+    # <app_name>-lakebase for a new app.
+    lakebase_instance = None
 
 cfg = InstallConfig(
     app_name=app_name,

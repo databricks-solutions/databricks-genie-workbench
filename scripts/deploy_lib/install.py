@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ from .apps import (
     patch_app_resources,
     require_successful_deployment,
 )
-from .config import InstallConfig, InstallResult, LakebaseInfo
+from .config import APP_NAME_ERROR, APP_NAME_RE, InstallConfig, InstallResult, LakebaseInfo
 from .genie_spaces import optionally_grant_genie_spaces
 from .gso_job import ensure_gso_job
 from .lakebase import ensure_lakebase
@@ -101,13 +103,8 @@ def previous_update_check(app_yaml_text: str | None) -> str | None:
     return None
 
 
-def prior_app_yaml_text(w, app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> str | None:
-    """The app.yaml of the app's current deployment, wherever it lives.
-
-    Tries the active deployment's source path, then the app's default source path
-    (CLI deploys), then this user's generated source folder, so a rerun by another
-    user or after a CLI deploy still finds an install-time answer.
-    """
+def prior_app_yaml_paths(app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> list[str]:
+    """Where the app's current app.yaml may live, most likely first."""
     candidates: list[str] = []
     if app:
         active = app.get("active_deployment") or {}
@@ -115,7 +112,17 @@ def prior_app_yaml_text(w, app: dict[str, Any] | None, cfg: InstallConfig, deplo
             if path:
                 candidates.append(str(path).rstrip("/"))
     candidates.append(source_path_for(cfg, deployer_user))
-    for base in dict.fromkeys(candidates):
+    return list(dict.fromkeys(candidates))
+
+
+def prior_app_yaml_text(w, app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> str | None:
+    """The app.yaml of the app's current deployment, wherever it lives.
+
+    Tries the active deployment's source path, then the app's default source path
+    (CLI deploys), then this user's generated source folder, so a rerun by another
+    user or after a CLI deploy still finds the app's settings.
+    """
+    for base in prior_app_yaml_paths(app, cfg, deployer_user):
         text = read_workspace_text(w, f"{base}/app.yaml")
         if text:
             return text
@@ -128,6 +135,127 @@ def describe_update_check(value: str) -> str:
     if value == "false":
         return "Daily release check: OFF."
     return "Daily release check: ASK (workspace admins will be asked in the app)."
+
+
+_PLACEHOLDER_RE = re.compile(r"^__[A-Z0-9_]+__$")
+
+NO_APP_FOR_UPGRADE = "No app named '{name}' in this workspace. Check app_name, or set upgrade = no to install a new app."
+UNREADABLE_APP_SETTINGS = (
+    "Couldn't read the current settings of app '{name}' (looked in {paths}). "
+    "Run with upgrade = no and fill in the widgets."
+)
+MISSING_APP_SETTINGS = "Couldn't read {fields} from app '{name}'. Run with upgrade = no and fill in {fields}."
+UPGRADE_LAKEBASE_GONE = (
+    "The Lakebase project '{project}' that app '{name}' uses no longer exists. "
+    "To create a new, empty one, run with upgrade = no and lakebase_mode = create."
+)
+UPGRADE_HEADER = "Upgrade mode: using the app's current settings; other widgets are ignored."
+
+
+def app_env(app_yaml_text: str | None) -> dict[str, str]:
+    """Literal env values from a deployed app.yaml.
+
+    Empty values, unrendered __X__ placeholders, and valueFrom entries are left out,
+    so callers only ever see values an installer actually rendered.
+    """
+    if not app_yaml_text:
+        return {}
+    import yaml
+
+    try:
+        doc = yaml.safe_load(app_yaml_text) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    env: dict[str, str] = {}
+    for entry in doc.get("env") or []:
+        if not isinstance(entry, dict) or not entry.get("name") or "value" not in entry:
+            continue
+        value = str(entry.get("value") or "").strip()
+        if value and not _PLACEHOLDER_RE.match(value):
+            env[str(entry["name"])] = value
+    return env
+
+
+def app_warehouse_id(app: dict[str, Any] | None) -> str | None:
+    """The SQL warehouse ID attached to the app as its `sql-warehouse` resource."""
+    for resource in (app or {}).get("resources") or []:
+        if isinstance(resource, dict) and resource.get("name") == "sql-warehouse":
+            value = str((resource.get("sql_warehouse") or {}).get("id") or "").strip()
+            return value or None
+    return None
+
+
+def settings_for_existing_app(
+    cfg: InstallConfig,
+    app: dict[str, Any] | None,
+    app_yaml_text: str | None,
+    *,
+    looked_in: list[str],
+) -> InstallConfig:
+    """Fill the install config from the app it upgrades or reruns (spec 11.4, 11.5).
+
+    upgrade = yes: every setting except app_name and release_check comes from the
+    app; stop with a clear message instead of guessing. upgrade = no on an existing
+    app: a blank Lakebase project name with lakebase_mode = create keeps the
+    project the app already uses.
+    """
+    name = cfg.app_name.strip()
+    env = app_env(app_yaml_text)
+    if cfg.upgrade:
+        if app is None:
+            raise RuntimeError(NO_APP_FOR_UPGRADE.format(name=name))
+        if not app_yaml_text:
+            paths = ", ".join(f"{path}/app.yaml" for path in looked_in) or "no known location"
+            raise RuntimeError(UNREADABLE_APP_SETTINGS.format(name=name, paths=paths))
+        catalog = env.get("GSO_CATALOG")
+        warehouse_id = app_warehouse_id(app)
+        missing = [field for field, value in (("catalog", catalog), ("warehouse_id", warehouse_id)) if not value]
+        if missing:
+            raise RuntimeError(MISSING_APP_SETTINGS.format(fields=" and ".join(missing), name=name))
+        lakebase = env.get("LAKEBASE_INSTANCE_NAME")
+        return replace(
+            cfg,
+            catalog=catalog,
+            warehouse_id=warehouse_id,
+            lakebase_mode="existing" if lakebase else "skip",
+            lakebase_instance=lakebase,
+            llm_route=env.get("GENIE_LLM_ROUTE", ""),
+            llm_model=env.get("LLM_MODEL", ""),
+            byok_enabled=env.get("GENIE_BYOK_ENABLED", "").lower() == "true",
+            mlflow_experiment_id=env.get("MLFLOW_EXPERIMENT_ID"),
+        )
+    recorded = env.get("LAKEBASE_INSTANCE_NAME")
+    if app is not None and cfg.lakebase_mode == "create" and not (cfg.lakebase_instance or "").strip() and recorded:
+        return replace(cfg, lakebase_instance=recorded)
+    return cfg
+
+
+def describe_upgrade_settings(cfg: InstallConfig) -> list[str]:
+    """Status lines naming every setting an upgrade keeps."""
+    return [
+        UPGRADE_HEADER,
+        f"  catalog: {cfg.catalog}",
+        f"  warehouse_id: {cfg.warehouse_id}",
+        f"  Lakebase project: {cfg.lakebase_instance or 'none (Lakebase stays off)'}",
+        f"  LLM route: {cfg.llm_route}",
+        f"  LLM model: {cfg.llm_model}",
+        f"  BYOK: {'on' if cfg.byok_enabled else 'off'}",
+        f"  MLflow experiment: {cfg.mlflow_experiment_id or 'none'}",
+    ]
+
+
+def require_upgrade_lakebase(w, cfg: InstallConfig) -> None:
+    """Upgrade mode never creates Lakebase: stop if the app's recorded project is gone."""
+    if not cfg.upgrade or not cfg.lakebase_instance:
+        return
+    from databricks.sdk.errors import NotFound
+
+    try:
+        w.postgres.get_project(name=f"projects/{cfg.lakebase_instance}")
+    except NotFound as exc:
+        raise RuntimeError(UPGRADE_LAKEBASE_GONE.format(project=cfg.lakebase_instance, name=cfg.app_name)) from exc
 
 
 def notebook_build_commit(w, repo_root: str | None) -> str:
@@ -147,13 +275,29 @@ def notebook_build_commit(w, repo_root: str | None) -> str:
 
 def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status = status_fn or _default_status
-    cfg = cfg.normalized()
-    cfg.validate()
-    preflight_deployment(Path(cfg.repo_root or ""))
+    app_name = cfg.app_name.strip()
+    if not APP_NAME_RE.match(app_name):
+        raise ValueError(APP_NAME_ERROR)
 
     status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
     status(f"Using deployer: {deployer_user}")
+
+    # Read the existing app and its current app.yaml before anything is created or
+    # regenerated: upgrade mode takes its settings from them, and a rerun keeps the
+    # app's Lakebase project and release-check answer.
+    existing_app = get_app(w, app_name)
+    app_existed = existing_app is not None
+    looked_in = prior_app_yaml_paths(existing_app, cfg.normalized(), deployer_user) if app_existed else []
+    prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg.normalized(), deployer_user) if app_existed else None
+    cfg = settings_for_existing_app(cfg, existing_app, prior_app_yaml, looked_in=looked_in)
+    cfg = cfg.normalized()
+    cfg.validate()
+    preflight_deployment(Path(cfg.repo_root or ""))
+    if cfg.upgrade:
+        for line in describe_upgrade_settings(cfg):
+            status(line)
+        require_upgrade_lakebase(w, cfg)
 
     if cfg.llm_route == "gateway":
         status(f"Checking Unity AI Gateway with model {cfg.llm_model}...")
@@ -163,16 +307,12 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
         status("LLM route: classic serving endpoints (AI Gateway check skipped).")
 
     status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
-    existing_app = get_app(w, cfg.app_name)
-    app_existed = existing_app is not None
     ensure_app(w, cfg)
     status("Waiting for app service principal...")
     sp = get_app_service_principal(w, cfg.app_name)
     app_sp_client_id = sp["client_id"]
     status(f"Resolved app service principal: {app_sp_client_id}")
 
-    # Read the previous answer before the source folder (and its app.yaml) is regenerated.
-    prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg, deployer_user) if app_existed else None
     update_check = resolve_update_check(
         cfg.release_check, app_existed=app_existed, previous_value=previous_update_check(prior_app_yaml)
     )
