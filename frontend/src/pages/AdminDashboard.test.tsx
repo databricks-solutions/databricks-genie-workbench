@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/api')>()), ...api }))
 
+import { EMPTY_STATUS, UpdateStatusContext } from '@/components/update-check/update-status-context'
 import { AdminDashboard } from './AdminDashboard'
 
 let host: HTMLDivElement
@@ -37,4 +38,10 @@ it('the page subtitle does not claim an org-wide scope', async () => {
   const text = host.textContent ?? ''
   expect(text).toContain('Genie Agent health & observability')
   expect(text).not.toContain('Org-wide')
+})
+
+it('the header shows the installed app version', async () => {
+  const status = { ...EMPTY_STATUS, info: { version: '0.2.1', commit: null, deployed_at: null, install_method: null, releases_repo: 'r', release_url: null, update_check: { mode: 'off' as const, source: 'none' as const, locked: false, persisted: false } } }
+  await act(async () => root.render(<UpdateStatusContext.Provider value={status}><AdminDashboard onSelectSpace={() => {}} /></UpdateStatusContext.Provider>))
+  expect(host.textContent ?? '').toContain('v0.2.1')
 })

@@ -3,6 +3,8 @@
  * GenieWatch observability surface (sub-tabs: Agents / Cost / Resources / Settings).
  */
 import { Suspense, lazy, useEffect, useState } from "react"
+import { UpdateAvailableBanner } from "@/components/update-check/UpdateAvailableBanner"
+import { useUpdateStatus } from "@/components/update-check/update-status-context"
 import {
   TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw,
   LayoutGrid, DollarSign, Database, Settings as SettingsIcon, MessageSquare,
@@ -268,15 +270,23 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
   // we open watch's own SpaceDetail in-place (not workbench's). The watch surface
   // is read-only observability — its detail page has Overview/Usage/Cost/Resources/Evals.
   const [watchDrillId, setWatchDrillId] = useState<string | null>(null)
+  const { info } = useUpdateStatus()
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-display font-bold text-primary">Admin Dashboard</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-display font-bold text-primary">Admin Dashboard</h2>
+            {info && info.version !== "unknown" && (
+              <span className="rounded-md border border-default px-2 py-0.5 font-mono text-xs text-muted">v{info.version}</span>
+            )}
+          </div>
           <p className="text-muted mt-1">Genie Agent health &amp; observability</p>
         </div>
       </div>
+
+      <UpdateAvailableBanner />
 
       {/* Sub-tabs */}
       <div className="border-b border-default flex items-center gap-1">
