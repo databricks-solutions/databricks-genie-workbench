@@ -862,6 +862,11 @@ def is_available() -> bool:
     return _lakebase_available and _pool is not None
 
 
+def is_configured() -> bool:
+    """Whether this app is configured to use Lakebase (LAKEBASE_HOST set), usable or not."""
+    return bool((os.environ.get("LAKEBASE_HOST") or "").strip())
+
+
 # ── App-wide settings (key/value) ─────────────────────────────────────────
 # Lakebase only. There is deliberately no in-memory fallback: a setting that
 # silently resets on every restart is worse than none. Callers fall back to

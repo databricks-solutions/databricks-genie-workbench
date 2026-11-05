@@ -115,6 +115,17 @@ describe('storage', () => {
     expect(loadLocalConsent()).toBe('off')
   })
 
+  // Review finding #5: a cache entry with an unexpected shape (tampering, or a
+  // future release writing a different shape) must be ignored, not crash render.
+  it('ignores stored results with an unexpected shape', () => {
+    localStorage.setItem('gwb.updateCheck.result', JSON.stringify({ checked_at: 5, ok: true, latest: { tag: 7 }, last_success_at: 5 }))
+    expect(loadCheckResult()).toBeNull()
+    localStorage.setItem('gwb.updateCheck.result', JSON.stringify({ checked_at: 5, ok: true, latest: { tag: '0.2.2', name: 'x', html_url: 'https://evil.example/x', published_at: '' }, last_success_at: 5 }))
+    expect(loadCheckResult()).toBeNull()
+    localStorage.setItem('gwb.updateCheck.result', JSON.stringify({ checked_at: 5, ok: 'yes', latest: null, last_success_at: 5 }))
+    expect(loadCheckResult()).toBeNull()
+  })
+
   it('ignores corrupt stored results', () => {
     localStorage.setItem('gwb.updateCheck.result', '{not json')
     expect(loadCheckResult()).toBeNull()

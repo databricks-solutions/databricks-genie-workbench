@@ -41,6 +41,10 @@ async def resolve_update_check() -> UpdateCheckState:
         logger.warning("Could not read the release-check setting: %s", type(exc).__name__)
         return UpdateCheckState(mode="off", source="error", locked=False, persisted=lakebase.is_available())
     persisted = lakebase.is_available()
+    if lakebase.is_configured() and not persisted:
+        # Configured but the pool never came up: the stored answer is unreadable.
+        logger.warning("Lakebase is configured but unavailable; release check fails closed")
+        return UpdateCheckState(mode="off", source="error", locked=False, persisted=False)
     if stored in ("on", "off"):
         return UpdateCheckState(mode=stored, source="app", locked=False, persisted=persisted)
     return UpdateCheckState(mode="ask", source="none", locked=False, persisted=persisted)
@@ -77,5 +81,8 @@ async def put_update_check(body: UpdateCheckRequest, request: Request) -> Update
         persisted = await lakebase.set_app_setting(UPDATE_CHECK_KEY, value, _caller_email(request))
     except Exception as exc:  # noqa: BLE001 - never echo DB text
         logger.warning("Could not save the release-check setting: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail=SAVE_FAILED_DETAIL)
+    if not persisted and lakebase.is_configured():
+        # Configured Lakebase is down: do not fall back to a per-browser answer.
         raise HTTPException(status_code=503, detail=SAVE_FAILED_DETAIL)
     return UpdateCheckState(mode=value, source="app", locked=False, persisted=persisted)

@@ -32,6 +32,7 @@ def store(monkeypatch):
     monkeypatch.setattr(app_info.lakebase, "get_app_setting", get_app_setting)
     monkeypatch.setattr(app_info.lakebase, "set_app_setting", set_app_setting)
     monkeypatch.setattr(app_info.lakebase, "is_available", lambda: state["available"])
+    monkeypatch.setattr(app_info.lakebase, "is_configured", lambda: state.get("configured", state["available"]))
     for name in ("UPDATE_CHECK_ENABLED", "DEV_ADMIN", "DEV_USER_EMAIL", "GWB_BUILD_COMMIT", "GWB_DEPLOYED_AT", "GWB_INSTALL_METHOD"):
         monkeypatch.delenv(name, raising=False)
     return state
@@ -121,3 +122,20 @@ def test_a_save_failure_is_a_503_without_leaking(client, store, caplog):
     assert response.status_code == 503
     assert response.json()["detail"] == app_info.SAVE_FAILED_DETAIL
     assert "zq_secret" not in response.text and "zq_secret" not in caplog.text
+
+
+# Review finding #2: Lakebase configured (LAKEBASE_HOST set) but the pool never came up
+# must fail closed, not fall back to "ask" / browser-local answers.
+def test_configured_but_unavailable_lakebase_fails_closed(client, store):
+    store["available"] = False
+    store["configured"] = True
+    uc = client.get("/api/admin/version").json()["update_check"]
+    assert (uc["mode"], uc["source"], uc["locked"], uc["persisted"]) == ("off", "error", False, False)
+
+
+def test_saving_while_configured_lakebase_is_down_is_a_503(client, store):
+    store["available"] = False
+    store["configured"] = True
+    response = client.put("/api/admin/update-check", json={"enabled": True}, headers=ADMIN)
+    assert response.status_code == 503
+    assert response.json()["detail"] == app_info.SAVE_FAILED_DETAIL

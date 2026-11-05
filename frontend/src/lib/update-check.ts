@@ -5,6 +5,7 @@
  * GitHub for the latest release at most once per 24 hours. Nothing about the
  * workspace or the installed version is sent: no referrer, no cookies.
  */
+import { isolatedFetch } from "@/lib/isolated-fetch"
 import type { UpdateCheckState } from "@/types"
 
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -63,11 +64,9 @@ export function isCheckDue(result: CheckResult | null, now: number): boolean {
   return age < 0 || age >= CHECK_INTERVAL_MS // a future timestamp (clock changed) counts as due
 }
 
-const defaultFetch: typeof fetch = (input, init) => fetch(input, init)
-
 export async function fetchLatestRelease(
   repo: string,
-  fetchImpl: typeof fetch = defaultFetch,
+  fetchImpl: typeof fetch = isolatedFetch, // opaque-origin frame: Origin: null
   timeoutMs: number = GITHUB_TIMEOUT_MS,
 ): Promise<LatestRelease> {
   const controller = new AbortController()
@@ -142,12 +141,38 @@ export function resetMemoryStorageForTests(): void {
   memory.clear()
 }
 
+function isLatestRelease(value: unknown): value is LatestRelease {
+  const v = value as Record<string, unknown> | null
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof v.tag === "string" &&
+    typeof v.name === "string" &&
+    typeof v.published_at === "string" &&
+    typeof v.html_url === "string" &&
+    v.html_url.startsWith("https://github.com/")
+  )
+}
+
+function isCheckResult(value: unknown): value is CheckResult {
+  const v = value as Record<string, unknown> | null
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof v.checked_at === "number" &&
+    typeof v.ok === "boolean" &&
+    (v.last_success_at === null || typeof v.last_success_at === "number") &&
+    (v.latest === null || isLatestRelease(v.latest))
+  )
+}
+
+/** The cached result, or null when missing, corrupt, or an unexpected shape. */
 export function loadCheckResult(): CheckResult | null {
   const raw = storageGet(STORAGE_KEYS.result)
   if (!raw) return null
   try {
-    const parsed = JSON.parse(raw) as CheckResult
-    return typeof parsed?.checked_at === "number" ? parsed : null
+    const parsed: unknown = JSON.parse(raw)
+    return isCheckResult(parsed) ? parsed : null
   } catch {
     return null
   }

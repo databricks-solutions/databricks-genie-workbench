@@ -101,6 +101,27 @@ def previous_update_check(app_yaml_text: str | None) -> str | None:
     return None
 
 
+def prior_app_yaml_text(w, app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> str | None:
+    """The app.yaml of the app's current deployment, wherever it lives.
+
+    Tries the active deployment's source path, then the app's default source path
+    (CLI deploys), then this user's generated source folder, so a rerun by another
+    user or after a CLI deploy still finds an install-time answer.
+    """
+    candidates: list[str] = []
+    if app:
+        active = app.get("active_deployment") or {}
+        for path in (active.get("source_code_path"), app.get("default_source_code_path")):
+            if path:
+                candidates.append(str(path).rstrip("/"))
+    candidates.append(source_path_for(cfg, deployer_user))
+    for base in dict.fromkeys(candidates):
+        text = read_workspace_text(w, f"{base}/app.yaml")
+        if text:
+            return text
+    return None
+
+
 def describe_update_check(value: str) -> str:
     if value == "true":
         return "Daily release check: ON (runs in admins' browsers against api.github.com)."
@@ -142,7 +163,8 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
         status("LLM route: classic serving endpoints (AI Gateway check skipped).")
 
     status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
-    app_existed = get_app(w, cfg.app_name) is not None
+    existing_app = get_app(w, cfg.app_name)
+    app_existed = existing_app is not None
     ensure_app(w, cfg)
     status("Waiting for app service principal...")
     sp = get_app_service_principal(w, cfg.app_name)
@@ -150,9 +172,7 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status(f"Resolved app service principal: {app_sp_client_id}")
 
     # Read the previous answer before the source folder (and its app.yaml) is regenerated.
-    prior_app_yaml = (
-        read_workspace_text(w, f"{source_path_for(cfg, deployer_user)}/app.yaml") if app_existed else None
-    )
+    prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg, deployer_user) if app_existed else None
     update_check = resolve_update_check(
         cfg.update_check, app_existed=app_existed, previous_value=previous_update_check(prior_app_yaml)
     )

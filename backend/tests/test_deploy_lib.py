@@ -29,6 +29,7 @@ from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
 from scripts.deploy_lib.install import (
     describe_update_check,
+    prior_app_yaml_text,
     notebook_build_commit,
     previous_update_check,
     resolve_update_check,
@@ -1699,7 +1700,7 @@ def test_run_install_reads_the_prior_app_yaml_before_regenerating_source():
 
     src = inspect.getsource(install.run_install)
     assert src.index("get_app(") < src.index("ensure_app(")
-    assert src.index("read_workspace_text(") < src.index("prepare_workspace_source(")
+    assert src.index("prior_app_yaml_text(") < src.index("prepare_workspace_source(")
     assert "resolve_update_check(" in src and "notebook_build_commit(" in src
 
 
@@ -1717,3 +1718,50 @@ def test_deployment_guide_has_the_anchors_the_app_links_to():
     assert "| `GENIE_UPDATE_CHECK` |" in guide
     copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
     assert "#release-update-check" in copy_ts and "#upgrading-an-existing-install" in copy_ts
+
+
+def _fake_ws(files):
+    def download(path):
+        if path not in files:
+            raise RuntimeError("RESOURCE_DOES_NOT_EXIST")
+        return io.BytesIO(files[path])
+
+    return SimpleNamespace(workspace=SimpleNamespace(download=download))
+
+
+_LOCKED_OFF = b'env:\n  - name: UPDATE_CHECK_ENABLED\n    value: "false"\n'
+_CFG = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w")
+
+
+# Review finding #3: a rerun by a different user, or after a CLI deploy, must still
+# find the app.yaml that is actually deployed, so an install-time "no" survives.
+def test_prior_app_yaml_prefers_the_deployed_source_path():
+    w = _fake_ws({"/Users/other@example.com/.genie-workbench-deploy/gwb/app/app.yaml": _LOCKED_OFF})
+    app = {"active_deployment": {"source_code_path": "/Workspace/Users/other@example.com/.genie-workbench-deploy/gwb/app"}}
+    text = prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")
+    assert previous_update_check(text) == "false"
+
+
+def test_prior_app_yaml_uses_the_default_source_path_for_cli_deploys():
+    w = _fake_ws({"/Users/other@example.com/genie-workbench/app.yaml": _LOCKED_OFF})
+    app = {"default_source_code_path": "/Workspace/Users/other@example.com/genie-workbench"}
+    assert previous_update_check(prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")) == "false"
+
+
+def test_prior_app_yaml_falls_back_to_this_users_generated_source():
+    w = _fake_ws({"/Users/me@example.com/.genie-workbench-deploy/gwb/app/app.yaml": _LOCKED_OFF})
+    app = {"active_deployment": {"source_code_path": "/Workspace/Users/gone@example.com/missing"}}
+    assert previous_update_check(prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")) == "false"
+    assert prior_app_yaml_text(_fake_ws({}), {}, _CFG.normalized(), "me@example.com") is None
+
+
+# Review findings #1 and #7: the reference page lists every new variable, and the
+# deployment guide states the Origin the release check actually sends.
+def test_env_var_reference_documents_the_release_check_and_build_info():
+    ref = Path("docs/docs/reference/environment-variables.md").read_text()
+    for name in ("UPDATE_CHECK_ENABLED", "GWB_BUILD_COMMIT", "GWB_DEPLOYED_AT", "GWB_INSTALL_METHOD"):
+        assert f"| `{name}` | `__{name}__` |" in ref
+    assert "| `GENIE_UPDATE_CHECK` |" in ref
+    assert "`llm_route`, `update_check`)" in ref
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    assert "`Origin: null`" in guide

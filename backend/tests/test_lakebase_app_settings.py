@@ -84,3 +84,12 @@ async def test_read_errors_propagate_so_callers_can_fail_closed(pool, monkeypatc
 def test_schema_creates_app_settings():
     src = inspect.getsource(lakebase._ensure_schema)
     assert "CREATE TABLE IF NOT EXISTS genie.app_settings" in src
+
+
+def test_lakebase_is_configured_follows_lakebase_host(monkeypatch):
+    monkeypatch.setenv("LAKEBASE_HOST", "projects/p/branches/b/endpoints/e")
+    assert lakebase.is_configured() is True
+    monkeypatch.setenv("LAKEBASE_HOST", "  ")
+    assert lakebase.is_configured() is False
+    monkeypatch.delenv("LAKEBASE_HOST", raising=False)
+    assert lakebase.is_configured() is False

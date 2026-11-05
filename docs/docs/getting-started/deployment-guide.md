@@ -187,7 +187,7 @@ Genie Workbench can tell workspace admins when a newer release is available.
 
 - **What is called:** `https://api.github.com/repos/databricks-solutions/databricks-genie-workbench/releases/latest`, at most once a day per admin browser, plus whenever an admin clicks **Check now** in Admin -> Settings.
 - **Who calls it:** the workspace admin's browser. The app server never calls the internet. Users who are not workspace admins never trigger the check.
-- **What is sent:** nothing about your workspace. The request carries no referrer and no cookies, and the installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
+- **What is sent:** nothing about your workspace. The request runs from a hidden, sandboxed frame, so the browser sends `Origin: null` instead of the app's address, with no referrer and no cookies. The installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
 - **What admins see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
 
 **Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `update_check` widget. A `true` or `false` chosen at install is locked: admins see the state in Admin -> Settings but cannot change it in the app.
