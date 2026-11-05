@@ -1,4 +1,6 @@
+import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +27,14 @@ from scripts.deploy_lib.gso_job import (
 )
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
+from scripts.deploy_lib.install import (
+    describe_update_check,
+    notebook_build_commit,
+    previous_update_check,
+    resolve_update_check,
+)
+from scripts.deploy_lib.workspace_source import read_workspace_text, source_path_for
+
 from scripts.deploy_lib.workspace_source import (
     mkdirs,
     prepare_workspace_source,
@@ -1601,3 +1611,99 @@ def test_install_sh_asks_about_the_release_check_and_saves_it():
 
 def test_env_template_documents_the_release_check():
     assert "# GENIE_UPDATE_CHECK=true" in Path(".env.deploy.template").read_text()
+
+
+@pytest.mark.parametrize(
+    "choice,app_existed,previous,expected",
+    [
+        ("yes", True, "false", "true"),
+        ("no", False, None, "false"),
+        ("auto", False, None, "true"),
+        ("auto", True, "true", "true"),
+        ("auto", True, "false", "false"),
+        ("auto", True, None, ""),
+    ],
+)
+def test_notebook_update_check_resolution(choice, app_existed, previous, expected):
+    assert resolve_update_check(choice, app_existed=app_existed, previous_value=previous) == expected
+
+
+def test_previous_update_check_reads_only_decided_values():
+    assert previous_update_check(None) is None
+    assert previous_update_check('env:\n  - name: UPDATE_CHECK_ENABLED\n    value: "true"\n') == "true"
+    assert previous_update_check('env:\n  - name: UPDATE_CHECK_ENABLED\n    value: ""\n') is None
+    assert previous_update_check("env:\n  - name: OTHER\n    value: x\n") is None  # pre-feature app.yaml
+    assert previous_update_check(": not yaml : [") is None
+
+
+def test_describe_update_check_names_each_state():
+    assert describe_update_check("true").startswith("Daily release check: ON")
+    assert describe_update_check("false") == "Daily release check: OFF."
+    assert describe_update_check("").startswith("Daily release check: ASK")
+
+
+def test_config_update_check_default_and_validation():
+    base = dict(app_name="genie-workbench", catalog="main", warehouse_id="abc", repo_root="/tmp")
+    assert InstallConfig(**base).normalized().update_check == "auto"
+    assert InstallConfig(**base, update_check=" YES ").normalized().update_check == "yes"
+    with pytest.raises(ValueError, match="update_check"):
+        InstallConfig(**base, update_check="maybe").validate()
+
+
+def test_notebook_build_commit_from_a_git_folder():
+    w = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="REPO"), object_id=42)
+        ),
+        repos=SimpleNamespace(get=lambda repo_id: SimpleNamespace(head_commit_id="99e7783abcdef0123456789")),
+    )
+    assert notebook_build_commit(w, "/Workspace/Users/me/databricks-genie-workbench") == "99e7783abcde"
+
+
+def test_notebook_build_commit_is_empty_outside_a_git_folder_or_on_error():
+    plain_dir = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="DIRECTORY"), object_id=7)
+        ),
+    )
+    assert notebook_build_commit(plain_dir, "/Workspace/x") == ""
+
+    def denied(path):
+        raise RuntimeError("PERMISSION_DENIED")
+
+    assert notebook_build_commit(SimpleNamespace(workspace=SimpleNamespace(get_status=denied)), "/Workspace/x") == ""
+    assert notebook_build_commit(SimpleNamespace(), None) == ""
+
+
+def test_read_workspace_text_returns_none_when_missing():
+    ok = SimpleNamespace(workspace=SimpleNamespace(download=lambda path: io.BytesIO(b"env: []\n")))
+    assert read_workspace_text(ok, "/Workspace/Users/me/app/app.yaml") == "env: []\n"
+
+    def missing(path):
+        raise RuntimeError("RESOURCE_DOES_NOT_EXIST")
+
+    assert read_workspace_text(SimpleNamespace(workspace=SimpleNamespace(download=missing)), "/Workspace/x") is None
+
+
+def test_source_path_for_matches_the_default_and_override():
+    cfg = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w").normalized()
+    assert source_path_for(cfg, "me@example.com") == "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app"
+    custom = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w", deploy_workspace_path="/Workspace/x").normalized()
+    assert source_path_for(custom, "me@example.com") == "/Workspace/x"
+
+
+def test_run_install_reads_the_prior_app_yaml_before_regenerating_source():
+    import inspect
+
+    from scripts.deploy_lib import install
+
+    src = inspect.getsource(install.run_install)
+    assert src.index("get_app(") < src.index("ensure_app(")
+    assert src.index("read_workspace_text(") < src.index("prepare_workspace_source(")
+    assert "resolve_update_check(" in src and "notebook_build_commit(" in src
+
+
+def test_notebook_installer_offers_the_update_check_widget():
+    notebook_source = Path("notebooks/install.py").read_text()
+    assert 'dbutils.widgets.dropdown("update_check", "auto", ["auto", "yes", "no"])' in notebook_source
+    assert 'update_check=dbutils.widgets.get("update_check").strip()' in notebook_source

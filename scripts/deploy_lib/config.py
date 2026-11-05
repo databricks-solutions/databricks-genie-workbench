@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 LakebaseMode = Literal["create", "existing", "skip"]
 LLM_ROUTES = ("gateway", "classic")
+UPDATE_CHECK_CHOICES = ("auto", "yes", "no")
 
 APP_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 GSO_JOB_BASENAME = "gso-optimization-job"
@@ -57,6 +58,7 @@ class InstallConfig:
     update_only: bool = False
     gso_job_name: str = ""
     gso_wheel_path: str | None = None
+    update_check: str = "auto"
 
     def normalized(self) -> "InstallConfig":
         app_name = self.app_name.strip()
@@ -83,6 +85,7 @@ class InstallConfig:
             update_only=bool(self.update_only),
             gso_job_name=gso_job_name,
             gso_wheel_path=(self.gso_wheel_path or "").strip() or None,
+            update_check=(self.update_check or "auto").strip().lower(),
         )
 
     def validate(self) -> None:
@@ -105,6 +108,8 @@ class InstallConfig:
             errors.append("lakebase_instance is required when lakebase_mode is existing")
         if not cfg.repo_root:
             errors.append("repo_root is required")
+        if cfg.update_check not in UPDATE_CHECK_CHOICES:
+            errors.append("update_check must be one of: auto, yes, no")
         if errors:
             raise ValueError("; ".join(errors))
 

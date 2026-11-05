@@ -10,6 +10,7 @@ from .app_yaml import render_app_yaml
 from .apps import (
     deploy_app_from_workspace,
     ensure_app,
+    get_app,
     get_app_service_principal,
     patch_app_resources,
     require_successful_deployment,
@@ -20,7 +21,12 @@ from .gso_job import ensure_gso_job
 from .lakebase import ensure_lakebase
 from .uc import ensure_uc_objects_and_grants
 from .verify import verify_ai_gateway, verify_app_deployment
-from .workspace_source import prepare_workspace_source
+from .workspace_source import (
+    prepare_workspace_source,
+    read_workspace_text,
+    source_path_for,
+    workspace_api_path,
+)
 from backend.services.version_control.platform.bundles import preflight_deployment
 
 
@@ -60,6 +66,64 @@ def release_check_replacements(*, update_check: str, build_commit: str, deployed
     }
 
 
+def resolve_update_check(choice: str, *, app_existed: bool, previous_value: str | None) -> str:
+    """UPDATE_CHECK_ENABLED for a notebook install (spec 5.4).
+
+    yes/no are explicit. auto turns the check on for a new app; for an existing
+    app it keeps the previous decided value, or leaves it empty (ask admins in
+    the app) so a rerun with default widgets never silently opts in.
+    """
+    if choice == "yes":
+        return "true"
+    if choice == "no":
+        return "false"
+    if not app_existed:
+        return "true"
+    return previous_value if previous_value in ("true", "false") else ""
+
+
+def previous_update_check(app_yaml_text: str | None) -> str | None:
+    """UPDATE_CHECK_ENABLED from a previously deployed app.yaml, if it was decided."""
+    if not app_yaml_text:
+        return None
+    import yaml
+
+    try:
+        doc = yaml.safe_load(app_yaml_text) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    for entry in doc.get("env") or []:
+        if isinstance(entry, dict) and entry.get("name") == "UPDATE_CHECK_ENABLED":
+            value = str(entry.get("value") or "").strip().lower()
+            return value if value in ("true", "false") else None
+    return None
+
+
+def describe_update_check(value: str) -> str:
+    if value == "true":
+        return "Daily release check: ON (runs in admins' browsers against api.github.com)."
+    if value == "false":
+        return "Daily release check: OFF."
+    return "Daily release check: ASK (workspace admins will be asked in the app)."
+
+
+def notebook_build_commit(w, repo_root: str | None) -> str:
+    """Short HEAD commit of the Git folder the installer runs from, or "" if unknown."""
+    if not repo_root:
+        return ""
+    try:
+        info = w.workspace.get_status(workspace_api_path(repo_root))
+        object_type = getattr(info.object_type, "value", info.object_type)
+        if object_type != "REPO" or not info.object_id:
+            return ""
+        head = w.repos.get(info.object_id).head_commit_id or ""
+    except Exception:  # noqa: BLE001 - build info is best effort
+        return ""
+    return head[:12]
+
+
 def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status = status_fn or _default_status
     cfg = cfg.normalized()
@@ -78,11 +142,21 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
         status("LLM route: classic serving endpoints (AI Gateway check skipped).")
 
     status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
+    app_existed = get_app(w, cfg.app_name) is not None
     ensure_app(w, cfg)
     status("Waiting for app service principal...")
     sp = get_app_service_principal(w, cfg.app_name)
     app_sp_client_id = sp["client_id"]
     status(f"Resolved app service principal: {app_sp_client_id}")
+
+    # Read the previous answer before the source folder (and its app.yaml) is regenerated.
+    prior_app_yaml = (
+        read_workspace_text(w, f"{source_path_for(cfg, deployer_user)}/app.yaml") if app_existed else None
+    )
+    update_check = resolve_update_check(
+        cfg.update_check, app_existed=app_existed, previous_value=previous_update_check(prior_app_yaml)
+    )
+    status(describe_update_check(update_check))
 
     status("Generating curated workspace source folder...")
     source_path = prepare_workspace_source(w, cfg, deployer_user)
@@ -141,7 +215,11 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "VC_OBSERVE_CATALOG": cfg.catalog,
             "VC_OBSERVE_CONTROL_SCHEMA": cfg.gso_schema,
             "VC_OBSERVE_SP_PRINCIPAL_ID": app_sp_client_id,
-            **release_check_replacements(update_check="", build_commit="", deployed_at=utc_now_iso()),
+            **release_check_replacements(
+                update_check=update_check,
+                build_commit=notebook_build_commit(w, cfg.repo_root),
+                deployed_at=utc_now_iso(),
+            ),
         },
         workspace_client=w,
     )
