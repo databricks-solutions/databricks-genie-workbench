@@ -77,7 +77,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | Widget | Required | Description |
 |--------|----------|-------------|
 | `app_name` | Yes | Databricks App name to create or update |
-| `upgrade` | No | `no` (default) installs a new app, or reconfigures an existing one with the widgets below. `yes` upgrades the existing app named in `app_name` with its current settings: leave the other widgets as they are (they are ignored), and Lakebase is never created. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app) |
+| `upgrade` | No | `no` (default) installs a new app, or reconfigures an existing one with the widgets below. `yes` upgrades the existing app named in `app_name` with its current settings: leave the other widgets as they are (they are ignored, except `release_check`), and Lakebase is never created. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app) |
 | `catalog` | Yes | Unity Catalog where the optimizer writes its tables and artifacts |
 | `warehouse_id` | Yes | Serverless SQL Warehouse ID used by the app and GSO |
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
@@ -109,9 +109,9 @@ The Git folder is never modified — the generated workspace folder is deploymen
 
 ### 4. Updating a notebook-installed app
 
-1. In the Databricks Git folder, click **Pull** to get the latest release.
-2. Open `notebooks/install.py`.
-3. Set `app_name` to your app's name and `upgrade` to `yes`. Leave the other widgets as they are.
+1. In the Databricks Git folder, click **Pull** to get the latest code.
+2. Open `notebooks/install.py` and run its first cell. It only adds the input boxes (widgets), so the new `upgrade` box appears right away.
+3. Set `app_name` to your app's name and `upgrade` to `yes`. Leave the other widgets as they are: with `upgrade` set to `yes` the installer ignores them, except `release_check`, whose default `auto` keeps the app's current answer.
 4. Click **Run All**.
 
 The installer reads the catalog, warehouse, Lakebase project, LLM settings, and MLflow experiment from the app, prints the settings it kept, and redeploys with the new code. It stops with a message instead of guessing if the app does not exist or a required setting cannot be read. To change settings, rerun with `upgrade` set to `no` and fill in the widgets.
@@ -182,7 +182,7 @@ The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv 
 
 ## Upgrading an existing install
 
-- **Notebook install:** in the Git folder click **Pull**, open `notebooks/install.py`, set `app_name` to your app's name and `upgrade` to `yes`, and click **Run All**. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
+- **Notebook install:** in the Git folder click **Pull**, open `notebooks/install.py` and run its first cell, set `app_name` to your app's name and `upgrade` to `yes`, and click **Run All**. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
 - **Terminal install:** run `git pull` in your clone, then `./scripts/deploy.sh --update`.
 
 Admin -> Settings shows the installed version, commit, and deploy date, so you can confirm the upgrade landed.

@@ -28,6 +28,7 @@ from .workspace_source import (
     read_workspace_text,
     source_path_for,
     workspace_api_path,
+    write_workspace_file,
 )
 from backend.services.version_control.platform.bundles import preflight_deployment
 
@@ -104,11 +105,16 @@ def previous_update_check(app_yaml_text: str | None) -> str | None:
 
 
 def prior_app_yaml_paths(app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> list[str]:
-    """Where the app's current app.yaml may live, most likely first."""
+    """Where the app's current app.yaml may live, most likely first.
+
+    The deployment's own snapshot comes first: unlike the source folder, an
+    interrupted installer run never rewrites it.
+    """
     candidates: list[str] = []
     if app:
         active = app.get("active_deployment") or {}
-        for path in (active.get("source_code_path"), app.get("default_source_code_path")):
+        snapshot = (active.get("deployment_artifacts") or {}).get("source_code_path")
+        for path in (snapshot, active.get("source_code_path"), app.get("default_source_code_path")):
             if path:
                 candidates.append(str(path).rstrip("/"))
     candidates.append(source_path_for(cfg, deployer_user))
@@ -148,6 +154,11 @@ MISSING_APP_SETTINGS = "Couldn't read {fields} from app '{name}'. Run with upgra
 UPGRADE_LAKEBASE_GONE = (
     "The Lakebase project '{project}' that app '{name}' uses no longer exists. "
     "To create a new, empty one, run with upgrade = no and lakebase_mode = create."
+)
+RECORDED_LAKEBASE_DELETED = (
+    "The Lakebase project '{project}' that app '{name}' uses is deleted (it can still be restored "
+    "for 7 days). Restore it with `databricks postgres undelete-project projects/{project}`, then "
+    "run the installer again."
 )
 UPGRADE_HEADER = "Upgrade mode: using the app's current settings; other widgets are ignored."
 
@@ -246,16 +257,37 @@ def describe_upgrade_settings(cfg: InstallConfig) -> list[str]:
     ]
 
 
+def _lakebase_project_state(w, project: str) -> str:
+    """"missing", "deleted" (soft-deleted, still restorable), or "ok"."""
+    from databricks.sdk.errors import NotFound
+
+    try:
+        found = w.postgres.get_project(name=f"projects/{project}")
+    except NotFound:
+        return "missing"
+    return "deleted" if getattr(found, "delete_time", None) else "ok"
+
+
 def require_upgrade_lakebase(w, cfg: InstallConfig) -> None:
     """Upgrade mode never creates Lakebase: stop if the app's recorded project is gone."""
     if not cfg.upgrade or not cfg.lakebase_instance:
         return
-    from databricks.sdk.errors import NotFound
+    state = _lakebase_project_state(w, cfg.lakebase_instance)
+    if state == "missing":
+        raise RuntimeError(UPGRADE_LAKEBASE_GONE.format(project=cfg.lakebase_instance, name=cfg.app_name))
+    if state == "deleted":
+        raise RuntimeError(RECORDED_LAKEBASE_DELETED.format(project=cfg.lakebase_instance, name=cfg.app_name))
 
-    try:
-        w.postgres.get_project(name=f"projects/{cfg.lakebase_instance}")
-    except NotFound as exc:
-        raise RuntimeError(UPGRADE_LAKEBASE_GONE.format(project=cfg.lakebase_instance, name=cfg.app_name)) from exc
+
+def require_reused_lakebase_not_deleted(w, cfg: InstallConfig) -> None:
+    """A rerun that reuses the app's recorded project must never purge it.
+
+    lakebase_mode = create purges a soft-deleted project of the same name before
+    recreating it. The admin never typed this name, so stop and point at the
+    restore command instead. A project that is fully gone is simply created again.
+    """
+    if cfg.lakebase_instance and _lakebase_project_state(w, cfg.lakebase_instance) == "deleted":
+        raise RuntimeError(RECORDED_LAKEBASE_DELETED.format(project=cfg.lakebase_instance, name=cfg.app_name))
 
 
 def notebook_build_commit(w, repo_root: str | None) -> str:
@@ -290,7 +322,9 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     app_existed = existing_app is not None
     looked_in = prior_app_yaml_paths(existing_app, cfg.normalized(), deployer_user) if app_existed else []
     prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg.normalized(), deployer_user) if app_existed else None
+    typed_lakebase = (cfg.lakebase_instance or "").strip()
     cfg = settings_for_existing_app(cfg, existing_app, prior_app_yaml, looked_in=looked_in)
+    reused_lakebase = not cfg.upgrade and not typed_lakebase and bool(cfg.lakebase_instance)
     cfg = cfg.normalized()
     cfg.validate()
     preflight_deployment(Path(cfg.repo_root or ""))
@@ -298,6 +332,9 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
         for line in describe_upgrade_settings(cfg):
             status(line)
         require_upgrade_lakebase(w, cfg)
+    elif reused_lakebase:
+        status(f"Keeping the Lakebase project this app already uses: {cfg.lakebase_instance}")
+        require_reused_lakebase_not_deleted(w, cfg)
 
     if cfg.llm_route == "gateway":
         status(f"Checking Unity AI Gateway with model {cfg.llm_model}...")
@@ -320,6 +357,11 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
 
     status("Generating curated workspace source folder...")
     source_path = prepare_workspace_source(w, cfg, deployer_user)
+    if prior_app_yaml:
+        # Regenerating the folder copied in the app.yaml template. Put the app's current
+        # settings back until the new app.yaml is rendered, so an interrupted run does not
+        # erase what the next upgrade (or rerun) reads.
+        write_workspace_file(w, f"{source_path}/app.yaml", prior_app_yaml.encode("utf-8"))
     status(f"Workspace source ready: {source_path}")
 
     status(f"Provisioning Unity Catalog objects in {cfg.catalog}.{cfg.gso_schema}...")

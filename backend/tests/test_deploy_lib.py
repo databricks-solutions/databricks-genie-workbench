@@ -2001,3 +2001,96 @@ def test_docs_and_notebook_describe_the_one_field_upgrade():
     assert "(`app_name`, `upgrade`, `catalog`" in ref
     notebook = Path("notebooks/install.py").read_text()
     assert "# MAGIC **Upgrading an existing app?**" in notebook
+
+
+# Final review fixes (spec 11): interrupted runs, soft-deleted Lakebase projects,
+# and widgets that must exist before the admin can set upgrade = yes.
+_SRC = "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app"
+
+
+def _stub_install(monkeypatch, *, app, app_yaml, postgres=None):
+    """run_install with every workspace call stubbed; the UC step stands in for any later failure."""
+    from scripts.deploy_lib import install
+
+    calls = {"written": {}, "ensure_app": 0}
+    monkeypatch.setattr(install, "preflight_deployment", lambda root: None)
+    monkeypatch.setattr(install, "get_deployer_user", lambda w: "me@example.com")
+    monkeypatch.setattr(install, "get_app", lambda w, name: app)
+    monkeypatch.setattr(install, "read_workspace_text", lambda w, path: app_yaml)
+    monkeypatch.setattr(install, "verify_ai_gateway", lambda w, model: None)
+
+    def ensure_app(w, cfg):
+        calls["ensure_app"] += 1
+        return app
+
+    monkeypatch.setattr(install, "ensure_app", ensure_app)
+    monkeypatch.setattr(install, "get_app_service_principal", lambda w, name: {"client_id": "sp"})
+    monkeypatch.setattr(install, "prepare_workspace_source", lambda w, cfg, user: _SRC)
+    monkeypatch.setattr(
+        install, "write_workspace_file", lambda w, path, content: calls["written"].__setitem__(path, content)
+    )
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(install, "ensure_uc_objects_and_grants", interrupted)
+    return SimpleNamespace(postgres=postgres or FakePostgres()), calls
+
+
+def test_an_interrupted_run_leaves_the_apps_current_settings_in_place(monkeypatch):
+    app = {**_APP, "active_deployment": {"source_code_path": _SRC}}
+    w, calls = _stub_install(monkeypatch, app=app, app_yaml=_APP_YAML_02)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run_install(w, _UPGRADE, status_fn=lambda message: None)
+    assert calls["written"] == {f"{_SRC}/app.yaml": _APP_YAML_02.encode("utf-8")}
+
+
+def test_prior_app_yaml_paths_reads_the_deployment_snapshot_first():
+    app = {
+        "active_deployment": {
+            "source_code_path": "/Workspace/A",
+            "deployment_artifacts": {"source_code_path": "/Workspace/Users/sp/src/dep1"},
+        }
+    }
+    assert prior_app_yaml_paths(app, _CFG.normalized(), "me@example.com")[:2] == [
+        "/Workspace/Users/sp/src/dep1",
+        "/Workspace/A",
+    ]
+
+
+def test_upgrade_stops_early_when_the_recorded_lakebase_project_is_soft_deleted():
+    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    deleted = SimpleNamespace(postgres=FakePostgres(soft_deleted=True))
+    with pytest.raises(
+        RuntimeError,
+        match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted .*"
+        r"undelete-project projects/team-lakebase",
+    ):
+        require_upgrade_lakebase(deleted, cfg)
+    assert deleted.postgres.purged_projects == []
+
+
+def test_a_rerun_never_purges_the_apps_deleted_lakebase_project(monkeypatch):
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=FakePostgres(soft_deleted=True))
+    with pytest.raises(RuntimeError, match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted"):
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 0
+    assert w.postgres.purged_projects == []
+
+
+def test_a_rerun_recreates_the_apps_lakebase_project_if_it_is_gone(monkeypatch):
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=FakePostgres(project_exists=False))
+    with pytest.raises(RuntimeError, match="interrupted"):  # got past the Lakebase check
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 1
+
+
+def test_the_notebook_shows_its_widgets_before_installing_packages():
+    src = Path("notebooks/install.py").read_text()
+    assert src.index('dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])') < src.index("%pip install")
+    assert "run the first cell below" in src
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
+    assert "run its first cell" in section
+    upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
+    assert "run its first cell" in upgrading
