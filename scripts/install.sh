@@ -10,6 +10,7 @@ set -euo pipefail
 #   3. Asks for catalog (with auto-discovery)
 #   4. Asks for SQL Warehouse (with auto-discovery)
 #   5. MLflow tracing (optional — experiment ID for agent observability)
+#      + Daily release check prompt (default yes; saved as GENIE_UPDATE_CHECK)
 #   6. Asks for app name
 #   7. Lakebase project (create new, skip, or advanced attach existing)
 #   8. Writes .env.deploy
@@ -521,6 +522,20 @@ else
     _info "MLflow tracing disabled. You can enable it later in .env.deploy."
 fi
 
+# ── Daily release check ───────────────────────────────────────────────────
+echo ""
+_info "Genie Workbench can check GitHub once a day for new releases so admins know"
+_info "when to upgrade. The check runs in workspace admins' browsers (the app server"
+_info "never calls the internet) and sends no workspace data. You can change this"
+_info "later with GENIE_UPDATE_CHECK in .env.deploy."
+echo ""
+_prompt_yn ENABLE_UPDATE_CHECK "Check GitHub daily for new Genie Workbench releases?" "Y"
+if [ "$ENABLE_UPDATE_CHECK" = "Y" ]; then
+    UPDATE_CHECK="true"
+else
+    UPDATE_CHECK="false"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════
 # Step 6: App name
 # ══════════════════════════════════════════════════════════════════════════
@@ -728,6 +743,7 @@ GENIE_DEPLOY_PROFILE="$PROFILE"
 GENIE_LLM_MODEL="$LLM_MODEL"
 GENIE_LAKEBASE_INSTANCE="$LAKEBASE_INSTANCE"
 GENIE_MLFLOW_EXPERIMENT_ID="$MLFLOW_EXPERIMENT_ID"
+GENIE_UPDATE_CHECK="$UPDATE_CHECK"
 EOF
 
 _ok "Configuration written to .env.deploy"
@@ -741,6 +757,7 @@ echo "  │  Warehouse ID: $WAREHOUSE_ID"
 echo "  │  Default LLM:  $LLM_MODEL"
 echo "  │  Lakebase:     ${LAKEBASE_INSTANCE:-<none>}"
 echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
+echo "  │  Release check: $([ "$UPDATE_CHECK" = "true" ] && echo on || echo off)"
 echo "  └───────────────────────────────────────────────────────────┘"
 
 # ══════════════════════════════════════════════════════════════════════════

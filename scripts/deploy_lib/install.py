@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,20 @@ def get_deployer_user(w) -> str:
     if emails and getattr(emails[0], "value", None):
         return emails[0].value
     raise RuntimeError("Could not resolve current Databricks user")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def release_check_replacements(*, update_check: str, build_commit: str, deployed_at: str) -> dict[str, str]:
+    """app.yaml values for the daily release check and build info (spec 5.2, 5.4)."""
+    return {
+        "UPDATE_CHECK_ENABLED": update_check,
+        "GWB_BUILD_COMMIT": build_commit,
+        "GWB_DEPLOYED_AT": deployed_at,
+        "GWB_INSTALL_METHOD": "notebook",
+    }
 
 
 def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
@@ -126,6 +141,7 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "VC_OBSERVE_CATALOG": cfg.catalog,
             "VC_OBSERVE_CONTROL_SCHEMA": cfg.gso_schema,
             "VC_OBSERVE_SP_PRINCIPAL_ID": app_sp_client_id,
+            **release_check_replacements(update_check="", build_commit="", deployed_at=utc_now_iso()),
         },
         workspace_client=w,
     )

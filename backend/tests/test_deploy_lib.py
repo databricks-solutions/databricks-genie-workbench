@@ -13,7 +13,7 @@ from scripts.deploy_lib.apps import (
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
 from scripts.deploy_lib import gso_job
-from scripts.deploy_lib.install import llm_route_replacements
+from scripts.deploy_lib.install import llm_route_replacements, release_check_replacements
 from scripts.deploy_lib.verify import verify_ai_gateway
 from scripts.deploy_lib.gso_job import (
     TASKS,
@@ -172,6 +172,7 @@ def test_all_current_app_yaml_placeholders_are_covered():
             "VC_OBSERVE_CATALOG": "main",
             "VC_OBSERVE_CONTROL_SCHEMA": "genie_space_optimizer",
             "VC_OBSERVE_SP_PRINCIPAL_ID": "app-sp-client-id",
+            **release_check_replacements(update_check="", build_commit="", deployed_at="2026-11-05T00:00:00Z"),
         },
     )
     assert "__" not in rendered
@@ -1544,3 +1545,59 @@ def test_genie_llm_route_reaches_every_task_base_parameters():
         assert bp.get("genie_llm_route") == "{{job.parameters.genie_llm_route}}", t["task_key"]
     for _key, _stem, _dep, base_param_keys in TASKS:
         assert "genie_llm_route" in base_param_keys, _key
+
+
+def test_release_check_replacements_shape():
+    assert release_check_replacements(update_check="true", build_commit="", deployed_at="2026-11-05T00:00:00Z") == {
+        "UPDATE_CHECK_ENABLED": "true",
+        "GWB_BUILD_COMMIT": "",
+        "GWB_DEPLOYED_AT": "2026-11-05T00:00:00Z",
+        "GWB_INSTALL_METHOD": "notebook",
+    }
+
+
+def test_deploy_config_update_check_normalization(tmp_path):
+    import shutil
+    import subprocess
+
+    # A copy outside the repo, so a local .env.deploy is never sourced.
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(_repo_root() / "scripts" / "deploy-config.sh", tmp_path / "scripts")
+
+    def _resolve(value):
+        env = {"PATH": "/usr/bin:/bin", "GENIE_WAREHOUSE_ID": "w", "GENIE_CATALOG": "c"}
+        if value is not None:
+            env["GENIE_UPDATE_CHECK"] = value
+        proc = subprocess.run(
+            ["bash", "-c", 'source scripts/deploy-config.sh && echo "[$UPDATE_CHECK]"'],
+            env=env, capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip(), proc.stderr
+
+    for value in ("true", "TRUE", "yes", "Y", "1"):
+        assert _resolve(value)[0] == "[true]"
+    for value in ("false", "no", "N", "0"):
+        assert _resolve(value)[0] == "[false]"
+    assert _resolve(None) == ("[]", "")
+    assert _resolve("")[0] == "[]"
+    out, err = _resolve("maybe")
+    assert out == "[]" and "GENIE_UPDATE_CHECK" in err
+
+
+def test_deploy_sh_stamps_cli_build_info_and_reports_the_release_check():
+    deploy_sh = Path("scripts/deploy.sh").read_text()
+    assert '"s|__GWB_INSTALL_METHOD__|cli|"' in deploy_sh
+    assert "rev-parse --short=12 HEAD" in deploy_sh
+    assert "date -u +%Y-%m-%dT%H:%M:%SZ" in deploy_sh
+    assert "Daily release check: ASK" in deploy_sh
+
+
+def test_install_sh_asks_about_the_release_check_and_saves_it():
+    install_sh = Path("scripts/install.sh").read_text()
+    assert '_prompt_yn ENABLE_UPDATE_CHECK "Check GitHub daily for new Genie Workbench releases?" "Y"' in install_sh
+    assert 'GENIE_UPDATE_CHECK="$UPDATE_CHECK"' in install_sh
+
+
+def test_env_template_documents_the_release_check():
+    assert "# GENIE_UPDATE_CHECK=true" in Path(".env.deploy.template").read_text()
