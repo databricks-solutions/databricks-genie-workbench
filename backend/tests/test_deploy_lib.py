@@ -1987,3 +1987,17 @@ def test_notebook_leaves_a_blank_create_lakebase_name_to_the_installer():
     src = Path("notebooks/install.py").read_text()
     assert "# create + blank: the installer reuses the existing app's project" in src
     assert 'elif lakebase_mode == "existing":\n    lakebase_instance = f"{app_name}-lakebase"' in src
+
+
+def test_docs_and_notebook_describe_the_one_field_upgrade():
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    assert "| `upgrade` | No |" in guide
+    section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
+    for step in ("click **Pull**", "`upgrade` to `yes`", "**Run All**"):
+        assert step in section
+    upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
+    assert "`upgrade` to `yes`" in upgrading
+    ref = Path("docs/docs/reference/environment-variables.md").read_text()
+    assert "(`app_name`, `upgrade`, `catalog`" in ref
+    notebook = Path("notebooks/install.py").read_text()
+    assert "# MAGIC **Upgrading an existing app?**" in notebook

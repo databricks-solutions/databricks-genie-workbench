@@ -11,6 +11,8 @@
 # MAGIC **Required workspace previews/settings:** Databricks Apps and **Databricks Apps On-Behalf-of-User authorization** (Public Preview) must be enabled. Workspace admins manage preview toggles from the Databricks **Previews** page.
 # MAGIC
 # MAGIC **Optional:** Lakebase Autoscaling is recommended for persistent app state. Set `lakebase_mode` to `skip` only when ephemeral in-memory state is acceptable.
+# MAGIC
+# MAGIC **Upgrading an existing app?** Click **Pull** on this Git folder first. Then set `app_name` to your app's name, set `upgrade` to `yes`, leave the other widgets as they are, and **Run all**.
 
 # COMMAND ----------
 # MAGIC %pip install databricks-sdk==0.117.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0

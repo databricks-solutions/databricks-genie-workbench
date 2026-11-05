@@ -77,10 +77,11 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | Widget | Required | Description |
 |--------|----------|-------------|
 | `app_name` | Yes | Databricks App name to create or update |
+| `upgrade` | No | `no` (default) installs a new app, or reconfigures an existing one with the widgets below. `yes` upgrades the existing app named in `app_name` with its current settings: leave the other widgets as they are (they are ignored), and Lakebase is never created. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app) |
 | `catalog` | Yes | Unity Catalog where the optimizer writes its tables and artifacts |
 | `warehouse_id` | Yes | Serverless SQL Warehouse ID used by the app and GSO |
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
-| `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
+| `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; for `create`, blank keeps the project an existing app already uses, or `<app-name>-lakebase` for a new app. Leave blank when `lakebase_mode` is `skip` |
 | `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
 | `release_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks workspace admins in the app if there was none. `yes` / `no` set it explicitly |
 
@@ -108,7 +109,12 @@ The Git folder is never modified — the generated workspace folder is deploymen
 
 ### 4. Updating a notebook-installed app
 
-Pull the latest repo changes in the Databricks Git folder, then rerun `notebooks/install.py` from the top with the same `app_name` and Lakebase widget values.
+1. In the Databricks Git folder, click **Pull** to get the latest release.
+2. Open `notebooks/install.py`.
+3. Set `app_name` to your app's name and `upgrade` to `yes`. Leave the other widgets as they are.
+4. Click **Run All**.
+
+The installer reads the catalog, warehouse, Lakebase project, LLM settings, and MLflow experiment from the app, prints the settings it kept, and redeploys with the new code. It stops with a message instead of guessing if the app does not exist or a required setting cannot be read. To change settings, rerun with `upgrade` set to `no` and fill in the widgets.
 
 :::note
 The app now requests the `ai-gateway` user scope. After an update that adds a scope, each user is asked to consent once more on their next visit. See [Authentication & Permissions](/docs/platform/authentication).
@@ -176,7 +182,7 @@ The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv 
 
 ## Upgrading an existing install
 
-- **Notebook install:** pull the latest changes in the Databricks Git folder, then rerun `notebooks/install.py` from the top with the same widget values. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
+- **Notebook install:** in the Git folder click **Pull**, open `notebooks/install.py`, set `app_name` to your app's name and `upgrade` to `yes`, and click **Run All**. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
 - **Terminal install:** run `git pull` in your clone, then `./scripts/deploy.sh --update`.
 
 Admin -> Settings shows the installed version, commit, and deploy date, so you can confirm the upgrade landed.

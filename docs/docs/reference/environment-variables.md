@@ -77,7 +77,7 @@ The installed version itself comes from the repo-root `VERSION` file, not an env
 
 These variables apply to the **local terminal path only** — they are read by `deploy.sh` and written by `install.sh`. They are **not** injected into the app runtime directly; the deploy scripts use them to patch `app.yaml` placeholders and configure resources.
 
-On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`, `release_check`). The notebook always sets `GENIE_BYOK_ENABLED` to `false`.
+On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `upgrade`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`, `release_check`). The notebook sets `GENIE_BYOK_ENABLED` to `false`. With `upgrade` set to `yes`, the notebook reads these values (including `GENIE_BYOK_ENABLED`) from the existing app instead of the widgets.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
