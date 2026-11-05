@@ -73,6 +73,7 @@ backend/
     analysis.py            # /api/space/* (fetch, parse), /api/settings, /api/models, /api/debug/auth
     spaces.py              # /api/spaces/* (list, scan, history, star)
     admin.py               # /api/admin/* (dashboard, leaderboard, alerts)
+    app_info.py            # /api/admin/version, /api/admin/update-check (app version + release-check setting)
     auth.py                # /api/auth/me
     create.py              # /api/create/* (agent chat, UC discovery, wizard)
     auto_optimize.py       # /api/auto-optimize/* (GSO engine proxy)

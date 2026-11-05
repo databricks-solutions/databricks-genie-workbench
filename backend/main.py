@@ -70,6 +70,7 @@ from backend.services.auth import is_running_on_databricks_apps, set_obo_user_to
 from backend.routers.analysis import router as analysis_router
 from backend.routers.spaces import router as spaces_router
 from backend.routers.admin import router as admin_router
+from backend.routers.app_info import router as app_info_router
 from backend.routers.auth import router as auth_router
 from backend.routers.create import router as create_router
 from backend.routers.auto_optimize import router as auto_optimize_router
@@ -247,6 +248,7 @@ def _ensure_gso_job_run_as() -> None:
 app.include_router(analysis_router)
 app.include_router(spaces_router)
 app.include_router(admin_router)
+app.include_router(app_info_router)
 app.include_router(auth_router)
 app.include_router(create_router)
 app.include_router(auto_optimize_router)
