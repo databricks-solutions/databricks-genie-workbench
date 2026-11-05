@@ -82,7 +82,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
 | `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
-| `update_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks workspace admins in the app if there was none. `yes` / `no` set it explicitly |
+| `release_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks workspace admins in the app if there was none. `yes` / `no` set it explicitly |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
@@ -190,11 +190,11 @@ Genie Workbench can tell workspace admins when a newer release is available.
 - **What is sent:** nothing about your workspace. The request runs from a hidden, sandboxed frame, so the browser sends `Origin: null` instead of the app's address, with no referrer and no cookies. The installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
 - **What admins see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
 
-**Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `update_check` widget. A `true` or `false` chosen at install is locked: admins see the state in Admin -> Settings but cannot change it in the app.
+**Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `release_check` widget. A `true` or `false` chosen at install is locked: admins see the state in Admin -> Settings but cannot change it in the app.
 
 **Upgrading from an earlier version.** If no choice was recorded at install, the first workspace admin to open the app sees a one-time banner and can turn the check on or decline. With Lakebase, the answer applies to the whole app. Without Lakebase, each admin's browser remembers its own answer.
 
-**Turning it off later.** Set `GENIE_UPDATE_CHECK=false` in `.env.deploy` and run `./scripts/deploy.sh --update`, or set the notebook `update_check` widget to `no` and rerun the installer.
+**Turning it off later.** Set `GENIE_UPDATE_CHECK=false` in `.env.deploy` and run `./scripts/deploy.sh --update`, or set the notebook `release_check` widget to `no` and rerun the installer.
 
 **Restricted networks.** If a browser cannot reach `api.github.com` (blocked, offline, or rate limited), nothing breaks: Admin -> Settings shows "Couldn't reach GitHub" and the browser tries again a day later.
 

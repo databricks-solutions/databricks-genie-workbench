@@ -1643,12 +1643,15 @@ def test_describe_update_check_names_each_state():
     assert describe_update_check("").startswith("Daily release check: ASK")
 
 
-def test_config_update_check_default_and_validation():
-    base = dict(app_name="genie-workbench", catalog="main", warehouse_id="abc", repo_root="/tmp")
-    assert InstallConfig(**base).normalized().update_check == "auto"
-    assert InstallConfig(**base, update_check=" YES ").normalized().update_check == "yes"
-    with pytest.raises(ValueError, match="update_check"):
-        InstallConfig(**base, update_check="maybe").validate()
+def test_config_release_check_and_upgrade_defaults_and_validation():
+    base = dict(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r")
+    cfg = InstallConfig(**base).normalized()
+    assert cfg.release_check == "auto"
+    assert cfg.upgrade is False
+    assert InstallConfig(**base, release_check=" YES ").normalized().release_check == "yes"
+    assert InstallConfig(**base, upgrade=True).normalized().upgrade is True
+    with pytest.raises(ValueError, match="release_check must be one of: auto, yes, no"):
+        InstallConfig(**base, release_check="maybe").validate()
 
 
 def test_notebook_build_commit_from_a_git_folder():
@@ -1704,17 +1707,30 @@ def test_run_install_reads_the_prior_app_yaml_before_regenerating_source():
     assert "resolve_update_check(" in src and "notebook_build_commit(" in src
 
 
-def test_notebook_installer_offers_the_update_check_widget():
-    notebook_source = Path("notebooks/install.py").read_text()
-    assert 'dbutils.widgets.dropdown("update_check", "auto", ["auto", "yes", "no"])' in notebook_source
-    assert 'update_check=dbutils.widgets.get("update_check").strip()' in notebook_source
+def test_notebook_installer_offers_the_release_check_and_upgrade_widgets():
+    src = Path("notebooks/install.py").read_text()
+    assert 'dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])' in src
+    assert 'release_check=dbutils.widgets.get("release_check").strip()' in src
+    assert 'dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])' in src
+    assert 'upgrade=dbutils.widgets.get("upgrade").strip() == "yes"' in src
+    assert '"update_check"' not in src
+
+
+def test_lock_hints_name_the_release_check_widget():
+    from backend.routers.app_info import LOCKED_DETAIL
+
+    copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
+    for text in (LOCKED_DETAIL, copy_ts):
+        assert "release_check notebook widget" in text
+        assert "update_check notebook widget" not in text
 
 
 def test_deployment_guide_has_the_anchors_the_app_links_to():
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
     assert "\n## Upgrading an existing install\n" in guide
     assert "\n## Release update check\n" in guide
-    assert "| `update_check` |" in guide
+    assert "| `release_check` |" in guide
+    assert "`update_check`" not in guide
     assert "| `GENIE_UPDATE_CHECK` |" in guide
     copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
     assert "#release-update-check" in copy_ts and "#upgrading-an-existing-install" in copy_ts
@@ -1762,6 +1778,7 @@ def test_env_var_reference_documents_the_release_check_and_build_info():
     for name in ("UPDATE_CHECK_ENABLED", "GWB_BUILD_COMMIT", "GWB_DEPLOYED_AT", "GWB_INSTALL_METHOD"):
         assert f"| `{name}` | `__{name}__` |" in ref
     assert "| `GENIE_UPDATE_CHECK` |" in ref
-    assert "`llm_route`, `update_check`)" in ref
+    assert "`llm_route`, `release_check`)" in ref
+    assert "`update_check`" not in ref
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
     assert "`Origin: null`" in guide

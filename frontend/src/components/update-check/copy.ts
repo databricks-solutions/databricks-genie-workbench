@@ -21,7 +21,7 @@ export const COPY = {
   networksBlock: "Some networks block api.github.com.",
   settingError: "Couldn't load the release-check setting.",
   lockedHint:
-    "Set at install. Change GENIE_UPDATE_CHECK in .env.deploy or the update_check notebook widget and redeploy.",
+    "Set at install. Change GENIE_UPDATE_CHECK in .env.deploy or the release_check notebook widget and redeploy.",
   checkNow: "Check now",
   checking: "Checking…",
   turnOn: "Turn on",

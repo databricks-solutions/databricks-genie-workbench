@@ -30,7 +30,7 @@ On the gateway route, `databricks-<name>` endpoints are called as `system.ai.<na
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `UPDATE_CHECK_ENABLED` | `__UPDATE_CHECK_ENABLED__` | Daily [release update check](/docs/getting-started/deployment-guide#release-update-check). `true` / `false` = chosen at install (locked in the app); empty = workspace admins are asked in the app. Set from `GENIE_UPDATE_CHECK` or the notebook `update_check` widget |
+| `UPDATE_CHECK_ENABLED` | `__UPDATE_CHECK_ENABLED__` | Daily [release update check](/docs/getting-started/deployment-guide#release-update-check). `true` / `false` = chosen at install (locked in the app); empty = workspace admins are asked in the app. Set from `GENIE_UPDATE_CHECK` or the notebook `release_check` widget |
 | `GWB_BUILD_COMMIT` | `__GWB_BUILD_COMMIT__` | Commit the app was deployed from (`-dirty` when tracked files had local changes); empty for zip downloads. Shown in Admin -> Settings |
 | `GWB_DEPLOYED_AT` | `__GWB_DEPLOYED_AT__` | UTC time of the deploy, stamped by the installer |
 | `GWB_INSTALL_METHOD` | `__GWB_INSTALL_METHOD__` | `cli` (`deploy.sh`) or `notebook` (`notebooks/install.py`) |
@@ -77,7 +77,7 @@ The installed version itself comes from the repo-root `VERSION` file, not an env
 
 These variables apply to the **local terminal path only** — they are read by `deploy.sh` and written by `install.sh`. They are **not** injected into the app runtime directly; the deploy scripts use them to patch `app.yaml` placeholders and configure resources.
 
-On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`, `update_check`). The notebook always sets `GENIE_BYOK_ENABLED` to `false`.
+On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`, `llm_route`, `release_check`). The notebook always sets `GENIE_BYOK_ENABLED` to `false`.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|

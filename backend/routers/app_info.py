@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/admin")
 UPDATE_CHECK_KEY = "update_check"
 LOCKED_DETAIL = (
     "The release check was set at install time. Change GENIE_UPDATE_CHECK in "
-    ".env.deploy or the update_check notebook widget and redeploy."
+    ".env.deploy or the release_check notebook widget and redeploy."
 )
 SAVE_FAILED_DETAIL = "Couldn't save the release-check setting. Try again."
 

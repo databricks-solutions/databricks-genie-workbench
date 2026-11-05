@@ -174,7 +174,7 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     # Read the previous answer before the source folder (and its app.yaml) is regenerated.
     prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg, deployer_user) if app_existed else None
     update_check = resolve_update_check(
-        cfg.update_check, app_existed=app_existed, previous_value=previous_update_check(prior_app_yaml)
+        cfg.release_check, app_existed=app_existed, previous_value=previous_update_check(prior_app_yaml)
     )
     status(describe_update_check(update_check))
 

@@ -59,14 +59,18 @@ print(f"Repo root: {repo_root}")
 
 # COMMAND ----------
 dbutils.widgets.text("app_name", "genie-workbench")
+# upgrade: yes = upgrade the existing app named above with its current settings; the
+# other widgets are ignored. no = install a new app, or reconfigure with the widgets below.
+dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])
 dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
 dbutils.widgets.text("lakebase_project_name", "")
 dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
-# update_check: auto = on for a new app; for an existing app keep the previous answer,
-# or ask workspace admins in the app if there is none. yes / no set it explicitly.
-dbutils.widgets.dropdown("update_check", "auto", ["auto", "yes", "no"])
+# release_check (daily GitHub release check): auto = on for a new app; for an existing
+# app keep the previous answer, or ask workspace admins in the app if there is none.
+# yes / no set it explicitly.
+dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])
 
 # COMMAND ----------
 # MAGIC %md
@@ -140,7 +144,8 @@ cfg = InstallConfig(
     catalog=dbutils.widgets.get("catalog").strip(),
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
     llm_route=dbutils.widgets.get("llm_route").strip(),
-    update_check=dbutils.widgets.get("update_check").strip(),
+    release_check=dbutils.widgets.get("release_check").strip(),
+    upgrade=dbutils.widgets.get("upgrade").strip() == "yes",
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,
