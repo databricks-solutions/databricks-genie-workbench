@@ -30,7 +30,7 @@ export function AppVersionCard({ now = Date.now }: { now?: () => number }) {
   const s = useUpdateStatus()
   if (!s.info) return null
   const { info } = s
-  const canToggle = s.isAdmin && !s.locked && info.update_check.source !== "error"
+  const canToggle = !s.locked && info.update_check.source !== "error"
   return (
     <Card className="p-4">
       <h2 className="mb-3 text-sm font-medium uppercase text-muted">App version</h2>
@@ -45,25 +45,23 @@ export function AppVersionCard({ now = Date.now }: { now?: () => number }) {
           {COPY.releaseNotes}
         </a>
       )}
-      {s.isAdmin && (
-        <div className="mt-4 space-y-2 border-t border-default/50 pt-3 text-sm">
-          <p className="text-primary">{statusLine(s, now())}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            {s.mode === "on" && (
-              <Button size="sm" variant="secondary" disabled={s.checking} onClick={() => void s.checkNow()}>
-                {s.checking ? COPY.checking : COPY.checkNow}
-              </Button>
-            )}
-            {canToggle && (
-              <Button size="sm" variant="ghost" onClick={() => void s.setConsent(s.mode !== "on")}>
-                {s.mode === "on" ? COPY.turnOff : COPY.turnOn}
-              </Button>
-            )}
-          </div>
-          {s.locked && <p className="text-xs text-muted">{COPY.lockedHint}</p>}
-          {s.saveError && <p className="text-xs text-red-400">{s.saveError}</p>}
+      <div className="mt-4 space-y-2 border-t border-default/50 pt-3 text-sm">
+        <p className="text-primary">{statusLine(s, now())}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          {s.mode === "on" && (
+            <Button size="sm" variant="secondary" disabled={s.checking} onClick={() => void s.checkNow()}>
+              {s.checking ? COPY.checking : COPY.checkNow}
+            </Button>
+          )}
+          {canToggle && (
+            <Button size="sm" variant="ghost" onClick={() => void s.setConsent(s.mode !== "on")}>
+              {s.mode === "on" ? COPY.turnOff : COPY.turnOn}
+            </Button>
+          )}
         </div>
-      )}
+        {s.locked && <p className="text-xs text-muted">{COPY.lockedHint}</p>}
+        {s.saveError && <p className="text-xs text-red-400">{s.saveError}</p>}
+      </div>
     </Card>
   )
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 
-import { getAppVersion, getCurrentUser, setUpdateCheck } from "@/lib/api"
+import { getAppVersion, setUpdateCheck } from "@/lib/api"
 import {
   effectiveMode,
   fetchLatestRelease,
@@ -29,7 +29,9 @@ interface UpdateStatusProviderProps {
 
 export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: UpdateStatusProviderProps) {
   const [info, setInfo] = useState<AppVersionInfo | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
+  // How many Admin pages are open; the GitHub check runs only while one is (spec 12).
+  const [adminPages, setAdminPages] = useState(0)
+  const adminPagesOpen = useRef(0)
   const [localConsent, setLocalConsent] = useState<Consent | null>(() => loadLocalConsent())
   const [result, setResult] = useState<CheckResult | null>(() => loadCheckResult())
   const [dismissed, setDismissed] = useState<string | null>(() => loadDismissedTag())
@@ -37,8 +39,8 @@ export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: Up
   const [saveError, setSaveError] = useState<string | null>(null)
   const inFlight = useRef<Promise<void> | null>(null)
 
-  // Checks start only from callbacks (initial load, tab refocus, consent, Check now),
-  // never synchronously from an effect body. Callers decide eligibility.
+  // Checks start only from callbacks (initial load, opening an Admin page, tab refocus,
+  // consent, Check now), never synchronously from an effect body. Callers decide eligibility.
   const startCheck = useCallback(
     async (target: AppVersionInfo, force: boolean): Promise<void> => {
       if (inFlight.current) return inFlight.current
@@ -67,22 +69,32 @@ export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: Up
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([getCurrentUser().catch(() => null), getAppVersion().catch(() => null)]).then(([user, version]) => {
-      if (cancelled) return
-      const admin = Boolean(user?.is_admin)
-      setIsAdmin(admin)
-      setInfo(version)
-      if (admin && version && effectiveMode(version.update_check, loadLocalConsent()) === "on") {
-        void startCheck(version, false)
-      }
-    })
+    getAppVersion()
+      .catch(() => null)
+      .then((version) => {
+        if (cancelled) return
+        setInfo(version)
+        if (adminPagesOpen.current > 0 && version && effectiveMode(version.update_check, loadLocalConsent()) === "on") {
+          void startCheck(version, false)
+        }
+      })
     return () => {
       cancelled = true
     }
   }, [startCheck])
 
   const mode = info ? effectiveMode(info.update_check, localConsent) : "off"
-  const canCheck = isAdmin && mode === "on" && info !== null
+  const canCheck = adminPages > 0 && mode === "on" && info !== null
+
+  const enterAdminPage = useCallback(() => {
+    adminPagesOpen.current += 1
+    setAdminPages((n) => n + 1)
+    if (info && effectiveMode(info.update_check, localConsent) === "on") void startCheck(info, false)
+    return () => {
+      adminPagesOpen.current -= 1
+      setAdminPages((n) => n - 1)
+    }
+  }, [info, localConsent, startCheck])
 
   useEffect(() => {
     if (!canCheck || !info) return
@@ -109,12 +121,12 @@ export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: Up
           setLocalConsent(value)
           nextLocal = value
         }
-        if (isAdmin && effectiveMode(state, nextLocal) === "on") void startCheck(nextInfo, false)
+        if (effectiveMode(state, nextLocal) === "on") void startCheck(nextInfo, false)
       } catch {
         setSaveError(SAVE_FAILED_MESSAGE)
       }
     },
-    [info, isAdmin, localConsent, startCheck],
+    [info, localConsent, startCheck],
   )
 
   const latestTag = result?.latest?.tag ?? null
@@ -128,13 +140,13 @@ export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: Up
     if (canCheck && info) await startCheck(info, true)
   }, [canCheck, info, startCheck])
 
-  const updateAvailable = Boolean(canCheck && info && latestTag && isUpdateAvailable(latestTag, info.version) === true)
+  // From this browser's cached result, so the Admin tab dot also shows on other pages.
+  const updateAvailable = Boolean(mode === "on" && info && latestTag && isUpdateAvailable(latestTag, info.version) === true)
   const showUpdateBanner = updateAvailable && dismissed !== latestTag
 
   const value = useMemo<UpdateStatus>(
     () => ({
       info,
-      isAdmin,
       mode,
       locked: info?.update_check.locked ?? false,
       result,
@@ -145,8 +157,9 @@ export function UpdateStatusProvider({ children, fetchImpl, now = Date.now }: Up
       checkNow,
       setConsent,
       dismissUpdate,
+      enterAdminPage,
     }),
-    [info, isAdmin, mode, result, checking, updateAvailable, showUpdateBanner, saveError, checkNow, setConsent, dismissUpdate],
+    [info, mode, result, checking, updateAvailable, showUpdateBanner, saveError, checkNow, setConsent, dismissUpdate, enterAdminPage],
   )
 
   return <UpdateStatusContext.Provider value={value}>{children}</UpdateStatusContext.Provider>

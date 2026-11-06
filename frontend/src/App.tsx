@@ -12,7 +12,6 @@ import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { HowItWorks } from "@/pages/HowItWorks"
 import { AdminNavDot } from "@/components/update-check/AdminNavDot"
-import { UpdateConsentBanner } from "@/components/update-check/UpdateConsentBanner"
 import { UpdateStatusProvider } from "@/components/update-check/UpdateStatusProvider"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
 import { SpaceDetailLoadError } from "@/components/space-access/SpaceAccessChrome"
@@ -229,7 +228,6 @@ function WorkbenchApp() {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <UpdateConsentBanner />
         {currentView === "list" && (
           <SpaceList onSelectSpace={handleSelectSpace} onCreateSpace={handleNavCreate} />
         )}

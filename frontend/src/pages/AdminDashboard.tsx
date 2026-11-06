@@ -4,6 +4,7 @@
  */
 import { Suspense, lazy, useEffect, useState } from "react"
 import { UpdateAvailableBanner } from "@/components/update-check/UpdateAvailableBanner"
+import { UpdateConsentBanner } from "@/components/update-check/UpdateConsentBanner"
 import { useUpdateStatus } from "@/components/update-check/update-status-context"
 import {
   TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw,
@@ -270,7 +271,9 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
   // we open watch's own SpaceDetail in-place (not workbench's). The watch surface
   // is read-only observability — its detail page has Overview/Usage/Cost/Resources/Evals.
   const [watchDrillId, setWatchDrillId] = useState<string | null>(null)
-  const { info } = useUpdateStatus()
+  const { info, enterAdminPage } = useUpdateStatus()
+  // The release check lives on the Admin pages (spec 12): register while this view is open.
+  useEffect(() => enterAdminPage(), [enterAdminPage])
 
   return (
     <div className="space-y-6">
@@ -286,6 +289,7 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
         </div>
       </div>
 
+      <UpdateConsentBanner />
       <UpdateAvailableBanner />
 
       {/* Sub-tabs */}

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -32,7 +32,7 @@ function Probe() {
   const s = useUpdateStatus()
   return (
     <div>
-      <pre data-testid="s">{JSON.stringify({ mode: s.mode, isAdmin: s.isAdmin, updateAvailable: s.updateAvailable, showUpdateBanner: s.showUpdateBanner, saveError: s.saveError, latest: s.result?.latest?.tag ?? null })}</pre>
+      <pre data-testid="s">{JSON.stringify({ mode: s.mode, updateAvailable: s.updateAvailable, showUpdateBanner: s.showUpdateBanner, saveError: s.saveError, latest: s.result?.latest?.tag ?? null })}</pre>
       <button data-act="check" onClick={() => { void s.checkNow() }} />
       <button data-act="on" onClick={() => { void s.setConsent(true) }} />
       <button data-act="dismiss" onClick={() => s.dismissUpdate()} />
@@ -40,9 +40,19 @@ function Probe() {
   )
 }
 
+// Stands in for the Admin view: registers itself while mounted (spec 12).
+function AdminPage() {
+  const { enterAdminPage } = useUpdateStatus()
+  useEffect(() => enterAdminPage(), [enterAdminPage])
+  return null
+}
+
 let host: HTMLDivElement
 let root: Root
+let clock = NOW
 beforeEach(() => {
+  clock = NOW
+  api.getCurrentUser.mockClear()
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   localStorage.clear(); resetMemoryStorageForTests()
   api.getCurrentUser.mockResolvedValue({ email: 'a@example.com', is_admin: true, groups: ['admins'], auth_source: 'obo_headers' })
@@ -57,17 +67,35 @@ async function flush() { for (let i = 0; i < 6; i++) await act(async () => {}) }
 const state = () => JSON.parse(host.querySelector('[data-testid="s"]')!.textContent!)
 const click = async (act_: string) => { await act(async () => { host.querySelector(`[data-act="${act_}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })) }) }
 
-async function renderWith(fetchImpl: typeof fetch) {
-  await act(async () => root.render(<UpdateStatusProvider fetchImpl={fetchImpl} now={() => NOW}><Probe /></UpdateStatusProvider>))
+async function renderWith(fetchImpl: typeof fetch, onAdminPage = true) {
+  await act(async () => root.render(
+    <UpdateStatusProvider fetchImpl={fetchImpl} now={() => clock}><Probe />{onAdminPage && <AdminPage />}</UpdateStatusProvider>,
+  ))
   await flush()
 }
 
-it('non-admins never call GitHub', async () => {
-  api.getCurrentUser.mockResolvedValue({ email: 'u@example.com', is_admin: false, groups: [], auth_source: 'obo_headers' })
+// Spec 12: no admin gate; GitHub is called only while an Admin page is open.
+it('no GitHub request until an Admin page is open, for any user', async () => {
   const fetchMock = vi.fn(async () => okResponse(RELEASE))
-  await renderWith(fetchMock as unknown as typeof fetch)
+  await renderWith(fetchMock as unknown as typeof fetch, false)
   expect(fetchMock).not.toHaveBeenCalled()
-  expect(state()).toMatchObject({ isAdmin: false, updateAvailable: false })
+  await renderWith(fetchMock as unknown as typeof fetch, true)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(api.getCurrentUser).not.toHaveBeenCalled()
+  expect(state()).toMatchObject({ updateAvailable: true, latest: '0.2.2' })
+})
+
+it('leaving the Admin pages stops refocus checks', async () => {
+  const fetchMock = vi.fn(async () => okResponse(RELEASE))
+  await renderWith(fetchMock as unknown as typeof fetch, true)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  await renderWith(fetchMock as unknown as typeof fetch, false)
+  clock = NOW + 25 * 3_600_000
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+  await flush()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  await renderWith(fetchMock as unknown as typeof fetch, true)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
 })
 
 it('an undecided setting asks and does not call GitHub', async () => {
@@ -78,7 +106,7 @@ it('an undecided setting asks and does not call GitHub', async () => {
   expect(state().mode).toBe('ask')
 })
 
-it('admins see a newer release once and can dismiss the banner for that tag', async () => {
+it('an Admin page shows a newer release once and can dismiss the banner for that tag', async () => {
   const fetchMock = vi.fn(async () => okResponse(RELEASE))
   await renderWith(fetchMock as unknown as typeof fetch)
   expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -88,10 +116,10 @@ it('admins see a newer release once and can dismiss the banner for that tag', as
   expect(localStorage.getItem('gwb.updateCheck.dismissed')).toBe('0.2.2')
 })
 
-it('a fresh cached result is reused without a request', async () => {
+it('the nav dot uses this browser\'s cached result on other pages', async () => {
   localStorage.setItem('gwb.updateCheck.result', JSON.stringify({ checked_at: NOW - 3_600_000, ok: true, latest: { tag: '0.2.2', name: 'x', html_url: RELEASE.html_url, published_at: '' }, last_success_at: NOW - 3_600_000 }))
   const fetchMock = vi.fn(async () => okResponse(RELEASE))
-  await renderWith(fetchMock as unknown as typeof fetch)
+  await renderWith(fetchMock as unknown as typeof fetch, false)
   expect(fetchMock).not.toHaveBeenCalled()
   expect(state().updateAvailable).toBe(true)
 })

@@ -16,7 +16,7 @@ export const COPY = {
   dismiss: "Dismiss",
   upToDate: "Up to date",
   checkOff: "Release check is off",
-  askPending: "Not decided yet. Use the banner at the top of the page, or turn it on here.",
+  askPending: "Not decided yet. Use the banner above, or turn it on here.",
   cantReach: "Couldn't reach GitHub",
   networksBlock: "Some networks block api.github.com.",
   settingError: "Couldn't load the release-check setting.",

@@ -5,7 +5,6 @@ import type { AppVersionInfo } from "@/types"
 
 export interface UpdateStatus {
   info: AppVersionInfo | null
-  isAdmin: boolean
   mode: Mode
   locked: boolean
   result: CheckResult | null
@@ -16,13 +15,14 @@ export interface UpdateStatus {
   checkNow: () => Promise<void>
   setConsent: (enabled: boolean) => Promise<void>
   dismissUpdate: () => void
+  /** Admin pages call this while mounted; the GitHub check only runs while one is open (spec 12). */
+  enterAdminPage: () => () => void
 }
 
 export const SAVE_FAILED_MESSAGE = "Couldn't save, try again."
 
 export const EMPTY_STATUS: UpdateStatus = {
   info: null,
-  isAdmin: false,
   mode: "off",
   locked: false,
   result: null,
@@ -33,6 +33,7 @@ export const EMPTY_STATUS: UpdateStatus = {
   checkNow: async () => {},
   setConsent: async () => {},
   dismissUpdate: () => {},
+  enterAdminPage: () => () => {},
 }
 
 export const UpdateStatusContext = createContext<UpdateStatus>(EMPTY_STATUS)

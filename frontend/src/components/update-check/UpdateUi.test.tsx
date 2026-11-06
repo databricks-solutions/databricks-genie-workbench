@@ -40,9 +40,9 @@ async function show(ui: React.ReactNode, status: Partial<UpdateStatus>) {
 const text = () => host.textContent ?? ''
 const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label)
 
-it('consent banner asks admins once, with Turn on as the main choice', async () => {
+it('consent banner asks any user once when undecided, with Turn on as the main choice', async () => {
   const setConsent = vi.fn(async () => {})
-  await show(<UpdateConsentBanner />, { isAdmin: true, mode: 'ask', info: info({ mode: 'ask', source: 'none' }), setConsent })
+  await show(<UpdateConsentBanner />, { mode: 'ask', info: info({ mode: 'ask', source: 'none' }), setConsent })
   expect(text()).toContain(COPY.consentText)
   await act(async () => { button('Turn on')!.click() })
   expect(setConsent).toHaveBeenCalledWith(true)
@@ -50,16 +50,16 @@ it('consent banner asks admins once, with Turn on as the main choice', async () 
   expect(setConsent).toHaveBeenCalledWith(false)
 })
 
-it('consent banner is hidden for non-admins and once decided', async () => {
-  await show(<UpdateConsentBanner />, { isAdmin: false, mode: 'ask', info: info({ mode: 'ask', source: 'none' }) })
+it('consent banner is hidden once decided', async () => {
+  await show(<UpdateConsentBanner />, { mode: 'on', info: info() })
   expect(text()).toBe('')
-  await show(<UpdateConsentBanner />, { isAdmin: true, mode: 'on', info: info() })
+  await show(<UpdateConsentBanner />, { mode: 'off', info: info({ mode: 'off' }) })
   expect(text()).toBe('')
 })
 
 it('update banner names both versions, links release notes and upgrade steps, and dismisses', async () => {
   const dismissUpdate = vi.fn()
-  await show(<UpdateAvailableBanner />, { isAdmin: true, info: info(), showUpdateBanner: true, updateAvailable: true, result: { checked_at: NOW, ok: true, latest: LATEST, last_success_at: NOW }, dismissUpdate })
+  await show(<UpdateAvailableBanner />, { info: info(), showUpdateBanner: true, updateAvailable: true, result: { checked_at: NOW, ok: true, latest: LATEST, last_success_at: NOW }, dismissUpdate })
   expect(text()).toContain("Genie Workbench 0.2.2 is available (you're on 0.2.1).")
   const hrefs = [...host.querySelectorAll('a')].map((a) => a.getAttribute('href'))
   expect(hrefs).toEqual([LATEST.html_url, DOCS_UPGRADE_URL])
@@ -74,26 +74,27 @@ it('nav dot shows only when an update is available', async () => {
   expect(host.querySelector('[aria-label="Update available"]')).toBeNull()
 })
 
-it('version card shows build details to everyone and update rows only to admins', async () => {
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: false, info: info({}, { commit: null }) })
+it('version card shows build details, the status line, and the toggle to any user', async () => {
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info({}, { commit: null }), result: { checked_at: NOW - 2 * HOUR, ok: true, latest: { ...LATEST, tag: '0.2.1' }, last_success_at: NOW - 2 * HOUR } })
   expect(text()).toContain('0.2.1')
   expect(text()).toContain(COPY.notRecorded)
   expect(text()).toContain('CLI install')
-  expect(text()).not.toContain(COPY.upToDate)
-  expect(button('Check now')).toBeUndefined()
+  expect(text()).toContain(COPY.upToDate)
+  expect(button('Check now')).toBeDefined()
+  expect(button('Turn off')).toBeDefined()
 })
 
 it('version card reports up to date, update available, and blocked networks', async () => {
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'on', info: info(), result: { checked_at: NOW - 2 * HOUR, ok: true, latest: { ...LATEST, tag: '0.2.1' }, last_success_at: NOW - 2 * HOUR } })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info(), result: { checked_at: NOW - 2 * HOUR, ok: true, latest: { ...LATEST, tag: '0.2.1' }, last_success_at: NOW - 2 * HOUR } })
   expect(text()).toContain(`${COPY.upToDate} · checked 2h ago`)
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'on', updateAvailable: true, info: info(), result: { checked_at: NOW - 2 * HOUR, ok: true, latest: LATEST, last_success_at: NOW - 2 * HOUR } })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', updateAvailable: true, info: info(), result: { checked_at: NOW - 2 * HOUR, ok: true, latest: LATEST, last_success_at: NOW - 2 * HOUR } })
   expect(text()).toMatch(/Latest release: 0\.2\.2, published .+ · checked 2h ago/)
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'on', info: info(), result: { checked_at: NOW, ok: false, latest: null, last_success_at: NOW - 30 * HOUR, error: 'GitHub returned 403' } })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info(), result: { checked_at: NOW, ok: false, latest: null, last_success_at: NOW - 30 * HOUR, error: 'GitHub returned 403' } })
   expect(text()).toContain(`${COPY.cantReach} (last successful check: 30h ago). ${COPY.networksBlock}`)
 })
 
 it('version card shows the lock hint instead of a toggle when set at install', async () => {
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'off', locked: true, info: info({ mode: 'off', source: 'install', locked: true }) })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'off', locked: true, info: info({ mode: 'off', source: 'install', locked: true }) })
   expect(text()).toContain(COPY.checkOff)
   expect(text()).toContain(COPY.lockedHint)
   expect(button('Turn on')).toBeUndefined()
@@ -101,15 +102,15 @@ it('version card shows the lock hint instead of a toggle when set at install', a
 
 it('version card offers a toggle when not locked and reports setting errors', async () => {
   const setConsent = vi.fn(async () => {})
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'on', info: info(), setConsent })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info(), setConsent })
   await act(async () => { button('Turn off')!.click() })
   expect(setConsent).toHaveBeenCalledWith(false)
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'off', info: info({ mode: 'off', source: 'error' }) })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'off', info: info({ mode: 'off', source: 'error' }) })
   expect(text()).toContain(COPY.settingError)
 })
 
 it('an unknown installed version never claims an update', async () => {
-  await show(<AppVersionCard now={() => NOW} />, { isAdmin: true, mode: 'on', info: info({}, { version: 'unknown', release_url: null }), result: { checked_at: NOW, ok: true, latest: LATEST, last_success_at: NOW } })
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info({}, { version: 'unknown', release_url: null }), result: { checked_at: NOW, ok: true, latest: LATEST, last_success_at: NOW } })
   expect(text()).toContain('Latest release: 0.2.2')
   expect(text()).not.toContain(COPY.upToDate)
 })

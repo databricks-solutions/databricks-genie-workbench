@@ -12,6 +12,9 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/api')>()), ...api }))
 
+import { readFileSync } from 'node:fs'
+
+import { COPY } from '@/components/update-check/copy'
 import { EMPTY_STATUS, UpdateStatusContext } from '@/components/update-check/update-status-context'
 import { AdminDashboard } from './AdminDashboard'
 
@@ -44,4 +47,21 @@ it('the header shows the installed app version', async () => {
   const status = { ...EMPTY_STATUS, info: { version: '0.2.1', commit: null, deployed_at: null, install_method: null, releases_repo: 'r', release_url: null, update_check: { mode: 'off' as const, source: 'none' as const, locked: false, persisted: false } } }
   await act(async () => root.render(<UpdateStatusContext.Provider value={status}><AdminDashboard onSelectSpace={() => {}} /></UpdateStatusContext.Provider>))
   expect(host.textContent ?? '').toContain('v0.2.1')
+})
+
+// Spec 12: the release check lives on the Admin pages, for any user.
+it('the Admin view asks the one-time question and opens the release check', async () => {
+  const enterAdminPage = vi.fn(() => () => {})
+  const status = {
+    ...EMPTY_STATUS, mode: 'ask' as const, enterAdminPage,
+    info: { version: '0.2.1', commit: null, deployed_at: null, install_method: null, releases_repo: 'r', release_url: null, update_check: { mode: 'ask' as const, source: 'none' as const, locked: false, persisted: true } },
+  }
+  await act(async () => root.render(<UpdateStatusContext.Provider value={status}><AdminDashboard onSelectSpace={() => {}} /></UpdateStatusContext.Provider>))
+  expect(host.textContent ?? '').toContain(COPY.consentText)
+  expect(enterAdminPage).toHaveBeenCalledTimes(1)
+})
+
+it('pages outside the Admin view never show the release-check question', () => {
+  const app = readFileSync('src/App.tsx', 'utf8')
+  expect(app).not.toContain('UpdateConsentBanner')
 })
