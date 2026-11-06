@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import * as api from '@/watch/lib/api'
 import type { HealthStatus } from '@/watch/types/api'
+import { AppVersionCard } from '@/components/update-check/AppVersionCard'
 
 export function Settings() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
@@ -32,8 +33,10 @@ export function Settings() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted">App health, eval mappings, and cache controls.</p>
+        <p className="text-sm text-muted">App version, health, eval mappings, and cache controls.</p>
       </div>
+
+      <AppVersionCard />
 
       <Card className="p-4">
         <h2 className="mb-3 text-sm font-medium uppercase text-muted">Health</h2>

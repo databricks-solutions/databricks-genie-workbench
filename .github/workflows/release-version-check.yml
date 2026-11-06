@@ -1,0 +1,24 @@
+name: Release version check
+
+# A published release must match the repo-root VERSION file, because the app
+# reports VERSION to admins and compares it with the latest release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  version-matches-tag:
+    name: VERSION matches the release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Compare tag and VERSION
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: bash scripts/check_release_version.sh "$TAG"

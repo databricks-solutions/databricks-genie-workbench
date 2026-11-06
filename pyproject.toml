@@ -1,5 +1,6 @@
 [project]
 name = "genie-workbench"
+# Not read at runtime. The app's version lives in the repo-root VERSION file.
 version = "0.1.0"
 description = "Unified Databricks Genie Agent management platform"
 requires-python = ">=3.11"

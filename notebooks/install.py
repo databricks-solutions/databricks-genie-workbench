@@ -11,6 +11,8 @@
 # MAGIC **Required workspace previews/settings:** Databricks Apps and **Databricks Apps On-Behalf-of-User authorization** (Public Preview) must be enabled. Workspace admins manage preview toggles from the Databricks **Previews** page.
 # MAGIC
 # MAGIC **Optional:** Lakebase Autoscaling is recommended for persistent app state. Set `lakebase_mode` to `skip` only when ephemeral in-memory state is acceptable.
+# MAGIC
+# MAGIC **Upgrading?** Click **Pull** on this Git folder. If Pull reports a conflict in `notebooks/install.py`, discard your changes to `notebooks/install.py` and Pull again (Databricks edits this notebook when it runs, so discarding loses nothing). Then **Run all** with the widget values you installed with.
 
 # COMMAND ----------
 # MAGIC %pip install databricks-sdk==0.117.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
@@ -64,6 +66,10 @@ dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
 dbutils.widgets.text("lakebase_project_name", "")
 dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
+# release_check (daily GitHub release check): auto = on for a new app; for an existing
+# app keep the previous answer, or ask users on the Admin tab if there is none.
+# yes / no set it explicitly.
+dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])
 
 # COMMAND ----------
 # MAGIC %md
@@ -129,14 +135,19 @@ if lakebase_mode == "skip":
     lakebase_instance = None
 elif explicit_lakebase:
     lakebase_instance = explicit_lakebase
-else:
+elif lakebase_mode == "existing":
     lakebase_instance = f"{app_name}-lakebase"
+else:
+    # create + blank: the installer reuses the existing app's project, or uses
+    # <app_name>-lakebase for a new app.
+    lakebase_instance = None
 
 cfg = InstallConfig(
     app_name=app_name,
     catalog=dbutils.widgets.get("catalog").strip(),
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
     llm_route=dbutils.widgets.get("llm_route").strip(),
+    release_check=dbutils.widgets.get("release_check").strip(),
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,

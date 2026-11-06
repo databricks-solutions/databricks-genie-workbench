@@ -16,10 +16,11 @@
 #   GENIE_BYOK_ENABLED       (optional)  true | false (gateway only)  [default: false]
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
+#   GENIE_UPDATE_CHECK       (optional)  true | false | empty (ask users on the Admin tab) [default: empty]
 #
 # After sourcing, the following variables are available:
 #   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL, LLM_ROUTE,
-#   BYOK_ENABLED, MLFLOW_EXPERIMENT_ID
+#   BYOK_ENABLED, MLFLOW_EXPERIMENT_ID, UPDATE_CHECK
 # ---------------------------------------------------------------------------
 
 # ── Load .env.deploy if present (in project root) ─────────────────────────
@@ -43,6 +44,12 @@ LLM_ROUTE="$(echo "${GENIE_LLM_ROUTE:-gateway}" | tr '[:upper:]' '[:lower:]')"
 BYOK_ENABLED="$(echo "${GENIE_BYOK_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
+UPDATE_CHECK_RAW="${GENIE_UPDATE_CHECK:-}"
+case "$(echo "$UPDATE_CHECK_RAW" | tr '[:upper:]' '[:lower:]')" in
+    true|yes|y|1)  UPDATE_CHECK="true" ;;
+    false|no|n|0)  UPDATE_CHECK="false" ;;
+    *)             UPDATE_CHECK="" ;;
+esac
 
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
@@ -74,6 +81,10 @@ if [ "$BYOK_ENABLED" != "true" ] && [ "$BYOK_ENABLED" != "false" ]; then
     exit 1
 fi
 
+if [ -n "$UPDATE_CHECK_RAW" ] && [ -z "$UPDATE_CHECK" ]; then
+    echo "WARNING: GENIE_UPDATE_CHECK='$UPDATE_CHECK_RAW' is not true or false; users will be asked on the Admin tab." >&2
+fi
+
 # ── Print config summary ─────────────────────────────────────────────────
 _print_config() {
     echo "  ┌─ Configuration ─────────────────────────────────────────┐"
@@ -86,5 +97,6 @@ _print_config() {
     echo "  │  LLM route:    $LLM_ROUTE (BYOK: $BYOK_ENABLED)"
     echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
     echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
+    echo "  │  Release check: ${UPDATE_CHECK:-ask users on the Admin tab}"
     echo "  └─────────────────────────────────────────────────────────┘"
 }
