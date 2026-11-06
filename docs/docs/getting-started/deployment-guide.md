@@ -196,7 +196,7 @@ Genie Workbench can tell you when a newer release is available. The check lives 
 
 **Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `release_check` widget. A `true` or `false` chosen at install is locked: Admin -> Settings shows the state, but it cannot be changed in the app.
 
-**Upgrading from an earlier version.** If no choice was recorded at install, the first person to open the Admin tab sees a one-time banner and can turn the check on or decline. Anyone can change it later in Admin -> Settings. With Lakebase, the answer applies to the whole app. Without Lakebase, each browser remembers its own answer.
+**Upgrading from an earlier version.** If no choice was recorded at install, anyone who opens the Admin tab sees a one-time banner until someone answers (turn the check on, or decline). With Lakebase, that answer applies to everyone using the app, and the banner says so; anyone can change it later in Admin -> Settings. Without Lakebase, each browser keeps its own answer.
 
 **Turning it off later.** Set `GENIE_UPDATE_CHECK=false` in `.env.deploy` and run `./scripts/deploy.sh --update`, or set the notebook `release_check` widget to `no` and rerun the installer.
 

@@ -2000,3 +2000,10 @@ def test_release_check_text_never_says_admins():
             offenders.append(f"describe_update_check({value!r})")
     assert offenders == []
 
+
+
+def test_release_check_docs_say_the_answer_applies_to_everyone():
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("\n## Release update check\n", 1)[1].split("\n## ", 1)[0]
+    assert "anyone who opens the Admin tab sees a one-time banner until someone answers" in section
+    assert "the first person" not in section

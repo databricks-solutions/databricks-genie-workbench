@@ -114,3 +114,17 @@ it('an unknown installed version never claims an update', async () => {
   expect(text()).toContain('Latest release: 0.2.2')
   expect(text()).not.toContain(COPY.upToDate)
 })
+
+// Final review (spec 12): anyone can answer, so say whose answer it is.
+it('the question and the toggle say whether the answer applies to everyone or this browser', async () => {
+  expect(COPY.appliesToEveryone).toBe('Your answer applies to everyone using this app.')
+  expect(COPY.appliesToThisBrowser).toBe('Your answer applies only to this browser.')
+  await show(<UpdateConsentBanner />, { mode: 'ask', info: info({ mode: 'ask', source: 'none', persisted: true }) })
+  expect(text()).toContain(COPY.appliesToEveryone)
+  await show(<UpdateConsentBanner />, { mode: 'ask', info: info({ mode: 'ask', source: 'none', persisted: false }) })
+  expect(text()).toContain(COPY.appliesToThisBrowser)
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'on', info: info() })
+  expect(text()).toContain(COPY.appliesToEveryone)
+  await show(<AppVersionCard now={() => NOW} />, { mode: 'off', locked: true, info: info({ mode: 'off', source: 'install', locked: true }) })
+  expect(text()).not.toContain(COPY.appliesToEveryone)
+})

@@ -59,6 +59,11 @@ export function AppVersionCard({ now = Date.now }: { now?: () => number }) {
             </Button>
           )}
         </div>
+        {canToggle && (
+          <p className="text-xs text-muted">
+            {info.update_check.persisted ? COPY.appliesToEveryone : COPY.appliesToThisBrowser}
+          </p>
+        )}
         {s.locked && <p className="text-xs text-muted">{COPY.lockedHint}</p>}
         {s.saveError && <p className="text-xs text-red-400">{s.saveError}</p>}
       </div>

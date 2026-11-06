@@ -6,6 +6,8 @@ export const DOCS_UPGRADE_URL = `${DOCS_BASE}#upgrading-an-existing-install`
 export const COPY = {
   consentText:
     "New: Genie Workbench can check GitHub once a day for new releases. The check runs in your browser and sends no workspace data.",
+  appliesToEveryone: "Your answer applies to everyone using this app.",
+  appliesToThisBrowser: "Your answer applies only to this browser.",
   consentOn: "Turn on",
   consentOff: "No thanks",
   learnMore: "Learn more",

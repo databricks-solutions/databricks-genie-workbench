@@ -14,6 +14,7 @@ export function UpdateConsentBanner() {
     >
       <span className="min-w-[16rem] flex-1 text-primary">
         {COPY.consentText}{" "}
+        {s.info.update_check.persisted ? COPY.appliesToEveryone : COPY.appliesToThisBrowser}{" "}
         <a href={DOCS_RELEASE_CHECK_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
           {COPY.learnMore}
         </a>
