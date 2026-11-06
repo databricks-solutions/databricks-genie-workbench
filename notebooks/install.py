@@ -67,7 +67,7 @@ dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip
 dbutils.widgets.text("lakebase_project_name", "")
 dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
 # release_check (daily GitHub release check): auto = on for a new app; for an existing
-# app keep the previous answer, or ask workspace admins in the app if there is none.
+# app keep the previous answer, or ask users on the Admin tab if there is none.
 # yes / no set it explicitly.
 dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])
 

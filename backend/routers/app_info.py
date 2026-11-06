@@ -1,20 +1,19 @@
-"""App version and the daily release-check setting (spec 5.4 to 5.6).
+"""App version and the daily release-check setting (spec 5.4 to 5.6, 12).
 
-The app server never calls the internet. The release check runs in workspace
-admins' browsers; this router only reports the installed version and stores
-the admins' answer.
+The app server never calls the internet. The release check runs in the browser
+of whoever has the Admin tab open; this router only reports the installed
+version and stores the answer.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from backend.app_version import RELEASES_REPO, get_build_info, install_time_update_check, release_url
 from backend.models import AppVersionResponse, UpdateCheckRequest, UpdateCheckState
 from backend.services import lakebase
-from backend.watch._auth import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin")
@@ -72,7 +71,9 @@ async def get_app_version() -> AppVersionResponse:
     )
 
 
-@router.put("/update-check", dependencies=[Depends(require_admin)])
+# Any signed-in user may answer (spec 12): Databricks Apps forwards no groups header,
+# and Genie Workbench has no admin role.
+@router.put("/update-check")
 async def put_update_check(body: UpdateCheckRequest, request: Request) -> UpdateCheckState:
     if install_time_update_check() is not None:
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL)

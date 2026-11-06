@@ -86,10 +86,16 @@ def test_a_lakebase_read_error_fails_closed_without_leaking(client, store, caplo
     assert "zq_secret" not in response.text and "zq_secret" not in caplog.text
 
 
-def test_non_admins_cannot_change_the_setting(client, store):
-    response = client.put("/api/admin/update-check", json={"enabled": True}, headers=NON_ADMIN)
-    assert response.status_code == 403
-    assert store["writes"] == []
+# Spec 12: there is no admin gate. Databricks Apps forwards no groups header, so any
+# signed-in user (here: email and user id only, as Apps sends them) can save the answer.
+APPS_USER = {"X-Forwarded-Email": "user@example.com", "X-Forwarded-User": "2"}
+
+
+@pytest.mark.parametrize("headers", [APPS_USER, NON_ADMIN])
+def test_any_signed_in_user_can_save_the_setting(client, store, headers):
+    response = client.put("/api/admin/update-check", json={"enabled": True}, headers=headers)
+    assert response.status_code == 200
+    assert store["writes"] == [("update_check", "on", "user@example.com")]
 
 
 def test_an_install_time_answer_locks_the_setting(client, store, monkeypatch):

@@ -1,4 +1,5 @@
 import io
+import re
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1959,3 +1960,43 @@ def test_upgrade_is_pull_then_run_all_with_the_same_values():
     notebook = Path("notebooks/install.py").read_text()
     assert 'dbutils.widgets.dropdown("upgrade"' not in notebook
     assert discard in notebook
+
+
+# Spec 12.4: a Git folder root reports DIRECTORY (its object_id is the repo ID).
+def test_notebook_build_commit_reads_a_git_folder_reported_as_a_directory():
+    w = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="DIRECTORY"), object_id=7)
+        ),
+        repos=SimpleNamespace(get=lambda repo_id: SimpleNamespace(head_commit_id="c8397477e69fcf88112e")),
+    )
+    assert notebook_build_commit(w, "/Workspace/Users/me/gwb-vcheck-branch") == "c8397477e69f"
+
+
+# Spec 12.2: no admin gate, so release-check text never tells people "admins" decide.
+_RELEASE_CHECK_LINE = re.compile(
+    r"release.check|update.check|GENIE_UPDATE_CHECK|UPDATE_CHECK_ENABLED|api\.github\.com|asked in the app|Check GitHub",
+    re.I,
+)
+_ADMINS = re.compile(r"(?<![/\w-])admins?\b(?!\**\s*(?:tab|pages|view|dashboard|->))", re.I)
+
+
+def test_release_check_text_never_says_admins():
+    files = [
+        "scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-config.sh", ".env.deploy.template",
+        "notebooks/install.py", "app.yaml", "scripts/deploy_lib/install.py",
+        "docs/docs/getting-started/deployment-guide.md", "docs/docs/reference/environment-variables.md",
+    ]
+    offenders = []
+    for name in files:
+        for number, line in enumerate(Path(name).read_text().splitlines(), 1):
+            if _RELEASE_CHECK_LINE.search(line) and _ADMINS.search(line):
+                offenders.append(f"{name}:{number}: {line.strip()[:120]}")
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("\n## Release update check\n", 1)[1].split("\n## ", 1)[0]
+    offenders += [f"guide section: {line.strip()[:120]}" for line in section.splitlines() if _ADMINS.search(line)]
+    for value in ("", "true", "false"):
+        if _ADMINS.search(describe_update_check(value)):
+            offenders.append(f"describe_update_check({value!r})")
+    assert offenders == []
+

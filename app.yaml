@@ -115,10 +115,10 @@ env:
   # App version + daily release check (see docs: Release update check).
   # The version itself comes from the repo-root VERSION file; the installers
   # stamp the build details below. UPDATE_CHECK_ENABLED decides whether
-  # workspace admins' browsers check GitHub once a day for a newer release (the
+  # browsers on the Admin tab check GitHub once a day for a newer release (the
   # app server never calls the internet): "true" / "false" = chosen at install
-  # (locked); empty = admins are asked in the app. Set by install.sh /
-  # .env.deploy GENIE_UPDATE_CHECK or the notebook update_check widget.
+  # (locked); empty = users are asked on the Admin tab. Set by install.sh /
+  # .env.deploy GENIE_UPDATE_CHECK or the notebook release_check widget.
   # Consumed by backend/app_version.py.
   # ---------------------------------------------------------------------------
   - name: UPDATE_CHECK_ENABLED

@@ -524,9 +524,9 @@ fi
 
 # ── Daily release check ───────────────────────────────────────────────────
 echo ""
-_info "Genie Workbench can check GitHub once a day for new releases so admins know"
-_info "when to upgrade. The check runs in workspace admins' browsers (the app server"
-_info "never calls the internet) and sends no workspace data. You can change this"
+_info "Genie Workbench can check GitHub once a day for new releases so you know when"
+_info "to upgrade. The check runs in the browser of whoever opens the Admin tab (the"
+_info "app server never calls the internet) and sends no workspace data. You can change this"
 _info "later with GENIE_UPDATE_CHECK in .env.deploy."
 echo ""
 _prompt_yn ENABLE_UPDATE_CHECK "Check GitHub daily for new Genie Workbench releases?" "Y"

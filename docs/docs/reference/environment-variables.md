@@ -30,7 +30,7 @@ On the gateway route, `databricks-<name>` endpoints are called as `system.ai.<na
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `UPDATE_CHECK_ENABLED` | `__UPDATE_CHECK_ENABLED__` | Daily [release update check](/docs/getting-started/deployment-guide#release-update-check). `true` / `false` = chosen at install (locked in the app); empty = workspace admins are asked in the app. Set from `GENIE_UPDATE_CHECK` or the notebook `release_check` widget |
+| `UPDATE_CHECK_ENABLED` | `__UPDATE_CHECK_ENABLED__` | Daily [release update check](/docs/getting-started/deployment-guide#release-update-check). `true` / `false` = chosen at install (locked in the app); empty = users are asked on the Admin tab. Set from `GENIE_UPDATE_CHECK` or the notebook `release_check` widget |
 | `GWB_BUILD_COMMIT` | `__GWB_BUILD_COMMIT__` | Commit the app was deployed from (`-dirty` when tracked files had local changes); empty for zip downloads. Shown in Admin -> Settings |
 | `GWB_DEPLOYED_AT` | `__GWB_DEPLOYED_AT__` | UTC time of the deploy, stamped by the installer |
 | `GWB_INSTALL_METHOD` | `__GWB_INSTALL_METHOD__` | `cli` (`deploy.sh`) or `notebook` (`notebooks/install.py`) |
@@ -88,7 +88,7 @@ On the recommended notebook path there is no `.env.deploy` file. The equivalent 
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM model for analysis; fills `LLM_MODEL` |
 | `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` or `classic`; fills `GENIE_LLM_ROUTE` and the job's `genie_llm_route` default |
 | `GENIE_BYOK_ENABLED` | No | `false` | `true` or `false`; fills `GENIE_BYOK_ENABLED` |
-| `GENIE_UPDATE_CHECK` | No | empty | `true` or `false` for the daily release check; fills `UPDATE_CHECK_ENABLED`. Empty: workspace admins are asked in the app. Set by `install.sh` |
+| `GENIE_UPDATE_CHECK` | No | empty | `true` or `false` for the daily release check; fills `UPDATE_CHECK_ENABLED`. Empty: users are asked on the Admin tab. Set by `install.sh` |
 | `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
 
 ## How Variables Flow

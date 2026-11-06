@@ -73,8 +73,8 @@ def resolve_update_check(choice: str, *, app_existed: bool, previous_value: str 
     """UPDATE_CHECK_ENABLED for a notebook install (spec 5.4).
 
     yes/no are explicit. auto turns the check on for a new app; for an existing
-    app it keeps the previous decided value, or leaves it empty (ask admins in
-    the app) so a rerun with default widgets never silently opts in.
+    app it keeps the previous decided value, or leaves it empty (ask users on
+    the Admin tab) so a rerun with default widgets never silently opts in.
     """
     if choice == "yes":
         return "true"
@@ -137,10 +137,10 @@ def prior_app_yaml_text(w, app: dict[str, Any] | None, cfg: InstallConfig, deplo
 
 def describe_update_check(value: str) -> str:
     if value == "true":
-        return "Daily release check: ON (runs in admins' browsers against api.github.com)."
+        return "Daily release check: ON (runs in users' browsers on the Admin tab against api.github.com)."
     if value == "false":
         return "Daily release check: OFF."
-    return "Daily release check: ASK (workspace admins will be asked in the app)."
+    return "Daily release check: ASK (users will be asked on the Admin tab)."
 
 
 _PLACEHOLDER_RE = re.compile(r"^__[A-Z0-9_]+__$")
@@ -222,9 +222,10 @@ def notebook_build_commit(w, repo_root: str | None) -> str:
     if not repo_root:
         return ""
     try:
+        # A Git folder root reports object_type DIRECTORY; its object_id is the repo ID,
+        # so ask the Repos API and treat any error (a plain folder) as "not recorded".
         info = w.workspace.get_status(workspace_api_path(repo_root))
-        object_type = getattr(info.object_type, "value", info.object_type)
-        if object_type != "REPO" or not info.object_id:
+        if not info.object_id:
             return ""
         head = w.repos.get(info.object_id).head_commit_id or ""
     except Exception:  # noqa: BLE001 - build info is best effort

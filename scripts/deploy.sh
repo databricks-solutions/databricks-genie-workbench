@@ -538,9 +538,9 @@ databricks workspace import "$WS_PATH/app.yaml" \
 echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, LLM_ROUTE=$LLM_ROUTE, BYOK=$BYOK_ENABLED, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>}, VC_OBSERVE=${VC_WS_ID:+enabled}${VC_WS_ID:-fail-closed}@${CATALOG}.${GSO_SCHEMA})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 case "$UPDATE_CHECK" in
-    true)  echo "  ℹ Daily release check: ON (set at install; runs in admins' browsers against api.github.com)" ;;
+    true)  echo "  ℹ Daily release check: ON (set at install; runs in users' browsers on the Admin tab against api.github.com)" ;;
     false) echo "  ℹ Daily release check: OFF (set at install)" ;;
-    *)     echo "  ℹ Daily release check: ASK (admins will be asked in the app). Set GENIE_UPDATE_CHECK=true or false in .env.deploy to decide now." ;;
+    *)     echo "  ℹ Daily release check: ASK (users will be asked on the Admin tab). Set GENIE_UPDATE_CHECK=true or false in .env.deploy to decide now." ;;
 esac
 
 # Ensure app compute is running before deploying

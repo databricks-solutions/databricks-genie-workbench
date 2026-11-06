@@ -82,7 +82,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_mode` | Yes | `create`, `existing`, or `skip` |
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; for `create`, blank keeps the project an existing app already uses, or `<app-name>-lakebase` for a new app. Leave blank when `lakebase_mode` is `skip` |
 | `llm_route` | No | `gateway` (default) sends LLM calls through Unity AI Gateway; `classic` calls the serving endpoints directly. There is no automatic fallback between them |
-| `release_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks workspace admins in the app if there was none. `yes` / `no` set it explicitly |
+| `release_check` | No | `auto` (default) turns the [daily release check](#release-update-check) on for a new app; for an existing app it keeps the previous answer, or asks users on the Admin tab if there was none. `yes` / `no` set it explicitly |
 
 :::note
 The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
@@ -187,16 +187,16 @@ Admin -> Settings shows the installed version, commit, and deploy date, so you c
 
 ## Release update check
 
-Genie Workbench can tell workspace admins when a newer release is available.
+Genie Workbench can tell you when a newer release is available. The check lives on the **Admin** tab, which every user can open.
 
-- **What is called:** `https://api.github.com/repos/databricks-solutions/databricks-genie-workbench/releases/latest`, at most once a day per admin browser, plus whenever an admin clicks **Check now** in Admin -> Settings.
-- **Who calls it:** the workspace admin's browser. The app server never calls the internet. Users who are not workspace admins never trigger the check.
+- **What is called:** `https://api.github.com/repos/databricks-solutions/databricks-genie-workbench/releases/latest`, at most once a day per browser, plus whenever someone clicks **Check now** in Admin -> Settings.
+- **Who calls it:** the browser of whoever has the Admin tab open. The app server never calls the internet, and other pages never trigger the check.
 - **What is sent:** nothing about your workspace. The request runs from a hidden, sandboxed frame, so the browser sends `Origin: null` instead of the app's address, with no referrer and no cookies. The installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
-- **What admins see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
+- **What you see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
 
-**Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `release_check` widget. A `true` or `false` chosen at install is locked: admins see the state in Admin -> Settings but cannot change it in the app.
+**Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `release_check` widget. A `true` or `false` chosen at install is locked: Admin -> Settings shows the state, but it cannot be changed in the app.
 
-**Upgrading from an earlier version.** If no choice was recorded at install, the first workspace admin to open the app sees a one-time banner and can turn the check on or decline. With Lakebase, the answer applies to the whole app. Without Lakebase, each admin's browser remembers its own answer.
+**Upgrading from an earlier version.** If no choice was recorded at install, the first person to open the Admin tab sees a one-time banner and can turn the check on or decline. Anyone can change it later in Admin -> Settings. With Lakebase, the answer applies to the whole app. Without Lakebase, each browser remembers its own answer.
 
 **Turning it off later.** Set `GENIE_UPDATE_CHECK=false` in `.env.deploy` and run `./scripts/deploy.sh --update`, or set the notebook `release_check` widget to `no` and rerun the installer.
 
@@ -260,7 +260,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_LLM_ROUTE` | No | `gateway` | `gateway` (Unity AI Gateway) or `classic` (serving endpoints directly) |
 | `GENIE_BYOK_ENABLED` | No | `false` | `true` accepts a Unity Catalog model id as the model on the gateway route |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project name (auto-provisioned by deploy); installer suggests `<app-name>-lakebase` |
-| `GENIE_UPDATE_CHECK` | No | empty | `true` / `false` for the [daily release check](#release-update-check). Empty: workspace admins are asked in the app |
+| `GENIE_UPDATE_CHECK` | No | empty | `true` / `false` for the [daily release check](#release-update-check). Empty: users are asked on the Admin tab |
 
 ## Manual Setup (Method 2, without installer)
 
