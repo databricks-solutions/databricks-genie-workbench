@@ -38,12 +38,9 @@ from scripts.deploy_lib.install import (
 from scripts.deploy_lib.workspace_source import read_workspace_text, source_path_for
 from scripts.deploy_lib.install import (
     app_env,
-    app_warehouse_id,
-    describe_upgrade_settings,
     prior_app_yaml_paths,
-    require_upgrade_lakebase,
+    reuse_recorded_lakebase,
     run_install,
-    settings_for_existing_app,
 )
 
 from scripts.deploy_lib.workspace_source import (
@@ -1653,13 +1650,10 @@ def test_describe_update_check_names_each_state():
     assert describe_update_check("").startswith("Daily release check: ASK")
 
 
-def test_config_release_check_and_upgrade_defaults_and_validation():
+def test_config_release_check_default_and_validation():
     base = dict(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r")
-    cfg = InstallConfig(**base).normalized()
-    assert cfg.release_check == "auto"
-    assert cfg.upgrade is False
+    assert InstallConfig(**base).normalized().release_check == "auto"
     assert InstallConfig(**base, release_check=" YES ").normalized().release_check == "yes"
-    assert InstallConfig(**base, upgrade=True).normalized().upgrade is True
     with pytest.raises(ValueError, match="release_check must be one of: auto, yes, no"):
         InstallConfig(**base, release_check="maybe").validate()
 
@@ -1717,12 +1711,10 @@ def test_run_install_reads_the_prior_app_yaml_before_regenerating_source():
     assert "resolve_update_check(" in src and "notebook_build_commit(" in src
 
 
-def test_notebook_installer_offers_the_release_check_and_upgrade_widgets():
+def test_notebook_installer_offers_the_release_check_widget():
     src = Path("notebooks/install.py").read_text()
     assert 'dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])' in src
     assert 'release_check=dbutils.widgets.get("release_check").strip()' in src
-    assert 'dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])' in src
-    assert 'upgrade=dbutils.widgets.get("upgrade").strip() == "yes"' in src
     assert '"update_check"' not in src
 
 
@@ -1794,7 +1786,7 @@ def test_env_var_reference_documents_the_release_check_and_build_info():
     assert "`Origin: null`" in guide
 
 
-# Spec 11: one-field notebook upgrade.
+# Spec 11.5 / 11.9: a rerun keeps the app's Lakebase project and settings record.
 _APP_YAML_02 = """\
 command: ["uvicorn", "backend.main:app"]
 env:
@@ -1814,7 +1806,6 @@ env:
     value: "prod_catalog"
 """
 _APP = {"name": "gwb", "resources": [{"name": "sql-warehouse", "sql_warehouse": {"id": "wh-123", "permission": "CAN_USE"}}]}
-_UPGRADE = InstallConfig(app_name="gwb", catalog="", warehouse_id="", repo_root="/r", upgrade=True)
 _FULL = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r", lakebase_mode="create")
 
 
@@ -1829,133 +1820,23 @@ def test_app_env_skips_empty_values_placeholders_and_value_from():
     assert app_env("- a\n- b\n") == {}
 
 
-def test_app_warehouse_id_reads_the_sql_warehouse_resource():
-    assert app_warehouse_id(_APP) == "wh-123"
-    assert app_warehouse_id({"resources": [{"name": "postgres", "postgres": {}}]}) is None
-    assert app_warehouse_id({}) is None
-    assert app_warehouse_id(None) is None
-
-
-def test_upgrade_takes_every_setting_from_the_app():
-    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=["/x"]).normalized()
-    assert (cfg.catalog, cfg.warehouse_id) == ("prod_catalog", "wh-123")
-    assert (cfg.lakebase_mode, cfg.lakebase_instance) == ("existing", "team-lakebase")
-    assert (cfg.llm_route, cfg.llm_model, cfg.byok_enabled, cfg.mlflow_experiment_id) == (
-        "classic",
-        "databricks-claude-opus-4-6",
-        True,
-        "1234",
-    )
-    cfg.validate()
-
-
-def test_upgrade_ignores_filled_in_widgets():
-    filled = replace(
-        _UPGRADE, catalog="other", warehouse_id="wh-other", lakebase_mode="create", lakebase_instance="new-lb", llm_route="gateway"
-    )
-    cfg = settings_for_existing_app(filled, _APP, _APP_YAML_02, looked_in=[]).normalized()
-    assert (cfg.catalog, cfg.warehouse_id, cfg.lakebase_instance, cfg.llm_route) == (
-        "prod_catalog",
-        "wh-123",
-        "team-lakebase",
-        "classic",
-    )
-
-
-def test_upgrade_keeps_the_release_check_widget():
-    cfg = settings_for_existing_app(replace(_UPGRADE, release_check="no"), _APP, _APP_YAML_02, looked_in=[])
-    assert cfg.release_check == "no"
-
-
-def test_upgrade_of_an_app_without_lakebase_keeps_it_off():
-    text = _APP_YAML_02.replace('value: "team-lakebase"', 'value: ""')
-    cfg = settings_for_existing_app(_UPGRADE, _APP, text, looked_in=[]).normalized()
-    assert (cfg.lakebase_mode, cfg.lakebase_instance) == ("skip", None)
-
-
-def test_upgrade_defaults_for_settings_the_app_does_not_record():
-    text = 'env:\n  - name: GSO_CATALOG\n    value: "c"\n  - name: LLM_MODEL\n    value: "__LLM_MODEL__"\n'
-    cfg = settings_for_existing_app(_UPGRADE, _APP, text, looked_in=[]).normalized()
-    default_model = InstallConfig(app_name="x", catalog="c", warehouse_id="w").llm_model
-    assert (cfg.llm_route, cfg.llm_model, cfg.byok_enabled, cfg.mlflow_experiment_id) == (
-        "gateway",
-        default_model,
-        False,
-        None,
-    )
-
-
-def test_upgrade_stops_when_the_app_does_not_exist():
-    with pytest.raises(
-        RuntimeError,
-        match=r"No app named 'gwb' in this workspace\. Check app_name, or set upgrade = no to install a new app\.",
-    ):
-        settings_for_existing_app(_UPGRADE, None, None, looked_in=[])
-
-
-def test_upgrade_stops_when_the_apps_settings_cannot_be_read():
-    with pytest.raises(
-        RuntimeError,
-        match=r"Couldn't read the current settings of app 'gwb' \(looked in /a/app\.yaml, /b/app\.yaml\)\. "
-        r"Run with upgrade = no and fill in the widgets\.",
-    ):
-        settings_for_existing_app(_UPGRADE, _APP, None, looked_in=["/a", "/b"])
-
-
-@pytest.mark.parametrize(
-    "app,text,missing",
-    [
-        (_APP, 'env:\n  - name: GSO_CATALOG\n    value: "__GSO_CATALOG__"\n', "catalog"),
-        ({"resources": []}, _APP_YAML_02, "warehouse_id"),
-        ({"resources": []}, "env: []\n", "catalog and warehouse_id"),
-    ],
-)
-def test_upgrade_stops_when_a_required_setting_is_missing(app, text, missing):
-    with pytest.raises(
-        RuntimeError, match=rf"Couldn't read {missing} from app 'gwb'\. Run with upgrade = no and fill in {missing}\."
-    ):
-        settings_for_existing_app(_UPGRADE, app, text, looked_in=[])
-
-
-def test_upgrade_stops_when_the_recorded_lakebase_project_is_gone():
-    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
-    gone = SimpleNamespace(postgres=FakePostgres(project_exists=False))
-    with pytest.raises(
-        RuntimeError,
-        match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses no longer exists\. "
-        r"To create a new, empty one, run with upgrade = no and lakebase_mode = create\.",
-    ):
-        require_upgrade_lakebase(gone, cfg)
-    assert gone.postgres.created_projects == []
-    require_upgrade_lakebase(SimpleNamespace(postgres=FakePostgres()), cfg)  # present: no error
-    require_upgrade_lakebase(gone, _FULL.normalized())  # not upgrade mode: not checked here
-
-
-def test_describe_upgrade_settings_lists_what_is_kept():
-    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
-    lines = describe_upgrade_settings(cfg)
-    assert lines[0] == "Upgrade mode: using the app's current settings; other widgets are ignored."
-    for line in ("  catalog: prod_catalog", "  warehouse_id: wh-123", "  Lakebase project: team-lakebase", "  MLflow experiment: 1234"):
-        assert line in lines
-
-
 def test_rerun_with_a_blank_lakebase_name_reuses_the_apps_project():
-    cfg = settings_for_existing_app(_FULL, _APP, _APP_YAML_02, looked_in=[]).normalized()
+    cfg = reuse_recorded_lakebase(_FULL, _APP, _APP_YAML_02).normalized()
     assert cfg.lakebase_instance == "team-lakebase"
     assert cfg.catalog == "c"  # a full rerun keeps its widget values for everything else
 
 
 def test_new_app_with_a_blank_lakebase_name_still_gets_the_default_project():
-    assert settings_for_existing_app(_FULL, None, None, looked_in=[]).normalized().lakebase_instance == "gwb-lakebase"
+    assert reuse_recorded_lakebase(_FULL, None, None).normalized().lakebase_instance == "gwb-lakebase"
 
 
 def test_rerun_lakebase_reuse_only_applies_to_a_blank_create():
     explicit = replace(_FULL, lakebase_instance="mine")
-    assert settings_for_existing_app(explicit, _APP, _APP_YAML_02, looked_in=[]).lakebase_instance == "mine"
+    assert reuse_recorded_lakebase(explicit, _APP, _APP_YAML_02).lakebase_instance == "mine"
     skip = replace(_FULL, lakebase_mode="skip")
-    assert settings_for_existing_app(skip, _APP, _APP_YAML_02, looked_in=[]).normalized().lakebase_instance is None
+    assert reuse_recorded_lakebase(skip, _APP, _APP_YAML_02).normalized().lakebase_instance is None
     no_record = _APP_YAML_02.replace('value: "team-lakebase"', 'value: ""')
-    assert settings_for_existing_app(_FULL, _APP, no_record, looked_in=[]).normalized().lakebase_instance == "gwb-lakebase"
+    assert reuse_recorded_lakebase(_FULL, _APP, no_record).normalized().lakebase_instance == "gwb-lakebase"
 
 
 def test_prior_app_yaml_paths_lists_the_candidates_in_order():
@@ -1969,17 +1850,17 @@ def test_prior_app_yaml_paths_lists_the_candidates_in_order():
 
 def test_run_install_rejects_a_bad_app_name_before_calling_the_workspace():
     with pytest.raises(ValueError, match="app_name must be lowercase"):
-        run_install(SimpleNamespace(), replace(_UPGRADE, app_name="My App"))
+        run_install(SimpleNamespace(), replace(_FULL, app_name="My App"))
 
 
-def test_run_install_resolves_upgrade_settings_before_validating_or_creating():
+def test_run_install_reuses_the_apps_lakebase_project_before_validating_or_creating():
     import inspect
 
     from scripts.deploy_lib import install
 
     src = inspect.getsource(install.run_install)
-    assert src.index("settings_for_existing_app(") < src.index("cfg.validate()") < src.index("ensure_app(")
-    assert src.index("require_upgrade_lakebase(") < src.index("ensure_app(")
+    assert src.index("reuse_recorded_lakebase(") < src.index("cfg.validate()") < src.index("ensure_app(")
+    assert src.index("require_reused_lakebase_not_deleted(") < src.index("ensure_app(")
     assert "cfg.release_check" in src
 
 
@@ -1989,22 +1870,7 @@ def test_notebook_leaves_a_blank_create_lakebase_name_to_the_installer():
     assert 'elif lakebase_mode == "existing":\n    lakebase_instance = f"{app_name}-lakebase"' in src
 
 
-def test_docs_and_notebook_describe_the_one_field_upgrade():
-    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
-    assert "| `upgrade` | No |" in guide
-    section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
-    for step in ("click **Pull**", "`upgrade` to `yes`", "**Run All**"):
-        assert step in section
-    upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
-    assert "`upgrade` to `yes`" in upgrading
-    ref = Path("docs/docs/reference/environment-variables.md").read_text()
-    assert "(`app_name`, `upgrade`, `catalog`" in ref
-    notebook = Path("notebooks/install.py").read_text()
-    assert "# MAGIC **Upgrading an existing app?**" in notebook
-
-
-# Final review fixes (spec 11): interrupted runs, soft-deleted Lakebase projects,
-# and widgets that must exist before the admin can set upgrade = yes.
+# Final review fixes (spec 11): interrupted runs and soft-deleted Lakebase projects.
 _SRC = "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app"
 
 
@@ -2041,7 +1907,7 @@ def test_an_interrupted_run_leaves_the_apps_current_settings_in_place(monkeypatc
     app = {**_APP, "active_deployment": {"source_code_path": _SRC}}
     w, calls = _stub_install(monkeypatch, app=app, app_yaml=_APP_YAML_02)
     with pytest.raises(RuntimeError, match="interrupted"):
-        run_install(w, _UPGRADE, status_fn=lambda message: None)
+        run_install(w, _FULL, status_fn=lambda message: None)
     assert calls["written"] == {f"{_SRC}/app.yaml": _APP_YAML_02.encode("utf-8")}
 
 
@@ -2056,18 +1922,6 @@ def test_prior_app_yaml_paths_reads_the_deployment_snapshot_first():
         "/Workspace/Users/sp/src/dep1",
         "/Workspace/A",
     ]
-
-
-def test_upgrade_stops_early_when_the_recorded_lakebase_project_is_soft_deleted():
-    cfg = settings_for_existing_app(_UPGRADE, _APP, _APP_YAML_02, looked_in=[]).normalized()
-    deleted = SimpleNamespace(postgres=FakePostgres(soft_deleted=True))
-    with pytest.raises(
-        RuntimeError,
-        match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted .*"
-        r"undelete-project projects/team-lakebase",
-    ):
-        require_upgrade_lakebase(deleted, cfg)
-    assert deleted.postgres.purged_projects == []
 
 
 def test_a_rerun_never_purges_the_apps_deleted_lakebase_project(monkeypatch):
@@ -2085,12 +1939,23 @@ def test_a_rerun_recreates_the_apps_lakebase_project_if_it_is_gone(monkeypatch):
     assert calls["ensure_app"] == 1
 
 
-def test_the_notebook_shows_its_widgets_before_installing_packages():
-    src = Path("notebooks/install.py").read_text()
-    assert src.index('dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])') < src.index("%pip install")
-    assert "run the first cell below" in src
+# Spec 11.9: the upgrade mirrors today's process (Pull, Run all); no upgrade switch.
+def test_install_config_has_no_upgrade_switch():
+    import dataclasses
+
+    assert "upgrade" not in {field.name for field in dataclasses.fields(InstallConfig)}
+
+
+def test_upgrade_is_pull_then_run_all_with_the_same_values():
+    discard = "discard your changes to `notebooks/install.py`"
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
     section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
-    assert "run its first cell" in section
     upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
-    assert "run its first cell" in upgrading
+    for text in ("click **Pull**", discard, "**Run All**"):
+        assert text in section
+        assert text in upgrading
+    assert "`upgrade`" not in guide
+    assert "`upgrade`" not in Path("docs/docs/reference/environment-variables.md").read_text()
+    notebook = Path("notebooks/install.py").read_text()
+    assert 'dbutils.widgets.dropdown("upgrade"' not in notebook
+    assert discard in notebook

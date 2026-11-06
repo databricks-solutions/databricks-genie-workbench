@@ -12,25 +12,7 @@
 # MAGIC
 # MAGIC **Optional:** Lakebase Autoscaling is recommended for persistent app state. Set `lakebase_mode` to `skip` only when ephemeral in-memory state is acceptable.
 # MAGIC
-# MAGIC **Upgrading an existing app?** Click **Pull** on this Git folder first, then run the first cell below so the input boxes appear. Set `app_name` to your app's name and `upgrade` to `yes`, leave the other widgets as they are, and **Run all**.
-
-# COMMAND ----------
-# Input boxes (widgets). This is the first cell so the boxes appear within a second of
-# running it; their values survive the package install and Python restart below.
-dbutils.widgets.text("app_name", "genie-workbench")
-# upgrade: yes = upgrade the existing app named above with its current settings; the
-# other widgets except release_check are ignored. no = install a new app, or reconfigure
-# with the widgets below.
-dbutils.widgets.dropdown("upgrade", "no", ["no", "yes"])
-dbutils.widgets.text("catalog", "")
-dbutils.widgets.text("warehouse_id", "")
-dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
-dbutils.widgets.text("lakebase_project_name", "")
-dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
-# release_check (daily GitHub release check): auto = on for a new app; for an existing
-# app keep the previous answer, or ask workspace admins in the app if there is none.
-# yes / no set it explicitly.
-dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])
+# MAGIC **Upgrading?** Click **Pull** on this Git folder. If Pull reports a conflict in `notebooks/install.py`, discard your changes to `notebooks/install.py` and Pull again (Databricks edits this notebook when it runs, so discarding loses nothing). Then **Run all** with the widget values you installed with.
 
 # COMMAND ----------
 # MAGIC %pip install databricks-sdk==0.117.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
@@ -76,6 +58,18 @@ for path in [
         sys.path.insert(0, str(path))
 
 print(f"Repo root: {repo_root}")
+
+# COMMAND ----------
+dbutils.widgets.text("app_name", "genie-workbench")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("warehouse_id", "")
+dbutils.widgets.dropdown("lakebase_mode", "create", ["create", "existing", "skip"])
+dbutils.widgets.text("lakebase_project_name", "")
+dbutils.widgets.dropdown("llm_route", "gateway", ["gateway", "classic"])
+# release_check (daily GitHub release check): auto = on for a new app; for an existing
+# app keep the previous answer, or ask workspace admins in the app if there is none.
+# yes / no set it explicitly.
+dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])
 
 # COMMAND ----------
 # MAGIC %md
@@ -154,7 +148,6 @@ cfg = InstallConfig(
     warehouse_id=dbutils.widgets.get("warehouse_id").strip(),
     llm_route=dbutils.widgets.get("llm_route").strip(),
     release_check=dbutils.widgets.get("release_check").strip(),
-    upgrade=dbutils.widgets.get("upgrade").strip() == "yes",
     mlflow_experiment_id=None,
     lakebase_mode=lakebase_mode,
     lakebase_instance=lakebase_instance,

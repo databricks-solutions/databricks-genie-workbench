@@ -145,22 +145,11 @@ def describe_update_check(value: str) -> str:
 
 _PLACEHOLDER_RE = re.compile(r"^__[A-Z0-9_]+__$")
 
-NO_APP_FOR_UPGRADE = "No app named '{name}' in this workspace. Check app_name, or set upgrade = no to install a new app."
-UNREADABLE_APP_SETTINGS = (
-    "Couldn't read the current settings of app '{name}' (looked in {paths}). "
-    "Run with upgrade = no and fill in the widgets."
-)
-MISSING_APP_SETTINGS = "Couldn't read {fields} from app '{name}'. Run with upgrade = no and fill in {fields}."
-UPGRADE_LAKEBASE_GONE = (
-    "The Lakebase project '{project}' that app '{name}' uses no longer exists. "
-    "To create a new, empty one, run with upgrade = no and lakebase_mode = create."
-)
 RECORDED_LAKEBASE_DELETED = (
     "The Lakebase project '{project}' that app '{name}' uses is deleted (it can still be restored "
     "for 7 days). Restore it with `databricks postgres undelete-project projects/{project}`, then "
     "run the installer again."
 )
-UPGRADE_HEADER = "Upgrade mode: using the app's current settings; other widgets are ignored."
 
 
 def app_env(app_yaml_text: str | None) -> dict[str, str]:
@@ -189,72 +178,21 @@ def app_env(app_yaml_text: str | None) -> dict[str, str]:
     return env
 
 
-def app_warehouse_id(app: dict[str, Any] | None) -> str | None:
-    """The SQL warehouse ID attached to the app as its `sql-warehouse` resource."""
-    for resource in (app or {}).get("resources") or []:
-        if isinstance(resource, dict) and resource.get("name") == "sql-warehouse":
-            value = str((resource.get("sql_warehouse") or {}).get("id") or "").strip()
-            return value or None
-    return None
-
-
-def settings_for_existing_app(
+def reuse_recorded_lakebase(
     cfg: InstallConfig,
     app: dict[str, Any] | None,
     app_yaml_text: str | None,
-    *,
-    looked_in: list[str],
 ) -> InstallConfig:
-    """Fill the install config from the app it upgrades or reruns (spec 11.4, 11.5).
+    """On a rerun, keep the Lakebase project the app already uses (spec 11.5, 11.9).
 
-    upgrade = yes: every setting except app_name and release_check comes from the
-    app; stop with a clear message instead of guessing. upgrade = no on an existing
-    app: a blank Lakebase project name with lakebase_mode = create keeps the
-    project the app already uses.
+    lakebase_mode = create with a blank project name would otherwise target
+    <app_name>-lakebase: a new, empty project whenever the app was set up with a
+    different name (common for CLI installs or explicit names).
     """
-    name = cfg.app_name.strip()
-    env = app_env(app_yaml_text)
-    if cfg.upgrade:
-        if app is None:
-            raise RuntimeError(NO_APP_FOR_UPGRADE.format(name=name))
-        if not app_yaml_text:
-            paths = ", ".join(f"{path}/app.yaml" for path in looked_in) or "no known location"
-            raise RuntimeError(UNREADABLE_APP_SETTINGS.format(name=name, paths=paths))
-        catalog = env.get("GSO_CATALOG")
-        warehouse_id = app_warehouse_id(app)
-        missing = [field for field, value in (("catalog", catalog), ("warehouse_id", warehouse_id)) if not value]
-        if missing:
-            raise RuntimeError(MISSING_APP_SETTINGS.format(fields=" and ".join(missing), name=name))
-        lakebase = env.get("LAKEBASE_INSTANCE_NAME")
-        return replace(
-            cfg,
-            catalog=catalog,
-            warehouse_id=warehouse_id,
-            lakebase_mode="existing" if lakebase else "skip",
-            lakebase_instance=lakebase,
-            llm_route=env.get("GENIE_LLM_ROUTE", ""),
-            llm_model=env.get("LLM_MODEL", ""),
-            byok_enabled=env.get("GENIE_BYOK_ENABLED", "").lower() == "true",
-            mlflow_experiment_id=env.get("MLFLOW_EXPERIMENT_ID"),
-        )
-    recorded = env.get("LAKEBASE_INSTANCE_NAME")
+    recorded = app_env(app_yaml_text).get("LAKEBASE_INSTANCE_NAME")
     if app is not None and cfg.lakebase_mode == "create" and not (cfg.lakebase_instance or "").strip() and recorded:
         return replace(cfg, lakebase_instance=recorded)
     return cfg
-
-
-def describe_upgrade_settings(cfg: InstallConfig) -> list[str]:
-    """Status lines naming every setting an upgrade keeps."""
-    return [
-        UPGRADE_HEADER,
-        f"  catalog: {cfg.catalog}",
-        f"  warehouse_id: {cfg.warehouse_id}",
-        f"  Lakebase project: {cfg.lakebase_instance or 'none (Lakebase stays off)'}",
-        f"  LLM route: {cfg.llm_route}",
-        f"  LLM model: {cfg.llm_model}",
-        f"  BYOK: {'on' if cfg.byok_enabled else 'off'}",
-        f"  MLflow experiment: {cfg.mlflow_experiment_id or 'none'}",
-    ]
 
 
 def _lakebase_project_state(w, project: str) -> str:
@@ -266,17 +204,6 @@ def _lakebase_project_state(w, project: str) -> str:
     except NotFound:
         return "missing"
     return "deleted" if getattr(found, "delete_time", None) else "ok"
-
-
-def require_upgrade_lakebase(w, cfg: InstallConfig) -> None:
-    """Upgrade mode never creates Lakebase: stop if the app's recorded project is gone."""
-    if not cfg.upgrade or not cfg.lakebase_instance:
-        return
-    state = _lakebase_project_state(w, cfg.lakebase_instance)
-    if state == "missing":
-        raise RuntimeError(UPGRADE_LAKEBASE_GONE.format(project=cfg.lakebase_instance, name=cfg.app_name))
-    if state == "deleted":
-        raise RuntimeError(RECORDED_LAKEBASE_DELETED.format(project=cfg.lakebase_instance, name=cfg.app_name))
 
 
 def require_reused_lakebase_not_deleted(w, cfg: InstallConfig) -> None:
@@ -316,23 +243,17 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     status(f"Using deployer: {deployer_user}")
 
     # Read the existing app and its current app.yaml before anything is created or
-    # regenerated: upgrade mode takes its settings from them, and a rerun keeps the
-    # app's Lakebase project and release-check answer.
+    # regenerated, so a rerun keeps the app's Lakebase project and release-check answer.
     existing_app = get_app(w, app_name)
     app_existed = existing_app is not None
-    looked_in = prior_app_yaml_paths(existing_app, cfg.normalized(), deployer_user) if app_existed else []
     prior_app_yaml = prior_app_yaml_text(w, existing_app, cfg.normalized(), deployer_user) if app_existed else None
     typed_lakebase = (cfg.lakebase_instance or "").strip()
-    cfg = settings_for_existing_app(cfg, existing_app, prior_app_yaml, looked_in=looked_in)
-    reused_lakebase = not cfg.upgrade and not typed_lakebase and bool(cfg.lakebase_instance)
+    cfg = reuse_recorded_lakebase(cfg, existing_app, prior_app_yaml)
+    reused_lakebase = not typed_lakebase and bool(cfg.lakebase_instance)
     cfg = cfg.normalized()
     cfg.validate()
     preflight_deployment(Path(cfg.repo_root or ""))
-    if cfg.upgrade:
-        for line in describe_upgrade_settings(cfg):
-            status(line)
-        require_upgrade_lakebase(w, cfg)
-    elif reused_lakebase:
+    if reused_lakebase:
         status(f"Keeping the Lakebase project this app already uses: {cfg.lakebase_instance}")
         require_reused_lakebase_not_deleted(w, cfg)
 

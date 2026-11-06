@@ -63,7 +63,6 @@ class InstallConfig:
     gso_job_name: str = ""
     gso_wheel_path: str | None = None
     release_check: str = "auto"
-    upgrade: bool = False
 
     def normalized(self) -> "InstallConfig":
         app_name = self.app_name.strip()
@@ -91,7 +90,6 @@ class InstallConfig:
             gso_job_name=gso_job_name,
             gso_wheel_path=(self.gso_wheel_path or "").strip() or None,
             release_check=(self.release_check or "auto").strip().lower(),
-            upgrade=bool(self.upgrade),
         )
 
     def validate(self) -> None:
