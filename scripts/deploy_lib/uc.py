@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from urllib.parse import quote
 from typing import Any
 
@@ -47,6 +48,44 @@ WATCH_SYSTEM_GRANTS: list[tuple[str, str, str]] = [
     # workspaces_latest is optional / newer; absence is handled in code.
     ("TABLE",   "system.access.workspaces_latest", "SELECT"),
 ]
+
+
+# Version Control observe control plane (history, capture, restore, tags), colocated in
+# the GSO schema so the app SP's schema-level grants above cover it with no per-object
+# grants. Single source of truth for both install paths: scripts/grant_permissions.py
+# (CLI) imports these. The DDL bytes are owner-authored in backend/version_control_ddl/
+# and only rendered here. The approval/promotion Volumes (07, 08) belong to the governed
+# write path, not the observe surface, so they are intentionally omitted.
+VC_DDL_ROOT = Path(__file__).resolve().parents[2] / "backend" / "version_control_ddl"
+VC_OBSERVE_DDL_FILES = (
+    "01-versions.sql",
+    "02-registry.sql",
+    "03-snapshots-volume.sql",
+    "05-coordination.sql",
+    "06-operations.sql",
+    "09-version-tags.sql",
+)
+
+
+def vc_observe_statements(catalog: str, schema: str) -> list[tuple[str, str]]:
+    """Render the VC observe DDL into ``(filename, statement)`` pairs, in file order.
+
+    Every statement is idempotent (``CREATE ... IF NOT EXISTS`` or a DROP-then-ADD
+    constraint pair), so re-running an install is safe.
+    """
+    statements: list[tuple[str, str]] = []
+    for filename in VC_OBSERVE_DDL_FILES:
+        text = (VC_DDL_ROOT / filename).read_text(encoding="utf-8")
+        # Drop full-line comments so they don't bleed across the ';' split.
+        body = "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("--")
+        )
+        for part in body.split(";"):
+            stmt = part.strip()
+            if stmt:
+                rendered = stmt.replace("${catalog}", catalog).replace("${control_schema}", schema)
+                statements.append((filename, rendered))
+    return statements
 
 
 def api_do(w, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
@@ -114,6 +153,19 @@ def ensure_tables(w, catalog: str, schema: str, warehouse_id: str) -> None:
         stmt = ddl_template.replace("{catalog}", catalog).replace("{schema}", schema)
         sql_exec(w, warehouse_id, stmt)
         enable_change_data_feed(w, catalog, schema, table_name, warehouse_id)
+
+
+def ensure_vc_tables(w, catalog: str, schema: str, warehouse_id: str) -> None:
+    """Create the Version Control observe tables + snapshots Volume (idempotent).
+
+    The app mounts the VC surface whenever ``VC_OBSERVE_*`` is set, which this installer
+    always does, so these objects must exist or every Version Control request fails.
+    """
+    for filename, stmt in vc_observe_statements(catalog, schema):
+        try:
+            sql_exec(w, warehouse_id, stmt)
+        except RuntimeError as exc:
+            raise RuntimeError(f"Version Control DDL from {filename} failed: {exc}") from exc
 
 
 def enable_change_data_feed(
@@ -246,6 +298,7 @@ def ensure_uc_objects_and_grants(w, cfg: InstallConfig, app_sp_client_id: str) -
     ensure_schema(w, cfg.catalog, cfg.gso_schema, cfg.warehouse_id)
     ensure_volume(w, cfg.catalog, cfg.gso_schema, cfg.warehouse_id)
     ensure_tables(w, cfg.catalog, cfg.gso_schema, cfg.warehouse_id)
+    ensure_vc_tables(w, cfg.catalog, cfg.gso_schema, cfg.warehouse_id)
     grant_schema_privileges(w, cfg.catalog, cfg.gso_schema, app_sp_client_id)
     grant_volume_privileges(w, cfg.catalog, cfg.gso_schema, app_sp_client_id)
     watch_grant_failures = grant_watch_system_tables(w, app_sp_client_id)

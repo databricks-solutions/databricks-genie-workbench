@@ -96,7 +96,7 @@ The installer uses the shared `scripts.deploy_lib` Python library and notebook-n
 
 1. Creates or updates the Databricks App and resolves its service principal, then, on the `gateway` route, sends one test request to Unity AI Gateway and stops with guidance if it fails
 2. Generates a clean source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app` (excluding deploy-only files, docs, tests, notebooks, `scripts/`, `.git`, `.env*`, `node_modules`, and `requirements.txt`)
-3. Provisions the UC schema, volume, GSO tables, CDF, and permissions
+3. Provisions the UC schema, volume, GSO tables, Version Control tables/volume, CDF, and permissions
 4. Provisions or attaches Lakebase when requested
 5. Creates or updates the GSO optimization job (`<app-name>-gso-optimization-job`) via the SDK/Jobs API
 6. Renders a patched `app.yaml` into the generated source folder and patches app OAuth scopes and resources
@@ -182,7 +182,7 @@ This applies to **Method 2 (local terminal)**. The notebook installer runs the e
 2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
-5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
+5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables and the Version Control tables/volume, grants SP access, enables CDF
 6. **Set up optimization job** — builds GSO wheel, uploads notebooks, creates/finds the Databricks job, grants SP CAN_MANAGE
 7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
 8. **Verify** — checks critical files, waits for deployment to succeed

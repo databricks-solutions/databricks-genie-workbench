@@ -24,7 +24,12 @@ from scripts.deploy_lib.gso_job import (
     upsert_job,
 )
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
-from scripts.deploy_lib.uc import update_grants
+from scripts.deploy_lib.uc import (
+    VC_OBSERVE_DDL_FILES,
+    ensure_vc_tables,
+    update_grants,
+    vc_observe_statements,
+)
 from scripts.deploy_lib.workspace_source import (
     mkdirs,
     prepare_workspace_source,
@@ -1357,6 +1362,56 @@ def test_uc_update_grants_uses_permissions_api():
             {"changes": [{"principal": "sp-id", "add": ["USE_SCHEMA"]}]},
         )
     ]
+
+
+_SQL_OK = {("POST", "/api/2.0/sql/statements"): {"status": {"state": "SUCCEEDED"}}}
+
+
+def test_vc_observe_statements_render_every_control_table():
+    statements = [stmt for _, stmt in vc_observe_statements("main", "gso")]
+    rendered = "\n".join(statements)
+    assert "${" not in rendered
+    assert not any(line.lstrip().startswith("--") for line in rendered.splitlines())
+    for name in (
+        "genie_space_versions",
+        "genie_space_registry",
+        "genie_ops_coordination",
+        "genie_space_operations",
+        "genie_space_version_tags",
+    ):
+        assert f"CREATE TABLE IF NOT EXISTS main.gso.{name}" in rendered
+    assert "CREATE VOLUME IF NOT EXISTS main.gso.vc_snapshots" in rendered
+
+
+def test_vc_observe_ddl_matches_standalone_provisioner():
+    # The notebook/CLI installers and the manual provisioner must create the same objects.
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "scripts/version_control/provision_observe_nonprod.py"
+    spec = importlib.util.spec_from_file_location("provision_observe_nonprod", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert VC_OBSERVE_DDL_FILES == module._OBSERVE_DDL
+
+
+def test_ensure_vc_tables_executes_every_statement_on_the_warehouse():
+    w = FakeWorkspaceClient(dict(_SQL_OK))
+    ensure_vc_tables(w, "main", "gso", "wh")
+    expected = [stmt for _, stmt in vc_observe_statements("main", "gso")]
+    assert [(m, p, b["warehouse_id"]) for m, p, b in w.api_client.calls] == [
+        ("POST", "/api/2.0/sql/statements", "wh")
+    ] * len(expected)
+    assert [b["statement"] for _, _, b in w.api_client.calls] == expected
+
+
+def test_ensure_vc_tables_names_the_failing_ddl_file():
+    w = FakeWorkspaceClient({
+        ("POST", "/api/2.0/sql/statements"): {
+            "status": {"state": "FAILED", "error": {"message": "no CREATE TABLE"}}
+        }
+    })
+    with pytest.raises(RuntimeError, match="01-versions.sql.*no CREATE TABLE"):
+        ensure_vc_tables(w, "main", "gso", "wh")
 
 
 def test_lakebase_get_database_resource_reads_first_database_name():
