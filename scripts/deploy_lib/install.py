@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .app_yaml import render_app_yaml
+from .app_yaml import PLACEHOLDER_RE, render_app_yaml
 from .apps import (
     deploy_app_from_workspace,
     ensure_app,
@@ -20,7 +19,7 @@ from .apps import (
 from .config import APP_NAME_ERROR, APP_NAME_RE, InstallConfig, InstallResult, LakebaseInfo
 from .genie_spaces import optionally_grant_genie_spaces
 from .gso_job import ensure_gso_job
-from .lakebase import ensure_lakebase
+from .lakebase import ensure_lakebase, find_soft_deleted_project
 from .uc import ensure_uc_objects_and_grants
 from .verify import verify_ai_gateway, verify_app_deployment
 from .workspace_source import (
@@ -87,21 +86,8 @@ def resolve_update_check(choice: str, *, app_existed: bool, previous_value: str 
 
 def previous_update_check(app_yaml_text: str | None) -> str | None:
     """UPDATE_CHECK_ENABLED from a previously deployed app.yaml, if it was decided."""
-    if not app_yaml_text:
-        return None
-    import yaml
-
-    try:
-        doc = yaml.safe_load(app_yaml_text) or {}
-    except yaml.YAMLError:
-        return None
-    if not isinstance(doc, dict):
-        return None
-    for entry in doc.get("env") or []:
-        if isinstance(entry, dict) and entry.get("name") == "UPDATE_CHECK_ENABLED":
-            value = str(entry.get("value") or "").strip().lower()
-            return value if value in ("true", "false") else None
-    return None
+    value = app_env(app_yaml_text).get("UPDATE_CHECK_ENABLED", "").lower()
+    return value if value in ("true", "false") else None
 
 
 def prior_app_yaml_paths(app: dict[str, Any] | None, cfg: InstallConfig, deployer_user: str) -> list[str]:
@@ -143,8 +129,6 @@ def describe_update_check(value: str) -> str:
     return "Daily release check: ASK (users will be asked on the Admin tab)."
 
 
-_PLACEHOLDER_RE = re.compile(r"^__[A-Z0-9_]+__$")
-
 RECORDED_LAKEBASE_DELETED = (
     "The Lakebase project '{project}' that app '{name}' uses is deleted (it can still be restored "
     "for 7 days). Restore it with `databricks postgres undelete-project projects/{project}`, then "
@@ -173,7 +157,7 @@ def app_env(app_yaml_text: str | None) -> dict[str, str]:
         if not isinstance(entry, dict) or not entry.get("name") or "value" not in entry:
             continue
         value = str(entry.get("value") or "").strip()
-        if value and not _PLACEHOLDER_RE.match(value):
+        if value and not PLACEHOLDER_RE.fullmatch(value):
             env[str(entry["name"])] = value
     return env
 
@@ -202,7 +186,9 @@ def _lakebase_project_state(w, project: str) -> str:
     try:
         found = w.postgres.get_project(name=f"projects/{project}")
     except NotFound:
-        return "missing"
+        # A soft-deleted project can also 404 here; ensure_project finds it through
+        # list_projects(show_deleted=True) and purges it, so check the same way.
+        return "deleted" if find_soft_deleted_project(w, project) else "missing"
     return "deleted" if getattr(found, "delete_time", None) else "ok"
 
 
@@ -238,6 +224,10 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     app_name = cfg.app_name.strip()
     if not APP_NAME_RE.match(app_name):
         raise ValueError(APP_NAME_ERROR)
+    # Fail fast on the values as typed, before any workspace call. The config is
+    # validated again below once a rerun has picked up the app's Lakebase project.
+    cfg.normalized().validate()
+    preflight_deployment(Path(cfg.repo_root or ""))
 
     status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
@@ -253,7 +243,6 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     reused_lakebase = not typed_lakebase and bool(cfg.lakebase_instance)
     cfg = cfg.normalized()
     cfg.validate()
-    preflight_deployment(Path(cfg.repo_root or ""))
     if reused_lakebase:
         status(f"Keeping the Lakebase project this app already uses: {cfg.lakebase_instance}")
         require_reused_lakebase_not_deleted(w, cfg)

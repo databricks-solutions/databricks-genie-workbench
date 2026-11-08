@@ -20,10 +20,16 @@ def _run(tmp_path: Path, tag: str, version: str | None) -> subprocess.CompletedP
     )
 
 
-@pytest.mark.parametrize("tag", ["0.2.1", "v0.2.1"])
-def test_matching_tag_passes(tmp_path, tag):
-    proc = _run(tmp_path, tag, "0.2.1\n")
+def test_matching_tag_passes(tmp_path):
+    proc = _run(tmp_path, "0.2.1", "0.2.1\n")
     assert proc.returncode == 0, proc.stderr
+
+
+def test_v_prefixed_tag_fails(tmp_path):
+    # The app links Release notes to /releases/tag/<VERSION>, so the tag must equal VERSION exactly.
+    proc = _run(tmp_path, "v0.2.1", "0.2.1\n")
+    assert proc.returncode == 1
+    assert "must be exactly '0.2.1'" in proc.stderr
 
 
 def test_mismatched_tag_fails_with_fix_instructions(tmp_path):

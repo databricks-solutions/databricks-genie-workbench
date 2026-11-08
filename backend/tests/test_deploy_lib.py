@@ -1933,6 +1933,22 @@ def test_a_rerun_never_purges_the_apps_deleted_lakebase_project(monkeypatch):
     assert w.postgres.purged_projects == []
 
 
+def test_a_rerun_never_purges_a_deleted_project_that_get_reports_as_not_found(monkeypatch):
+    # Lakebase can also 404 on get_project for a soft-deleted project; ensure_project then
+    # finds it via list_projects(show_deleted=True) and purges it. The guard must catch this too.
+    postgres = FakePostgres(project_exists=False, reserved_soft_deleted=["team-lakebase"])
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=postgres)
+    with pytest.raises(RuntimeError, match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted"):
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 0
+    assert w.postgres.purged_projects == []
+
+
+def test_run_install_rejects_a_bad_config_before_calling_the_workspace():
+    with pytest.raises(ValueError, match="catalog is required"):
+        run_install(SimpleNamespace(), replace(_FULL, catalog=""))
+
+
 def test_a_rerun_recreates_the_apps_lakebase_project_if_it_is_gone(monkeypatch):
     w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=FakePostgres(project_exists=False))
     with pytest.raises(RuntimeError, match="interrupted"):  # got past the Lakebase check

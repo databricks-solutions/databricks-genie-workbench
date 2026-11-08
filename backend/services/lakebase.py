@@ -304,7 +304,7 @@ async def _ensure_schema():
                 )
             """)
         _lakebase_available = True
-        logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables)")
+        logger.info("Lakebase schema ready (workbench, watch, and settings tables)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
