@@ -10,8 +10,8 @@ import type { ObservationResult, VersionSummary } from '@/types/version-control'
 const summary = { version_id: 'v1' } as VersionSummary
 const result = (over: Partial<ObservationResult>): ObservationResult =>
   ({ status: {} as ObservationResult['status'], captured_version: null, busy: false, ...over })
-const vcError = (status: number) =>
-  new VersionControlError(status, { code: 'x', message: 'server said no', retryable: false, stale: false })
+const vcError = (status: number, code = 'x') =>
+  new VersionControlError(status, { code, message: 'server said no', retryable: false, stale: false })
 
 describe('capture notices', () => {
   it('reports a new version when a previously-unseen version id is captured', () => {
@@ -37,9 +37,17 @@ describe('capture notices', () => {
       .toEqual({ tone: 'info', message: expect.stringContaining('already in progress') })
   })
 
-  it('maps 503 to a not-enabled error', () => {
-    expect(describeCaptureError(vcError(503)))
+  it('maps the writes-disabled code to a not-enabled error', () => {
+    expect(describeCaptureError(vcError(503, 'vc_writes_disabled')))
       .toEqual({ tone: 'error', message: expect.stringContaining('not enabled') })
+  })
+
+  // Regression: the backend returns 503 evidence_unavailable for any unexpected failure
+  // (e.g. missing control tables). That is an outage, not a disabled feature.
+  it('maps other 503s to an unavailable error, not "not enabled"', () => {
+    const notice = describeCaptureError(vcError(503, 'evidence_unavailable'))
+    expect(notice).toEqual({ tone: 'error', message: expect.stringContaining('unavailable') })
+    expect(notice.message).not.toContain('not enabled')
   })
 
   it('maps 403 to a permission error', () => {
