@@ -25,11 +25,11 @@ _GSO_SRC = os.path.join(_SCRIPT_DIR, os.pardir, "packages", "genie-space-optimiz
 if os.path.isdir(_GSO_SRC) and _GSO_SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_GSO_SRC))
 
-# Share the GenieWatch system-table grant list with the notebook installer
-# (scripts/deploy_lib/uc.py) so both install paths grant the same tables.
+# Share the GenieWatch system-table grant list and the Version Control DDL with the
+# notebook installer (scripts/deploy_lib/uc.py) so both install paths stay in step.
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-from deploy_lib.uc import WATCH_SYSTEM_GRANTS
+from deploy_lib.uc import WATCH_SYSTEM_GRANTS, vc_observe_statements
 
 # SP privileges on the GSO optimization schema — the SP runs optimization jobs
 # and needs full write access to state tables, MLflow models, and prompts.
@@ -214,13 +214,8 @@ def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str
 # Version Control control-plane objects colocated in the GSO schema. The app SP
 # already holds schema-level SELECT/MODIFY/CREATE_TABLE/CREATE_VOLUME/MANAGE (see
 # SP_SCHEMA_PRIVILEGES), so these tables/Volume need only to EXIST — no per-object
-# grants. The DDL bytes are owner-authored in backend/version_control_ddl/ and are
-# transcribed here, never edited. Only the observe-surface objects are created;
-# the approval/promotion Volumes belong to the governed-write path, not observe.
-_VC_DDL_FILES = (
-    "01-versions.sql", "02-registry.sql", "03-snapshots-volume.sql",
-    "05-coordination.sql", "06-operations.sql",
-)
+# grants. The file list and rendering are shared with the notebook installer
+# (deploy_lib.uc.vc_observe_statements) so both install paths create the same objects.
 
 
 def _ensure_vc_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
@@ -228,30 +223,18 @@ def _ensure_vc_tables(*, profile: str, catalog: str, schema: str, warehouse_id: 
 
     Colocated in the GSO schema so the app SP's existing schema grants cover them.
     """
-    ddl_root = os.path.join(_SCRIPT_DIR, os.pardir, "backend", "version_control_ddl")
     failed: list[str] = []
-    for filename in _VC_DDL_FILES:
-        path = os.path.abspath(os.path.join(ddl_root, filename))
-        text = open(path, encoding="utf-8").read()
-        # Drop full-line comments so they don't bleed across the ';' split.
-        body = "\n".join(
-            line for line in text.splitlines() if not line.lstrip().startswith("--")
-        )
-        for part in body.split(";"):
-            stmt = part.strip()
-            if not stmt:
-                continue
-            rendered = stmt.replace("${catalog}", catalog).replace("${control_schema}", schema)
-            result = _sql_exec(profile=profile, warehouse_id=warehouse_id, statement=rendered)
-            state = (result.get("status") or {}).get("state", "")
-            if state != "SUCCEEDED":
-                err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
-                failed.append(f"{filename}: {err_msg}")
-                print(
-                    f"[grant-permissions] ERROR: VC statement failed ({state}) "
-                    f"from {filename}: {err_msg}",
-                    file=sys.stderr,
-                )
+    for filename, rendered in vc_observe_statements(catalog, schema):
+        result = _sql_exec(profile=profile, warehouse_id=warehouse_id, statement=rendered)
+        state = (result.get("status") or {}).get("state", "")
+        if state != "SUCCEEDED":
+            err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
+            failed.append(f"{filename}: {err_msg}")
+            print(
+                f"[grant-permissions] ERROR: VC statement failed ({state}) "
+                f"from {filename}: {err_msg}",
+                file=sys.stderr,
+            )
     if failed:
         raise RuntimeError(
             f"Failed to apply {len(failed)} Version Control DDL statement(s): "
