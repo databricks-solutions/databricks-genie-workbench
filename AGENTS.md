@@ -231,7 +231,11 @@ the job never replaces base-image packages Spark Connect relies on; the list
 comes from the committed snapshot `serverless-env-v4-base-packages.txt`. When the
 job's `environment_version` changes, refresh that snapshot (`pip list
 --format=freeze` in a fresh serverless notebook on the new version) and rerun
-the script.
+the script. Databricks also patches base images in place without bumping the
+version (certifi went 2025.1.31 → 2026.10.19 on v4), so re-capture the snapshot
+before using it to decide whether the job needs a package pinned. Set the
+notebook's environment version explicitly: new notebooks may default to a newer
+version than the job's, and `notebooks/install.py` itself runs on v5.
 `backend/tests/test_gso_job_requirements.py` fails if the file drifts from uv.lock.
 
 **Updating a frontend npm dep:**
