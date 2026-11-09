@@ -1,4 +1,8 @@
+import io
+import re
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,7 +17,7 @@ from scripts.deploy_lib.apps import (
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
 from scripts.deploy_lib import gso_job
-from scripts.deploy_lib.install import llm_route_replacements
+from scripts.deploy_lib.install import llm_route_replacements, release_check_replacements
 from scripts.deploy_lib.verify import verify_ai_gateway
 from scripts.deploy_lib.gso_job import (
     TASKS,
@@ -30,6 +34,21 @@ from scripts.deploy_lib.uc import (
     update_grants,
     vc_observe_statements,
 )
+from scripts.deploy_lib.install import (
+    describe_update_check,
+    prior_app_yaml_text,
+    notebook_build_commit,
+    previous_update_check,
+    resolve_update_check,
+)
+from scripts.deploy_lib.workspace_source import read_workspace_text, source_path_for
+from scripts.deploy_lib.install import (
+    app_env,
+    prior_app_yaml_paths,
+    reuse_recorded_lakebase,
+    run_install,
+)
+
 from scripts.deploy_lib.workspace_source import (
     mkdirs,
     prepare_workspace_source,
@@ -177,6 +196,7 @@ def test_all_current_app_yaml_placeholders_are_covered():
             "VC_OBSERVE_CATALOG": "main",
             "VC_OBSERVE_CONTROL_SCHEMA": "genie_space_optimizer",
             "VC_OBSERVE_SP_PRINCIPAL_ID": "app-sp-client-id",
+            **release_check_replacements(update_check="", build_commit="", deployed_at="2026-11-05T00:00:00Z"),
         },
     )
     assert "__" not in rendered
@@ -1599,3 +1619,462 @@ def test_genie_llm_route_reaches_every_task_base_parameters():
         assert bp.get("genie_llm_route") == "{{job.parameters.genie_llm_route}}", t["task_key"]
     for _key, _stem, _dep, base_param_keys in TASKS:
         assert "genie_llm_route" in base_param_keys, _key
+
+
+def test_release_check_replacements_shape():
+    assert release_check_replacements(update_check="true", build_commit="", deployed_at="2026-11-05T00:00:00Z") == {
+        "UPDATE_CHECK_ENABLED": "true",
+        "GWB_BUILD_COMMIT": "",
+        "GWB_DEPLOYED_AT": "2026-11-05T00:00:00Z",
+        "GWB_INSTALL_METHOD": "notebook",
+    }
+
+
+def test_deploy_config_update_check_normalization(tmp_path):
+    import shutil
+    import subprocess
+
+    # A copy outside the repo, so a local .env.deploy is never sourced.
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(_repo_root() / "scripts" / "deploy-config.sh", tmp_path / "scripts")
+
+    def _resolve(value):
+        env = {"PATH": "/usr/bin:/bin", "GENIE_WAREHOUSE_ID": "w", "GENIE_CATALOG": "c"}
+        if value is not None:
+            env["GENIE_UPDATE_CHECK"] = value
+        proc = subprocess.run(
+            ["bash", "-c", 'source scripts/deploy-config.sh && echo "[$UPDATE_CHECK]"'],
+            env=env, capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip(), proc.stderr
+
+    for value in ("true", "TRUE", "yes", "Y", "1"):
+        assert _resolve(value)[0] == "[true]"
+    for value in ("false", "no", "N", "0"):
+        assert _resolve(value)[0] == "[false]"
+    assert _resolve(None) == ("[]", "")
+    assert _resolve("")[0] == "[]"
+    out, err = _resolve("maybe")
+    assert out == "[]" and "GENIE_UPDATE_CHECK" in err
+
+
+def test_deploy_sh_stamps_cli_build_info_and_reports_the_release_check():
+    deploy_sh = Path("scripts/deploy.sh").read_text()
+    assert '"s|__GWB_INSTALL_METHOD__|cli|"' in deploy_sh
+    assert "rev-parse --short=12 HEAD" in deploy_sh
+    assert "date -u +%Y-%m-%dT%H:%M:%SZ" in deploy_sh
+    assert "Daily release check: ASK" in deploy_sh
+
+
+def test_install_sh_asks_about_the_release_check_and_saves_it():
+    install_sh = Path("scripts/install.sh").read_text()
+    assert '_prompt_yn ENABLE_UPDATE_CHECK "Check GitHub daily for new Genie Workbench releases?" "Y"' in install_sh
+    assert 'GENIE_UPDATE_CHECK="$UPDATE_CHECK"' in install_sh
+
+
+def test_env_template_documents_the_release_check():
+    assert "# GENIE_UPDATE_CHECK=true" in Path(".env.deploy.template").read_text()
+
+
+@pytest.mark.parametrize(
+    "choice,app_existed,previous,expected",
+    [
+        ("yes", True, "false", "true"),
+        ("no", False, None, "false"),
+        ("auto", False, None, "true"),
+        ("auto", True, "true", "true"),
+        ("auto", True, "false", "false"),
+        ("auto", True, None, ""),
+    ],
+)
+def test_notebook_update_check_resolution(choice, app_existed, previous, expected):
+    assert resolve_update_check(choice, app_existed=app_existed, previous_value=previous) == expected
+
+
+def test_previous_update_check_reads_only_decided_values():
+    assert previous_update_check(None) is None
+    assert previous_update_check('env:\n  - name: UPDATE_CHECK_ENABLED\n    value: "true"\n') == "true"
+    assert previous_update_check('env:\n  - name: UPDATE_CHECK_ENABLED\n    value: ""\n') is None
+    assert previous_update_check("env:\n  - name: OTHER\n    value: x\n") is None  # pre-feature app.yaml
+    assert previous_update_check(": not yaml : [") is None
+
+
+def test_describe_update_check_names_each_state():
+    assert describe_update_check("true").startswith("Daily release check: ON")
+    assert describe_update_check("false") == "Daily release check: OFF."
+    assert describe_update_check("").startswith("Daily release check: ASK")
+
+
+def test_config_release_check_default_and_validation():
+    base = dict(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r")
+    assert InstallConfig(**base).normalized().release_check == "auto"
+    assert InstallConfig(**base, release_check=" YES ").normalized().release_check == "yes"
+    with pytest.raises(ValueError, match="release_check must be one of: auto, yes, no"):
+        InstallConfig(**base, release_check="maybe").validate()
+
+
+def test_notebook_build_commit_from_a_git_folder():
+    w = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="REPO"), object_id=42)
+        ),
+        repos=SimpleNamespace(get=lambda repo_id: SimpleNamespace(head_commit_id="99e7783abcdef0123456789")),
+    )
+    assert notebook_build_commit(w, "/Workspace/Users/me/databricks-genie-workbench") == "99e7783abcde"
+
+
+def test_notebook_build_commit_is_empty_outside_a_git_folder_or_on_error():
+    plain_dir = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="DIRECTORY"), object_id=7)
+        ),
+    )
+    assert notebook_build_commit(plain_dir, "/Workspace/x") == ""
+
+    def denied(path):
+        raise RuntimeError("PERMISSION_DENIED")
+
+    assert notebook_build_commit(SimpleNamespace(workspace=SimpleNamespace(get_status=denied)), "/Workspace/x") == ""
+    assert notebook_build_commit(SimpleNamespace(), None) == ""
+
+
+def test_read_workspace_text_returns_none_when_missing():
+    ok = SimpleNamespace(workspace=SimpleNamespace(download=lambda path: io.BytesIO(b"env: []\n")))
+    assert read_workspace_text(ok, "/Workspace/Users/me/app/app.yaml") == "env: []\n"
+
+    def missing(path):
+        raise RuntimeError("RESOURCE_DOES_NOT_EXIST")
+
+    assert read_workspace_text(SimpleNamespace(workspace=SimpleNamespace(download=missing)), "/Workspace/x") is None
+
+
+def test_source_path_for_matches_the_default_and_override():
+    cfg = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w").normalized()
+    assert source_path_for(cfg, "me@example.com") == "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app"
+    custom = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w", deploy_workspace_path="/Workspace/x").normalized()
+    assert source_path_for(custom, "me@example.com") == "/Workspace/x"
+
+
+def test_run_install_reads_the_prior_app_yaml_before_regenerating_source():
+    import inspect
+
+    from scripts.deploy_lib import install
+
+    src = inspect.getsource(install.run_install)
+    assert src.index("get_app(") < src.index("ensure_app(")
+    assert src.index("prior_app_yaml_text(") < src.index("prepare_workspace_source(")
+    assert "resolve_update_check(" in src and "notebook_build_commit(" in src
+
+
+def test_notebook_installer_offers_the_release_check_widget():
+    src = Path("notebooks/install.py").read_text()
+    assert 'dbutils.widgets.dropdown("release_check", "auto", ["auto", "yes", "no"])' in src
+    assert 'release_check=dbutils.widgets.get("release_check").strip()' in src
+    assert '"update_check"' not in src
+
+
+def test_lock_hints_name_the_release_check_widget():
+    from backend.routers.app_info import LOCKED_DETAIL
+
+    copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
+    for text in (LOCKED_DETAIL, copy_ts):
+        assert "release_check notebook widget" in text
+        assert "update_check notebook widget" not in text
+
+
+def test_deployment_guide_has_the_anchors_the_app_links_to():
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    assert "\n## Upgrading an existing install\n" in guide
+    assert "\n## Release update check\n" in guide
+    assert "| `release_check` |" in guide
+    assert "`update_check`" not in guide
+    assert "| `GENIE_UPDATE_CHECK` |" in guide
+    copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
+    assert "#release-update-check" in copy_ts and "#upgrading-an-existing-install" in copy_ts
+
+
+def _fake_ws(files):
+    def download(path):
+        if path not in files:
+            raise RuntimeError("RESOURCE_DOES_NOT_EXIST")
+        return io.BytesIO(files[path])
+
+    return SimpleNamespace(workspace=SimpleNamespace(download=download))
+
+
+_LOCKED_OFF = b'env:\n  - name: UPDATE_CHECK_ENABLED\n    value: "false"\n'
+_CFG = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w")
+
+
+# Review finding #3: a rerun by a different user, or after a CLI deploy, must still
+# find the app.yaml that is actually deployed, so an install-time "no" survives.
+def test_prior_app_yaml_prefers_the_deployed_source_path():
+    w = _fake_ws({"/Users/other@example.com/.genie-workbench-deploy/gwb/app/app.yaml": _LOCKED_OFF})
+    app = {"active_deployment": {"source_code_path": "/Workspace/Users/other@example.com/.genie-workbench-deploy/gwb/app"}}
+    text = prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")
+    assert previous_update_check(text) == "false"
+
+
+def test_prior_app_yaml_uses_the_default_source_path_for_cli_deploys():
+    w = _fake_ws({"/Users/other@example.com/genie-workbench/app.yaml": _LOCKED_OFF})
+    app = {"default_source_code_path": "/Workspace/Users/other@example.com/genie-workbench"}
+    assert previous_update_check(prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")) == "false"
+
+
+def test_prior_app_yaml_falls_back_to_this_users_generated_source():
+    w = _fake_ws({"/Users/me@example.com/.genie-workbench-deploy/gwb/app/app.yaml": _LOCKED_OFF})
+    app = {"active_deployment": {"source_code_path": "/Workspace/Users/gone@example.com/missing"}}
+    assert previous_update_check(prior_app_yaml_text(w, app, _CFG.normalized(), "me@example.com")) == "false"
+    assert prior_app_yaml_text(_fake_ws({}), {}, _CFG.normalized(), "me@example.com") is None
+
+
+# Review findings #1 and #7: the reference page lists every new variable, and the
+# deployment guide states the Origin the release check actually sends.
+def test_env_var_reference_documents_the_release_check_and_build_info():
+    ref = Path("docs/docs/reference/environment-variables.md").read_text()
+    for name in ("UPDATE_CHECK_ENABLED", "GWB_BUILD_COMMIT", "GWB_DEPLOYED_AT", "GWB_INSTALL_METHOD"):
+        assert f"| `{name}` | `__{name}__` |" in ref
+    assert "| `GENIE_UPDATE_CHECK` |" in ref
+    assert "`llm_route`, `release_check`)" in ref
+    assert "`update_check`" not in ref
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    assert "`Origin: null`" in guide
+
+
+# Spec 11.5 / 11.9: a rerun keeps the app's Lakebase project and settings record.
+_APP_YAML_02 = """\
+command: ["uvicorn", "backend.main:app"]
+env:
+  - name: LLM_MODEL
+    value: "databricks-claude-opus-4-6"
+  - name: GENIE_LLM_ROUTE
+    value: "classic"
+  - name: GENIE_BYOK_ENABLED
+    value: "true"
+  - name: MLFLOW_EXPERIMENT_ID
+    value: "1234"
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "team-lakebase"
+  - name: GSO_CATALOG
+    value: "prod_catalog"
+"""
+_APP = {"name": "gwb", "resources": [{"name": "sql-warehouse", "sql_warehouse": {"id": "wh-123", "permission": "CAN_USE"}}]}
+_FULL = InstallConfig(app_name="gwb", catalog="c", warehouse_id="w", repo_root="/r", lakebase_mode="create")
+
+
+def test_app_env_skips_empty_values_placeholders_and_value_from():
+    text = (
+        'env:\n  - name: A\n    value: "x"\n  - name: B\n    value: ""\n'
+        '  - name: C\n    value: "__C__"\n  - name: D\n    valueFrom: sql-warehouse\n'
+    )
+    assert app_env(text) == {"A": "x"}
+    assert app_env(None) == {}
+    assert app_env(": [") == {}
+    assert app_env("- a\n- b\n") == {}
+
+
+def test_rerun_with_a_blank_lakebase_name_reuses_the_apps_project():
+    cfg = reuse_recorded_lakebase(_FULL, _APP, _APP_YAML_02).normalized()
+    assert cfg.lakebase_instance == "team-lakebase"
+    assert cfg.catalog == "c"  # a full rerun keeps its widget values for everything else
+
+
+def test_new_app_with_a_blank_lakebase_name_still_gets_the_default_project():
+    assert reuse_recorded_lakebase(_FULL, None, None).normalized().lakebase_instance == "gwb-lakebase"
+
+
+def test_rerun_lakebase_reuse_only_applies_to_a_blank_create():
+    explicit = replace(_FULL, lakebase_instance="mine")
+    assert reuse_recorded_lakebase(explicit, _APP, _APP_YAML_02).lakebase_instance == "mine"
+    skip = replace(_FULL, lakebase_mode="skip")
+    assert reuse_recorded_lakebase(skip, _APP, _APP_YAML_02).normalized().lakebase_instance is None
+    no_record = _APP_YAML_02.replace('value: "team-lakebase"', 'value: ""')
+    assert reuse_recorded_lakebase(_FULL, _APP, no_record).normalized().lakebase_instance == "gwb-lakebase"
+
+
+def test_prior_app_yaml_paths_lists_the_candidates_in_order():
+    app = {"active_deployment": {"source_code_path": "/Workspace/A/"}, "default_source_code_path": "/Workspace/B"}
+    assert prior_app_yaml_paths(app, _CFG.normalized(), "me@example.com") == [
+        "/Workspace/A",
+        "/Workspace/B",
+        "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app",
+    ]
+
+
+def test_run_install_rejects_a_bad_app_name_before_calling_the_workspace():
+    with pytest.raises(ValueError, match="app_name must be lowercase"):
+        run_install(SimpleNamespace(), replace(_FULL, app_name="My App"))
+
+
+def test_run_install_reuses_the_apps_lakebase_project_before_validating_or_creating():
+    import inspect
+
+    from scripts.deploy_lib import install
+
+    src = inspect.getsource(install.run_install)
+    assert src.index("reuse_recorded_lakebase(") < src.index("cfg.validate()") < src.index("ensure_app(")
+    assert src.index("require_reused_lakebase_not_deleted(") < src.index("ensure_app(")
+    assert "cfg.release_check" in src
+
+
+def test_notebook_leaves_a_blank_create_lakebase_name_to_the_installer():
+    src = Path("notebooks/install.py").read_text()
+    assert "# create + blank: the installer reuses the existing app's project" in src
+    assert 'elif lakebase_mode == "existing":\n    lakebase_instance = f"{app_name}-lakebase"' in src
+
+
+# Final review fixes (spec 11): interrupted runs and soft-deleted Lakebase projects.
+_SRC = "/Workspace/Users/me@example.com/.genie-workbench-deploy/gwb/app"
+
+
+def _stub_install(monkeypatch, *, app, app_yaml, postgres=None):
+    """run_install with every workspace call stubbed; the UC step stands in for any later failure."""
+    from scripts.deploy_lib import install
+
+    calls = {"written": {}, "ensure_app": 0}
+    monkeypatch.setattr(install, "preflight_deployment", lambda root: None)
+    monkeypatch.setattr(install, "get_deployer_user", lambda w: "me@example.com")
+    monkeypatch.setattr(install, "get_app", lambda w, name: app)
+    monkeypatch.setattr(install, "read_workspace_text", lambda w, path: app_yaml)
+    monkeypatch.setattr(install, "verify_ai_gateway", lambda w, model: None)
+
+    def ensure_app(w, cfg):
+        calls["ensure_app"] += 1
+        return app
+
+    monkeypatch.setattr(install, "ensure_app", ensure_app)
+    monkeypatch.setattr(install, "get_app_service_principal", lambda w, name: {"client_id": "sp"})
+    monkeypatch.setattr(install, "prepare_workspace_source", lambda w, cfg, user: _SRC)
+    monkeypatch.setattr(
+        install, "write_workspace_file", lambda w, path, content: calls["written"].__setitem__(path, content)
+    )
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(install, "ensure_uc_objects_and_grants", interrupted)
+    return SimpleNamespace(postgres=postgres or FakePostgres()), calls
+
+
+def test_an_interrupted_run_leaves_the_apps_current_settings_in_place(monkeypatch):
+    app = {**_APP, "active_deployment": {"source_code_path": _SRC}}
+    w, calls = _stub_install(monkeypatch, app=app, app_yaml=_APP_YAML_02)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["written"] == {f"{_SRC}/app.yaml": _APP_YAML_02.encode("utf-8")}
+
+
+def test_prior_app_yaml_paths_reads_the_deployment_snapshot_first():
+    app = {
+        "active_deployment": {
+            "source_code_path": "/Workspace/A",
+            "deployment_artifacts": {"source_code_path": "/Workspace/Users/sp/src/dep1"},
+        }
+    }
+    assert prior_app_yaml_paths(app, _CFG.normalized(), "me@example.com")[:2] == [
+        "/Workspace/Users/sp/src/dep1",
+        "/Workspace/A",
+    ]
+
+
+def test_a_rerun_never_purges_the_apps_deleted_lakebase_project(monkeypatch):
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=FakePostgres(soft_deleted=True))
+    with pytest.raises(RuntimeError, match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted"):
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 0
+    assert w.postgres.purged_projects == []
+
+
+def test_a_rerun_never_purges_a_deleted_project_that_get_reports_as_not_found(monkeypatch):
+    # Lakebase can also 404 on get_project for a soft-deleted project; ensure_project then
+    # finds it via list_projects(show_deleted=True) and purges it. The guard must catch this too.
+    postgres = FakePostgres(project_exists=False, reserved_soft_deleted=["team-lakebase"])
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=postgres)
+    with pytest.raises(RuntimeError, match=r"The Lakebase project 'team-lakebase' that app 'gwb' uses is deleted"):
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 0
+    assert w.postgres.purged_projects == []
+
+
+def test_run_install_rejects_a_bad_config_before_calling_the_workspace():
+    with pytest.raises(ValueError, match="catalog is required"):
+        run_install(SimpleNamespace(), replace(_FULL, catalog=""))
+
+
+def test_a_rerun_recreates_the_apps_lakebase_project_if_it_is_gone(monkeypatch):
+    w, calls = _stub_install(monkeypatch, app=_APP, app_yaml=_APP_YAML_02, postgres=FakePostgres(project_exists=False))
+    with pytest.raises(RuntimeError, match="interrupted"):  # got past the Lakebase check
+        run_install(w, _FULL, status_fn=lambda message: None)
+    assert calls["ensure_app"] == 1
+
+
+# Spec 11.9: the upgrade mirrors today's process (Pull, Run all); no upgrade switch.
+def test_install_config_has_no_upgrade_switch():
+    import dataclasses
+
+    assert "upgrade" not in {field.name for field in dataclasses.fields(InstallConfig)}
+
+
+def test_upgrade_is_pull_then_run_all_with_the_same_values():
+    discard = "discard your changes to `notebooks/install.py`"
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
+    upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
+    for text in ("click **Pull**", discard, "**Run All**"):
+        assert text in section
+        assert text in upgrading
+    assert "`upgrade`" not in guide
+    assert "`upgrade`" not in Path("docs/docs/reference/environment-variables.md").read_text()
+    notebook = Path("notebooks/install.py").read_text()
+    assert 'dbutils.widgets.dropdown("upgrade"' not in notebook
+    assert discard in notebook
+
+
+# Spec 12.4: a Git folder root reports DIRECTORY (its object_id is the repo ID).
+def test_notebook_build_commit_reads_a_git_folder_reported_as_a_directory():
+    w = SimpleNamespace(
+        workspace=SimpleNamespace(
+            get_status=lambda path: SimpleNamespace(object_type=SimpleNamespace(value="DIRECTORY"), object_id=7)
+        ),
+        repos=SimpleNamespace(get=lambda repo_id: SimpleNamespace(head_commit_id="c8397477e69fcf88112e")),
+    )
+    assert notebook_build_commit(w, "/Workspace/Users/me/gwb-vcheck-branch") == "c8397477e69f"
+
+
+# Spec 12.2: no admin gate, so release-check text never tells people "admins" decide.
+_RELEASE_CHECK_LINE = re.compile(
+    r"release.check|update.check|GENIE_UPDATE_CHECK|UPDATE_CHECK_ENABLED|api\.github\.com|asked in the app|Check GitHub",
+    re.I,
+)
+_ADMINS = re.compile(r"(?<![/\w-])admins?\b(?!\**\s*(?:tab|pages|view|dashboard|->))", re.I)
+
+
+def test_release_check_text_never_says_admins():
+    files = [
+        "scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-config.sh", ".env.deploy.template",
+        "notebooks/install.py", "app.yaml", "scripts/deploy_lib/install.py",
+        "docs/docs/getting-started/deployment-guide.md", "docs/docs/reference/environment-variables.md",
+    ]
+    offenders = []
+    for name in files:
+        for number, line in enumerate(Path(name).read_text().splitlines(), 1):
+            if _RELEASE_CHECK_LINE.search(line) and _ADMINS.search(line):
+                offenders.append(f"{name}:{number}: {line.strip()[:120]}")
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("\n## Release update check\n", 1)[1].split("\n## ", 1)[0]
+    offenders += [f"guide section: {line.strip()[:120]}" for line in section.splitlines() if _ADMINS.search(line)]
+    for value in ("", "true", "false"):
+        if _ADMINS.search(describe_update_check(value)):
+            offenders.append(f"describe_update_check({value!r})")
+    assert offenders == []
+
+
+
+def test_release_check_docs_say_the_answer_applies_to_everyone():
+    guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
+    section = guide.split("\n## Release update check\n", 1)[1].split("\n## ", 1)[0]
+    assert "anyone who opens the Admin tab sees a one-time banner until someone answers" in section
+    assert "the first person" not in section

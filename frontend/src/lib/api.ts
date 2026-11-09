@@ -14,6 +14,8 @@ import type {
   LeaderboardEntry,
   AlertItem,
   CurrentUser,
+  AppVersionInfo,
+  UpdateCheckState,
   UcCatalog,
   UcSchema,
   UcTable,
@@ -287,6 +289,22 @@ export async function getAlerts(): Promise<AlertItem[]> {
 
 export async function getCurrentUser(): Promise<CurrentUser> {
   return fetchWithTimeout<CurrentUser>(`${API_BASE}/auth/me`, {}, DEFAULT_TIMEOUT)
+}
+
+export async function getAppVersion(): Promise<AppVersionInfo> {
+  return fetchWithTimeout<AppVersionInfo>(`${API_BASE}/admin/version`, {}, DEFAULT_TIMEOUT)
+}
+
+export async function setUpdateCheck(enabled: boolean): Promise<UpdateCheckState> {
+  return fetchWithTimeout<UpdateCheckState>(
+    `${API_BASE}/admin/update-check`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+    DEFAULT_TIMEOUT
+  )
 }
 
 // ── Create Wizard ────────────────────────────────────────────────────────────

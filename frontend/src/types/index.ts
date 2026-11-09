@@ -1401,3 +1401,21 @@ export interface SpaceAccess {
   space_id: string
   level: SpaceAccessLevel | null
 }
+
+// ── App version + daily release check (spec 5.6) ──
+export interface UpdateCheckState {
+  mode: "on" | "off" | "ask"
+  source: "install" | "app" | "none" | "error"
+  locked: boolean
+  persisted: boolean
+}
+
+export interface AppVersionInfo {
+  version: string
+  commit: string | null
+  deployed_at: string | null
+  install_method: string | null
+  releases_repo: string
+  release_url: string | null
+  update_check: UpdateCheckState
+}

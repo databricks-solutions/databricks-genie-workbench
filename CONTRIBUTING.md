@@ -80,6 +80,16 @@ See the [README](README.md) for full architecture and environment variable refer
 5. Open a PR linking the issue you claimed, describing the change, and noting what you tested.
 6. Address review feedback.
 
+## Releasing
+
+The app's version lives in the one-line `VERSION` file at the repo root. The app shows it in Admin -> Settings, reports it in the SDK user agent, and compares it with the latest GitHub release.
+
+1. Open a PR that sets `VERSION` to the new version (for example `0.2.2`). Use the exact tag you will create, without a `v` prefix.
+2. Merge it.
+3. Create the GitHub release from `main` with that tag.
+
+The `Release version check` workflow runs when a release is published and fails if the tag (minus any leading `v`) does not match `VERSION`. If it fails, fix `VERSION` in a PR and re-create the release from the merged commit.
+
 ## Community
 
 Join **#genie-workbench** on Slack for questions, discussion, sensitive bug reports, and general feedback.

@@ -11,6 +11,8 @@ import { SpaceList } from "@/pages/SpaceList"
 import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { HowItWorks } from "@/pages/HowItWorks"
+import { AdminNavDot } from "@/components/update-check/AdminNavDot"
+import { UpdateStatusProvider } from "@/components/update-check/UpdateStatusProvider"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
 import { SpaceDetailLoadError } from "@/components/space-access/SpaceAccessChrome"
 import { ApiError, getSpaceDetail } from "@/lib/api"
@@ -163,6 +165,7 @@ function WorkbenchApp() {
 
   return (
     <ErrorBoundary>
+    <UpdateStatusProvider>
     <div className="min-h-screen bg-background text-primary">
       {/* Top header */}
       <header className="sticky top-0 z-50 bg-surface/80 backdrop-blur-sm">
@@ -203,6 +206,7 @@ function WorkbenchApp() {
             >
               <BarChart2 className="w-4 h-4" />
               Admin
+              <AdminNavDot />
             </button>
             <button
               onClick={handleNavHowItWorks}
@@ -270,6 +274,7 @@ function WorkbenchApp() {
         </div>
       </main>
     </div>
+    </UpdateStatusProvider>
     </ErrorBoundary>
   )
 }

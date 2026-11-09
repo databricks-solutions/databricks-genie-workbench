@@ -972,3 +972,28 @@ class SpaceAccess(BaseModel):
 
     space_id: str
     level: Literal["view", "edit", "manage"] | None
+
+
+class UpdateCheckState(BaseModel):
+    """Effective daily release-check setting (spec 5.4)."""
+
+    mode: Literal["on", "off", "ask"]
+    source: Literal["install", "app", "none", "error"]
+    locked: bool
+    persisted: bool
+
+
+class AppVersionResponse(BaseModel):
+    """Installed app version, build info, and the release-check setting (spec 5.6)."""
+
+    version: str
+    commit: str | None = None
+    deployed_at: str | None = None
+    install_method: str | None = None
+    releases_repo: str
+    release_url: str | None = None
+    update_check: UpdateCheckState
+
+
+class UpdateCheckRequest(BaseModel):
+    enabled: bool

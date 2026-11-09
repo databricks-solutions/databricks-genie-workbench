@@ -112,6 +112,25 @@ env:
     value: "__GENIE_BYOK_ENABLED__"
 
   # ---------------------------------------------------------------------------
+  # App version + daily release check (see docs: Release update check).
+  # The version itself comes from the repo-root VERSION file; the installers
+  # stamp the build details below. UPDATE_CHECK_ENABLED decides whether
+  # browsers on the Admin tab check GitHub once a day for a newer release (the
+  # app server never calls the internet): "true" / "false" = chosen at install
+  # (locked); empty = users are asked on the Admin tab. Set by install.sh /
+  # .env.deploy GENIE_UPDATE_CHECK or the notebook release_check widget.
+  # Consumed by backend/app_version.py.
+  # ---------------------------------------------------------------------------
+  - name: UPDATE_CHECK_ENABLED
+    value: "__UPDATE_CHECK_ENABLED__"
+  - name: GWB_BUILD_COMMIT
+    value: "__GWB_BUILD_COMMIT__"
+  - name: GWB_DEPLOYED_AT
+    value: "__GWB_DEPLOYED_AT__"
+  - name: GWB_INSTALL_METHOD
+    value: "__GWB_INSTALL_METHOD__"
+
+  # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".
   # Configure the warehouse resource in the Databricks Apps UI.
   # Falls back to auto-detect if empty.

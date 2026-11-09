@@ -498,6 +498,21 @@ sed -i.bak "s|__VC_OBSERVE_CATALOG__|${CATALOG}|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__VC_OBSERVE_CONTROL_SCHEMA__|${GSO_SCHEMA}|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__VC_OBSERVE_SP_PRINCIPAL_ID__|${SP_CLIENT_ID}|" "$PATCHED_APP_YAML"
 
+# App version build info + daily release check. The commit is empty for zip
+# downloads (no .git); "-dirty" marks uncommitted changes to tracked files.
+GWB_BUILD_COMMIT=""
+if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    GWB_BUILD_COMMIT=$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)
+    if [ -n "$GWB_BUILD_COMMIT" ] && [ -n "$(git -C "$PROJECT_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        GWB_BUILD_COMMIT="${GWB_BUILD_COMMIT}-dirty"
+    fi
+fi
+GWB_DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+sed -i.bak "s|__UPDATE_CHECK_ENABLED__|${UPDATE_CHECK}|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__GWB_BUILD_COMMIT__|${GWB_BUILD_COMMIT}|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__GWB_DEPLOYED_AT__|${GWB_DEPLOYED_AT}|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__GWB_INSTALL_METHOD__|cli|" "$PATCHED_APP_YAML"
+
 # CUJ-1 (version history / capture / in-workspace restore) is a native feature:
 # app_observe.py hardwires it on whenever the VC_OBSERVE_* surface resolves above, so
 # there is no write flag to patch here. The CUJ-2+ governed switches
@@ -522,6 +537,11 @@ databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
 echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, LLM_ROUTE=$LLM_ROUTE, BYOK=$BYOK_ENABLED, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>}, VC_OBSERVE=${VC_WS_ID:+enabled}${VC_WS_ID:-fail-closed}@${CATALOG}.${GSO_SCHEMA})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
+case "$UPDATE_CHECK" in
+    true)  echo "  ℹ Daily release check: ON (set at install; runs in users' browsers on the Admin tab against api.github.com)" ;;
+    false) echo "  ℹ Daily release check: OFF (set at install)" ;;
+    *)     echo "  ℹ Daily release check: ASK (users will be asked on the Admin tab). Set GENIE_UPDATE_CHECK=true or false in .env.deploy to decide now." ;;
+esac
 
 # Ensure app compute is running before deploying
 APP_STATE=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \

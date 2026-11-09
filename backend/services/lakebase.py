@@ -295,8 +295,16 @@ async def _ensure_schema():
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watch_rollup_day ON genie.watch_daily_usage_rollup(day DESC)"
             )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.app_settings (
+                    key         TEXT PRIMARY KEY,
+                    value       TEXT NOT NULL,
+                    updated_by  TEXT,
+                    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
         _lakebase_available = True
-        logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables)")
+        logger.info("Lakebase schema ready (workbench, watch, and settings tables)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
@@ -852,6 +860,52 @@ async def get_join_advice(space_id: str) -> Optional[dict]:
 def is_available() -> bool:
     """Whether the Lakebase pool is currently usable."""
     return _lakebase_available and _pool is not None
+
+
+def is_configured() -> bool:
+    """Whether this app is configured to use Lakebase (LAKEBASE_HOST set), usable or not."""
+    return bool((os.environ.get("LAKEBASE_HOST") or "").strip())
+
+
+# ── App-wide settings (key/value) ─────────────────────────────────────────
+# Lakebase only. There is deliberately no in-memory fallback: a setting that
+# silently resets on every restart is worse than none. Callers fall back to
+# per-browser storage when set_app_setting reports it could not persist.
+
+
+async def get_app_setting(key: str) -> Optional[str]:
+    """An app-wide setting, or None when unset or Lakebase is unavailable.
+
+    Raises when Lakebase is available but the read fails, so callers can fail closed.
+    """
+    await _maybe_retry_schema()
+    if not _lakebase_available or _pool is None:
+        return None
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM genie.app_settings WHERE key = $1", key)
+    return row["value"] if row else None
+
+
+async def set_app_setting(key: str, value: str, updated_by: str | None) -> bool:
+    """Upsert an app-wide setting. Returns False (nothing written) when Lakebase is unavailable."""
+    await _maybe_retry_schema()
+    if not _lakebase_available or _pool is None:
+        return False
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO genie.app_settings (key, value, updated_by, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (key) DO UPDATE
+               SET value = EXCLUDED.value,
+                   updated_by = EXCLUDED.updated_by,
+                   updated_at = NOW()
+            """,
+            key,
+            value,
+            updated_by,
+        )
+    return True
 
 
 async def watch_upsert_space(space: dict) -> None:

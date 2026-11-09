@@ -107,6 +107,8 @@ TABLE: dict[tuple[str, str], Gated | Exempt] = {
     ("GET", "/api/admin/dashboard"): Exempt("admin aggregate over the caller's own listing (MV-D119)"),
     ("GET", "/api/admin/leaderboard"): Exempt("admin aggregate over the caller's own listing (MV-D119)"),
     ("GET", "/api/admin/alerts"): Exempt("admin aggregate over the caller's own listing (MV-D119)"),
+    ("GET", "/api/admin/version"): Exempt("installed app version and release-check setting; names no space"),
+    ("PUT", "/api/admin/update-check"): Exempt("release-check setting; names no space; any signed-in user"),
     ("GET", "/api/create/preflight"): Exempt("create discovery; no existing space"),
     ("GET", "/api/create/discover/catalogs"): Exempt("create discovery; no existing space"),
     ("GET", "/api/create/discover/schemas"): Exempt("create discovery; no existing space"),

@@ -9,8 +9,13 @@ from typing import Any, Literal
 
 LakebaseMode = Literal["create", "existing", "skip"]
 LLM_ROUTES = ("gateway", "classic")
+RELEASE_CHECK_CHOICES = ("auto", "yes", "no")
 
 APP_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+APP_NAME_ERROR = (
+    "app_name must be lowercase letters, numbers, and hyphens, "
+    "1-63 chars, and cannot start or end with a hyphen"
+)
 GSO_JOB_BASENAME = "gso-optimization-job"
 
 
@@ -57,6 +62,7 @@ class InstallConfig:
     update_only: bool = False
     gso_job_name: str = ""
     gso_wheel_path: str | None = None
+    release_check: str = "auto"
 
     def normalized(self) -> "InstallConfig":
         app_name = self.app_name.strip()
@@ -83,16 +89,14 @@ class InstallConfig:
             update_only=bool(self.update_only),
             gso_job_name=gso_job_name,
             gso_wheel_path=(self.gso_wheel_path or "").strip() or None,
+            release_check=(self.release_check or "auto").strip().lower(),
         )
 
     def validate(self) -> None:
         cfg = self.normalized()
         errors: list[str] = []
         if not APP_NAME_RE.match(cfg.app_name):
-            errors.append(
-                "app_name must be lowercase letters, numbers, and hyphens, "
-                "1-63 chars, and cannot start or end with a hyphen"
-            )
+            errors.append(APP_NAME_ERROR)
         if not cfg.catalog:
             errors.append("catalog is required")
         if not cfg.warehouse_id:
@@ -105,6 +109,8 @@ class InstallConfig:
             errors.append("lakebase_instance is required when lakebase_mode is existing")
         if not cfg.repo_root:
             errors.append("repo_root is required")
+        if cfg.release_check not in RELEASE_CHECK_CHOICES:
+            errors.append("release_check must be one of: auto, yes, no")
         if errors:
             raise ValueError("; ".join(errors))
 

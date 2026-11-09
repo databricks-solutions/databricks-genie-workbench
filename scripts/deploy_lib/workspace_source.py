@@ -86,6 +86,22 @@ def default_gso_path(deployer_user: str, app_name: str) -> str:
     return f"/Workspace/Users/{deployer_user}/.genie-workbench-deploy/{app_name}/gso"
 
 
+def source_path_for(cfg: InstallConfig, deployer_user: str) -> str:
+    """Workspace folder the app source is generated into."""
+    return cfg.deploy_workspace_path or default_source_path(deployer_user, cfg.app_name)
+
+
+def read_workspace_text(w, workspace_path: str) -> str | None:
+    """A workspace file's text, or None when it is missing or unreadable."""
+    try:
+        data = w.workspace.download(workspace_api_path(workspace_path)).read()
+    except Exception:  # noqa: BLE001 - callers treat unreadable as missing
+        return None
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return str(data)
+
+
 def should_copy(path: Path, repo_root: Path) -> bool:
     rel = path.relative_to(repo_root).as_posix()
     parts = rel.split("/")
@@ -240,7 +256,7 @@ def upload_source_notebook(w, src_path: Path, workspace_path_without_ext: str) -
 
 def prepare_workspace_source(w, cfg: InstallConfig, deployer_user: str) -> str:
     repo_root = Path(cfg.repo_root or "").resolve()
-    source_path = cfg.deploy_workspace_path or default_source_path(deployer_user, cfg.app_name)
+    source_path = source_path_for(cfg, deployer_user)
 
     validate_python_dependency_sources(repo_root)
 
