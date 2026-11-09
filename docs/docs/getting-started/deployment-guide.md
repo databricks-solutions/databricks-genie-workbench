@@ -323,7 +323,9 @@ runs don't re-resolve against the live package index. It leaves out packages the
 serverless base environment already ships (listed in
 `packages/genie-space-optimizer/serverless-env-v4-base-packages.txt`), so the job
 never replaces base-image packages. Refresh that snapshot whenever the job's
-serverless `environment_version` changes.
+serverless `environment_version` changes. Databricks also patches base images in
+place without a version bump, so re-capture the snapshot before relying on a
+version it lists.
 
 ### Updating npm dependencies
 

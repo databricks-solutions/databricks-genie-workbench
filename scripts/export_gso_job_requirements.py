@@ -11,7 +11,8 @@ Packages already installed in the serverless base environment are dropped:
 pinning them to our lock version would make pip silently replace base-image
 packages (protobuf, grpcio, pyarrow, ...) that Spark Connect depends on. The
 base-package snapshot lives next to the output and must be refreshed whenever
-the job's environment_version changes.
+the job's environment_version changes (and re-captured before relying on a
+listed version, since base images are patched in place).
 
 Reads uv.lock with --frozen only; never re-locks or changes index URLs.
 
