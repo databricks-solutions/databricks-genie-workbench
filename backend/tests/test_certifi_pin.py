@@ -1,53 +1,63 @@
-"""Guards the certifi floor for the App and the GSO serverless job.
+"""Guards the certifi floor for the App, and keeps certifi out of the GSO wheel.
 
-Deployments are blocked for certifi older than 2026.10.19. The GSO job's
-serverless base image ships an older certifi (serverless-env-v4-base-packages.txt),
-and base packages are filtered out of requirements-job.txt, so the GSO wheel's own
-direct pin is what upgrades certifi in the job environment.
+Apps deployments are blocked for certifi older than 2026.10.19, so the root
+pyproject.toml pins it exactly and uv.lock / requirements.txt must resolve to
+at least that version.
+
+The GSO serverless job takes certifi from the serverless base image instead.
+An exact certifi pin in the GSO wheel would downgrade a newer base-image
+certifi and break again at the next floor bump, so the GSO package must not
+declare certifi, and requirements-job.txt must not pin it.
 """
 
 import tomllib
 from pathlib import Path
 
-from scripts.export_gso_job_requirements import requirement_name
+from packaging.requirements import Requirement
+from packaging.version import Version
+
+from scripts.export_gso_job_requirements import OUTPUT_PATH, requirement_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MIN_CERTIFI = (2026, 10, 19)
+MIN_CERTIFI = Version("2026.10.19")
 
 
-def _version(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in text.split("."))
+def _certifi_requirements(lines: list[str]) -> list[Requirement]:
+    return [Requirement(line) for line in lines if requirement_name(line) == "certifi"]
 
 
-def _certifi_pins(pyproject: Path) -> list[str]:
-    deps = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
-    return [dep for dep in deps if requirement_name(dep) == "certifi"]
+def _pyproject_certifi(pyproject: Path) -> list[Requirement]:
+    return _certifi_requirements(tomllib.loads(pyproject.read_text())["project"]["dependencies"])
 
 
-def test_pyprojects_pin_certifi_at_or_above_floor():
-    for pyproject in (
-        REPO_ROOT / "pyproject.toml",
-        REPO_ROOT / "packages/genie-space-optimizer/pyproject.toml",
-    ):
-        (pin,) = _certifi_pins(pyproject)
-        assert pin.startswith("certifi=="), f"{pyproject}: certifi must be an exact pin, got {pin!r}"
-        assert _version(pin.split("==", 1)[1]) >= MIN_CERTIFI, pyproject
+def _pinned_version(req: Requirement) -> Version:
+    (spec,) = req.specifier
+    assert spec.operator == "==", f"certifi must be an exact pin, got {req}"
+    return Version(spec.version)
+
+
+def test_root_pyproject_pins_certifi_at_or_above_floor():
+    (req,) = _pyproject_certifi(REPO_ROOT / "pyproject.toml")
+    assert _pinned_version(req) >= MIN_CERTIFI
+
+
+def test_gso_package_does_not_declare_certifi():
+    assert _pyproject_certifi(REPO_ROOT / "packages/genie-space-optimizer/pyproject.toml") == []
+
+
+def test_gso_job_requirements_do_not_pin_certifi():
+    assert _certifi_requirements(OUTPUT_PATH.read_text().splitlines()) == []
 
 
 def test_uv_lock_resolves_certifi_at_or_above_floor():
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text())
-    versions = [pkg["version"] for pkg in lock["package"] if pkg["name"] == "certifi"]
+    versions = [Version(pkg["version"]) for pkg in lock["package"] if pkg["name"] == "certifi"]
     assert versions, "certifi missing from uv.lock"
-    for version in versions:
-        assert _version(version) >= MIN_CERTIFI, f"uv.lock certifi=={version}"
+    assert min(versions) >= MIN_CERTIFI
 
 
 def test_requirements_txt_pins_certifi_at_or_above_floor():
-    pins = [
-        line.split(";", 1)[0].strip()
-        for line in (REPO_ROOT / "requirements.txt").read_text().splitlines()
-        if requirement_name(line) == "certifi"
-    ]
-    assert pins, "certifi missing from requirements.txt"
-    for pin in pins:
-        assert _version(pin.split("==", 1)[1]) >= MIN_CERTIFI, pin
+    reqs = _certifi_requirements((REPO_ROOT / "requirements.txt").read_text().splitlines())
+    assert reqs, "certifi missing from requirements.txt"
+    for req in reqs:
+        assert _pinned_version(req) >= MIN_CERTIFI

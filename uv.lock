@@ -1086,7 +1086,6 @@ wheels = [
 name = "genie-space-optimizer"
 source = { editable = "packages/genie-space-optimizer" }
 dependencies = [
-    { name = "certifi" },
     { name = "databricks-sdk" },
     { name = "litellm" },
     { name = "mlflow", extra = ["databricks"] },
@@ -1112,7 +1111,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "certifi", specifier = "==2026.10.19" },
     { name = "databricks-connect", marker = "python_full_version >= '3.12' and extra == 'spark'", specifier = "==18.0.3" },
     { name = "databricks-connect", marker = "python_full_version < '3.12' and extra == 'spark'", specifier = "==16.1.7" },
     { name = "databricks-sdk", specifier = "==0.117.0" },

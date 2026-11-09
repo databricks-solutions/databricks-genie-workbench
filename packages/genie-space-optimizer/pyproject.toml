@@ -12,7 +12,6 @@ dependencies = [
     "pydantic==2.12.5",
     "pandas==2.3.3",
     "sqlglot==30.0.3",
-    "certifi==2026.10.19",
 ]
 
 [project.optional-dependencies]

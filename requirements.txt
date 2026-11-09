@@ -56,7 +56,6 @@ cachetools==7.0.5
     #   mlflow-tracing
 certifi==2026.10.19
     # via
-    #   genie-space-optimizer
     #   genie-workbench
     #   httpcore
     #   httpx
