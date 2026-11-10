@@ -1783,15 +1783,18 @@ def test_lock_hints_name_the_release_check_widget():
         assert "update_check notebook widget" not in text
 
 
-def test_deployment_guide_has_the_anchors_the_app_links_to():
+def test_docs_have_the_pages_and_anchors_the_app_links_to():
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
-    assert "\n## Upgrading an existing install\n" in guide
     assert "\n## Release update check\n" in guide
     assert "| `release_check` |" in guide
     assert "`update_check`" not in guide
     assert "| `GENIE_UPDATE_CHECK` |" in guide
+    upgrading = Path("docs/docs/getting-started/upgrading.md").read_text()
+    assert "\n# Upgrading\n" in upgrading
+    assert "slug:" not in upgrading  # the app links to the default /getting-started/upgrading/ path
     copy_ts = Path("frontend/src/components/update-check/copy.ts").read_text()
-    assert "#release-update-check" in copy_ts and "#upgrading-an-existing-install" in copy_ts
+    assert "deployment-guide/#release-update-check" in copy_ts
+    assert "upgrading/" in copy_ts
 
 
 def _fake_ws(files):
@@ -2021,12 +2024,18 @@ def test_install_config_has_no_upgrade_switch():
 def test_upgrade_is_pull_then_run_all_with_the_same_values():
     discard = "discard your changes to `notebooks/install.py`"
     guide = Path("docs/docs/getting-started/deployment-guide.md").read_text()
-    section = guide.split("### 4. Updating a notebook-installed app", 1)[1].split("\n## ", 1)[0]
-    upgrading = guide.split("\n## Upgrading an existing install\n", 1)[1].split("\n## ", 1)[0]
+    upgrading = Path("docs/docs/getting-started/upgrading.md").read_text()
+    notebook_steps = upgrading.split("\n### Notebook install\n", 1)[1].split("\n### ", 1)[0]
     for text in ("click **Pull**", discard, "**Run All**"):
-        assert text in section
-        assert text in upgrading
+        assert text in notebook_steps
+    terminal_steps = upgrading.split("\n### Terminal install\n", 1)[1].split("\n## ", 1)[0]
+    for text in ("git checkout main", "git pull", "./scripts/deploy.sh --update"):
+        assert text in terminal_steps
+    # The deployment guide points at the Upgrading page instead of repeating the steps.
+    for heading in ("### 4. Updating a notebook-installed app", "\n## Upgrading an existing install\n"):
+        assert "(./upgrading.md)" in guide.split(heading, 1)[1].split("\n## ", 1)[0]
     assert "`upgrade`" not in guide
+    assert "`upgrade`" not in upgrading
     assert "`upgrade`" not in Path("docs/docs/reference/environment-variables.md").read_text()
     notebook = Path("notebooks/install.py").read_text()
     assert 'dbutils.widgets.dropdown("upgrade"' not in notebook

@@ -108,15 +108,7 @@ The Git folder is never modified — the generated workspace folder is deploymen
 
 ### 4. Updating a notebook-installed app
 
-1. In the Databricks Git folder, click **Pull**. If Pull reports a conflict in `notebooks/install.py`, discard your changes to `notebooks/install.py` and Pull again. Databricks edits the notebook when it runs, so Git sees a local change; discarding it loses nothing.
-2. Open `notebooks/install.py` and check that the widgets still hold the values you installed with (`app_name`, `catalog`, `warehouse_id`, and the Lakebase settings).
-3. Click **Run All**.
-
-With `lakebase_mode` set to `create` and a blank `lakebase_project_name`, the installer keeps the Lakebase project the app already uses.
-
-:::note
-The app now requests the `ai-gateway` user scope. After an update that adds a scope, each user is asked to consent once more on their next visit. See [Authentication & Permissions](/docs/platform/authentication).
-:::
+See [Upgrading](./upgrading.md).
 
 ## Method 2: Local Terminal Installer (Backup)
 
@@ -180,10 +172,7 @@ The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv 
 
 ## Upgrading an existing install
 
-- **Notebook install:** in the Git folder click **Pull** (if Pull reports a conflict in `notebooks/install.py`, discard your changes to `notebooks/install.py` and Pull again), then open `notebooks/install.py` and click **Run All** with the same widget values. See [Updating a notebook-installed app](#4-updating-a-notebook-installed-app).
-- **Terminal install:** run `git pull` in your clone, then `./scripts/deploy.sh --update`.
-
-Admin -> Settings shows the installed version, commit, and deploy date, so you can confirm the upgrade landed.
+See [Upgrading](./upgrading.md) for upgrade steps for both install paths, how to find your version, what changes between versions, and upgrade troubleshooting.
 
 ## Release update check
 
@@ -192,7 +181,7 @@ Genie Workbench can tell you when a newer release is available. The check lives 
 - **What is called:** `https://api.github.com/repos/databricks-solutions/databricks-genie-workbench/releases/latest`, at most once a day per browser, plus whenever someone clicks **Check now** in Admin -> Settings.
 - **Who calls it:** the browser of whoever has the Admin tab open. The app server never calls the internet, and other pages never trigger the check.
 - **What is sent:** nothing about your workspace. The request runs from a hidden, sandboxed frame, so the browser sends `Origin: null` instead of the app's address, with no referrer and no cookies. The installed version stays in the browser (the comparison happens locally). GitHub sees the browser's IP address and user agent, the same as visiting github.com.
-- **What you see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and these upgrade steps.
+- **What you see:** a dot on the **Admin** tab and a banner on the Admin Dashboard ("Genie Workbench 0.2.2 is available (you're on 0.2.1)") with links to the release notes and the [upgrade steps](./upgrading.md).
 
 **Choosing at install.** The terminal installer asks (default yes) and saves `GENIE_UPDATE_CHECK` in `.env.deploy`. The notebook installer uses the `release_check` widget. A `true` or `false` chosen at install is locked: Admin -> Settings shows the state, but it cannot be changed in the app.
 
