@@ -133,7 +133,7 @@ def _inspection_complete(history: list[dict]) -> bool:
     (assess_data_quality or profile_table_usage) has a real result.
 
     This distinguishes "just started inspecting" from "inspection is done,
-    ready for plan generation."
+    ready for readiness profiling."
     """
     if not _has_tool_result(history, "describe_table"):
         return False
@@ -156,9 +156,13 @@ def detect_step(session: AgentSession) -> str:
     - requirements: default start (must have at least one assistant reply before advancing)
     - discovery: any discovery tool called (or user has given business questions)
     - feasibility: selected_tables populated (user confirmed table selection)
-    - inspection: feasibility_confirmed is True
-    - plan: describe_table results exist for selected tables
-    - config_create: generate_plan/present_plan result exists
+    - inspection: feasibility_confirmed is True, or describe_table has been called
+    - profiling: an assess_readiness result exists, or inspection is complete
+      (describe_table plus assess_data_quality or profile_table_usage with
+      non-cancelled results); stays here (readiness report) until plan
+      generation starts
+    - plan: generate_plan/present_plan has been called
+    - config_create: space_config is set
     - post_creation: space_id is set
     """
     # Terminal states (check first, most specific)
@@ -171,7 +175,8 @@ def detect_step(session: AgentSession) -> str:
     if _has_tool(session.history, "present_plan") or _has_tool(session.history, "generate_plan"):
         return "plan"
 
-    # Profiling complete → ready for plan
+    # Readiness assessed → stay in profiling to present the report; plan
+    # generation (checked above) is what advances to "plan"
     if _has_tool_result(session.history, "assess_readiness"):
         return "profiling"
 

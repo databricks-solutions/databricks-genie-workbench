@@ -10,7 +10,7 @@
 # dev extra is present. The `--extra dev` is NOT optional: the root pytest config
 # sets `asyncio_mode = "auto"`, which needs pytest-asyncio. Without the extra,
 # pytest warns "Unknown config option: asyncio_mode" and every async backend test
-# fails on an uncollectable coroutine — 12 failures that look like code defects
+# fails on an uncollectable coroutine — failures that look like code defects
 # and are not. Invoke the suites through this script rather than calling pytest
 # directly, so that flag cannot be forgotten.
 

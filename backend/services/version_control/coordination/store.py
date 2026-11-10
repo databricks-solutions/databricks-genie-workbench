@@ -2,7 +2,7 @@
 
 Single-row Serializable UPDATE that never INSERTs on a CAS miss, over
 `genie_ops_coordination`. The MERGE mirrors the statement the live M03 CAS gate
-(`backend/tests/integration/test_vc_delta_cas.py`) validated against real
+(removed with the live integration harness in `f832a2f3`) validated against real
 serverless Delta: it re-checks the fence (`binding_revision`, `row_version`,
 `generation`), the occupied state and the attempt in SQL, and treats *only* a
 confirmed Delta optimistic-concurrency abort as a CAS loss — timeouts,

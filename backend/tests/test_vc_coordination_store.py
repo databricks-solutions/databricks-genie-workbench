@@ -1,7 +1,8 @@
 """Offline tests for the production Delta coordination CAS store (M03).
 
-The live CAS behavior (real optimistic concurrency, one winner) is proved by the
-deployment gate test_vc_delta_cas.py. These offline tests pin the row<->column
+The live CAS behavior (real optimistic concurrency, one winner) was proved by the
+deployment gate test_vc_delta_cas.py, removed with the live integration harness
+in f832a2f3. These offline tests pin the row<->column
 mapping and the CAS decision/guard logic against a stateful fake `execute` seam
 that interprets SELECT/INSERT/MERGE by parameters (never by SQL text).
 """
