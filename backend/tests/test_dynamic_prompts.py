@@ -5,6 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import pytest
+
 from backend.services.create_agent_session import AgentSession
 from backend.prompts_create import (
     detect_step,
@@ -19,7 +21,7 @@ def _make_session(**kwargs) -> AgentSession:
     return AgentSession(session_id="test", **kwargs)
 
 
-def _add_tool_call(session: AgentSession, tool_name: str) -> None:
+def _add_tool_call(session: AgentSession, tool_name: str, content: str = '{"ok": true}') -> None:
     session.history.append({
         "role": "assistant",
         "content": "",
@@ -32,7 +34,7 @@ def _add_tool_call(session: AgentSession, tool_name: str) -> None:
     session.history.append({
         "role": "tool",
         "tool_call_id": f"tc_{tool_name}",
-        "content": '{"ok": true}',
+        "content": content,
     })
 
 
@@ -107,6 +109,56 @@ def test_detect_step_inspection_via_feasibility_confirmed():
     session.selected_tables = ["catalog.schema.table1"]
     session.feasibility_confirmed = True
     assert detect_step(session) == "inspection"
+
+
+# Inspection -> profiling -> plan. Ported from the retired root scripts
+# tests/test_inspection_loop.py and tests/test_compaction_400.py, which nothing
+# ran. The bug they diagnosed: detect_step stayed in "inspection" after a full
+# inspection, so the inspection prompt made the agent re-run describe_table.
+
+def test_detect_step_full_inspection_advances_to_profiling():
+    session = _make_session()
+    _add_tool_call(session, "discover_tables")
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, "assess_data_quality")
+    _add_tool_call(session, "profile_table_usage")
+    assert detect_step(session) == "profiling"
+
+
+@pytest.mark.parametrize("follow_up", ["assess_data_quality", "profile_table_usage"])
+def test_detect_step_one_follow_up_completes_inspection(follow_up):
+    """describe_table plus either follow-up inspection tool is enough to leave inspection."""
+    session = _make_session()
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, follow_up)
+    assert detect_step(session) == "profiling"
+
+
+def test_detect_step_cancelled_follow_ups_stay_in_inspection():
+    """Cancelled results don't count as a completed inspection."""
+    session = _make_session()
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, "assess_data_quality", content='{"cancelled": true}')
+    _add_tool_call(session, "profile_table_usage", content='{"cancelled": true}')
+    assert detect_step(session) == "inspection"
+
+
+def test_detect_step_stays_in_profiling_after_assess_readiness():
+    """The profiling step presents the readiness report; only plan generation advances."""
+    session = _make_session()
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, "assess_data_quality")
+    _add_tool_call(session, "assess_readiness")
+    assert detect_step(session) == "profiling"
+
+
+def test_detect_step_generate_plan_after_profiling_advances_to_plan():
+    session = _make_session()
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, "assess_data_quality")
+    _add_tool_call(session, "assess_readiness")
+    _add_tool_call(session, "generate_plan")
+    assert detect_step(session) == "plan"
 
 
 # --- assemble_system_prompt tests ---

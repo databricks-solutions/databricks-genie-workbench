@@ -23,9 +23,13 @@ The root bundle and notebook installer must keep equivalent task definitions.
 ## Commands
 
 ```bash
-uv sync --frozen
-uv run pytest
-uv build
+# From the repo root. The workspace shares one .venv and one uv.lock.
+uv sync --frozen --extra dev --all-packages              # never `uv sync` from this package dir: it strips root-only packages (incl. pytest-asyncio) from the shared .venv
+./scripts/test.sh packages/genie-space-optimizer/tests   # this suite only (same config CI uses)
+
+# From packages/genie-space-optimizer/: the root bundle's wheel build (root databricks.yml).
+# This package's own databricks.yml builds into a package-local .build/ instead.
+uv build --wheel --out-dir ../../.build
 ```
 
 The authoritative dependency lock is the repository-root `uv.lock`; there is no

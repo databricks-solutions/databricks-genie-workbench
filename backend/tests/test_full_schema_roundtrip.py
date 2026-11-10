@@ -1,15 +1,17 @@
 """
-End-to-end test: exercise every serialized_space schema feature through
-generate_config → validate_config → clean_config → enforce_constraints.
+Round trip: exercise every serialized_space schema feature through
+generate_config → validate_config → enforce_constraints → clean_config.
 
 Also validates the canonical reference JSON directly.
+
+Ported from the retired root script tests/test_full_schema.py, which no runner
+collected. The fixture constants below are unchanged from that script.
 """
 
+import copy
 import json
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pytest
 
 from backend.services.create_agent_tools import _generate_config, _validate_config
 from backend.genie_creator import _clean_config, _enforce_constraints
@@ -369,194 +371,151 @@ CANONICAL_JSON = {
 }
 
 
-def _pp(label: str, ok: bool, detail: str = ""):
-    sym = "PASS" if ok else "FAIL"
-    msg = f"  [{sym}] {label}"
-    if detail:
-        msg += f" — {detail}"
-    print(msg)
-    return ok
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
-
-def run_tests():
-    all_passed = True
-    print("=" * 70)
-    print("TEST 1: _generate_config with ALL schema features")
-    print("=" * 70)
-
+@pytest.fixture
+def generated() -> dict:
+    """A fresh _generate_config result per test (inputs deep-copied so no test
+    can leak mutations into another)."""
     result = _generate_config(
-        tables=TABLES,
-        sample_questions=SAMPLE_QUESTIONS,
-        text_instructions=TEXT_INSTRUCTIONS,
-        example_sqls=EXAMPLE_SQLS,
-        measures=MEASURES,
-        filters=FILTERS,
-        expressions=EXPRESSIONS,
-        join_specs=JOIN_SPECS,
-        benchmarks=BENCHMARKS,
-        metric_views=METRIC_VIEWS,
+        tables=copy.deepcopy(TABLES),
+        sample_questions=copy.deepcopy(SAMPLE_QUESTIONS),
+        text_instructions=copy.deepcopy(TEXT_INSTRUCTIONS),
+        example_sqls=copy.deepcopy(EXAMPLE_SQLS),
+        measures=copy.deepcopy(MEASURES),
+        filters=copy.deepcopy(FILTERS),
+        expressions=copy.deepcopy(EXPRESSIONS),
+        join_specs=copy.deepcopy(JOIN_SPECS),
+        benchmarks=copy.deepcopy(BENCHMARKS),
+        metric_views=copy.deepcopy(METRIC_VIEWS),
     )
+    assert "error" not in result, result.get("error")
+    return result
 
-    if "error" in result:
-        print(f"  [FAIL] generate_config returned error: {result['error']}")
-        return False
 
-    config = result["config"]
-    summary = result["summary"]
+@pytest.fixture
+def config(generated) -> dict:
+    return generated["config"]
 
-    all_passed &= _pp("Config has version 2", config.get("version") == 2)
-    all_passed &= _pp(f"Tables: {summary['tables']}", summary["tables"] == 3)
-    all_passed &= _pp(f"Sample questions: {summary['sample_questions']}", summary["sample_questions"] == 5)
-    all_passed &= _pp(f"Example SQLs: {summary['example_sqls']}", summary["example_sqls"] == 5)
-    all_passed &= _pp(f"Measures: {summary['measures']}", summary["measures"] == 3)
-    all_passed &= _pp(f"Filters: {summary['filters']}", summary["filters"] == 3)
-    all_passed &= _pp(f"Expressions: {summary['expressions']}", summary["expressions"] == 3)
-    all_passed &= _pp(f"Join specs: {summary['join_specs']}", summary["join_specs"] == 2)
-    all_passed &= _pp(f"Benchmarks: {summary['benchmarks']}", summary["benchmarks"] == 5)
-    all_passed &= _pp(f"Text instructions: {summary['text_instructions']}", summary["text_instructions"] == 5)
 
-    # Check metric views
+def _example_sqls(config: dict) -> list[dict]:
+    return config.get("instructions", {}).get("example_question_sqls", [])
+
+
+def _orders_column(config: dict, name: str) -> dict:
+    orders = next(t for t in config["data_sources"]["tables"] if "orders" in t["identifier"])
+    col = next((c for c in orders.get("column_configs", []) if c["column_name"] == name), None)
+    assert col is not None, f"orders.{name} missing from column_configs"
+    return col
+
+
+# --- 1. _generate_config with every schema feature ---
+
+def test_generated_config_version_and_section_counts(config, generated):
+    assert config.get("version") == 2
+    expected = {
+        "tables": 3,
+        "sample_questions": 5,
+        "example_sqls": 5,
+        "measures": 3,
+        "filters": 3,
+        "expressions": 3,
+        "join_specs": 2,
+        "benchmarks": 5,
+        "text_instructions": 5,
+    }
+    summary = generated["summary"]
+    assert {k: summary.get(k) for k in expected} == expected
+
+
+def test_metric_view_carries_column_configs(config):
     mvs = config.get("data_sources", {}).get("metric_views", [])
-    all_passed &= _pp(f"Metric views: {len(mvs)}", len(mvs) == 1)
-    if mvs:
-        all_passed &= _pp("Metric view has column_configs", "column_configs" in mvs[0])
+    assert len(mvs) == 1
+    assert "column_configs" in mvs[0]
 
-    # Check join_specs have --rt= annotation
-    jss = config.get("instructions", {}).get("join_specs", [])
-    for i, js in enumerate(jss):
-        has_rt = any(s.startswith("--rt=") for s in js.get("sql", []))
-        all_passed &= _pp(f"join_spec[{i}] has --rt= annotation", has_rt)
-        has_backticks = any("`" in s for s in js.get("sql", []) if not s.startswith("--rt="))
-        all_passed &= _pp(f"join_spec[{i}] uses backtick-quoted refs", has_backticks)
 
-    # Check text_instructions have \n suffix
+def test_join_specs_have_rt_annotation_and_backtick_refs(config):
+    join_specs = config.get("instructions", {}).get("join_specs", [])
+    assert join_specs
+    for js in join_specs:
+        sql = js.get("sql", [])
+        assert any(s.startswith("--rt=") for s in sql), js
+        assert any("`" in s for s in sql if not s.startswith("--rt=")), js
+
+
+def test_text_instruction_lines_end_with_newline(config):
     ti = config.get("instructions", {}).get("text_instructions", [])
-    if ti:
-        for j, line in enumerate(ti[0].get("content", [])):
-            has_nl = line.endswith("\n")
-            all_passed &= _pp(f"text_instruction content[{j}] ends with \\n", has_nl)
+    assert ti
+    for line in ti[0].get("content", []):
+        assert line.endswith("\n"), repr(line)
 
-    # Check example_sqls parameters are present
-    eqs = config.get("instructions", {}).get("example_question_sqls", [])
-    param_count = sum(1 for eq in eqs if eq.get("parameters"))
-    all_passed &= _pp(f"Example SQLs with parameters: {param_count}", param_count == 2)
 
-    # Check usage_guidance is present
-    ug_count = sum(1 for eq in eqs if eq.get("usage_guidance"))
-    all_passed &= _pp(f"Example SQLs with usage_guidance: {ug_count}", ug_count == 5)
+def test_example_sqls_parameters_and_usage_guidance(config):
+    eqs = _example_sqls(config)
+    assert sum(1 for eq in eqs if eq.get("parameters")) == 2
+    assert sum(1 for eq in eqs if eq.get("usage_guidance")) == 5
 
-    # Check default_value wrapping
-    for eq in eqs:
-        for p in eq.get("parameters", []):
-            dv = p.get("default_value", {})
-            has_values = isinstance(dv, dict) and "values" in dv
-            all_passed &= _pp(f"Param '{p.get('name')}' default_value has values array", has_values)
 
-    # Check excluded column has matching=false
-    orders_tbl = next(t for t in config["data_sources"]["tables"] if "orders" in t["identifier"])
-    etl_col = next((c for c in orders_tbl.get("column_configs", []) if c["column_name"] == "etl_timestamp"), None)
-    if etl_col:
-        all_passed &= _pp("Excluded column has exclude=true", etl_col.get("exclude") is True)
-        all_passed &= _pp("Excluded column has entity_matching=false", etl_col.get("enable_entity_matching") is False)
-        all_passed &= _pp("Excluded column has format_assistance=false", etl_col.get("enable_format_assistance") is False)
+def test_parameter_default_values_are_wrapped(config):
+    params = [p for eq in _example_sqls(config) for p in eq.get("parameters", [])]
+    assert params
+    for p in params:
+        dv = p.get("default_value", {})
+        assert isinstance(dv, dict) and "values" in dv, p
 
-    # Check non-excluded column has matching=true (default)
-    region_col = next((c for c in orders_tbl.get("column_configs", []) if c["column_name"] == "region"), None)
-    if region_col:
-        all_passed &= _pp("Non-excluded column has entity_matching=true", region_col.get("enable_entity_matching") is True)
-        all_passed &= _pp("Non-excluded column has format_assistance=true", region_col.get("enable_format_assistance") is True)
 
-    # Check benchmark answer format
-    bench_qs = config.get("benchmarks", {}).get("questions", [])
-    for i, bq in enumerate(bench_qs):
+def test_excluded_column_disables_matching_and_format_assistance(config):
+    col = _orders_column(config, "etl_timestamp")
+    assert col.get("exclude") is True
+    assert col.get("enable_entity_matching") is False
+    assert col.get("enable_format_assistance") is False
+
+
+def test_non_excluded_column_keeps_matching_and_format_assistance(config):
+    col = _orders_column(config, "region")
+    assert col.get("enable_entity_matching") is True
+    assert col.get("enable_format_assistance") is True
+
+
+def test_benchmarks_have_exactly_one_sql_answer(config):
+    questions = config.get("benchmarks", {}).get("questions", [])
+    assert questions
+    for bq in questions:
         answers = bq.get("answer", [])
-        all_passed &= _pp(f"benchmark[{i}] has exactly 1 answer", len(answers) == 1)
-        if answers:
-            all_passed &= _pp(f"benchmark[{i}] answer format is SQL", answers[0].get("format") == "SQL")
-
-    # ── Validate the generated config ──
-    print()
-    print("-" * 70)
-    print("TEST 2: _validate_config on generated config")
-    print("-" * 70)
-
-    val_result = _validate_config(config=config)
-    errors = val_result.get("errors", [])
-    warnings = val_result.get("warnings", [])
-
-    all_passed &= _pp(f"Validation errors: {len(errors)}", len(errors) == 0,
-                       "; ".join(f"{e['path']}: {e['message']}" for e in errors) if errors else "")
-    _pp(f"Validation warnings: {len(warnings)}", True,
-        "; ".join(f"{w['path']}: {w['message']}" for w in warnings) if warnings else "")
-
-    # ── Clean + enforce constraints ──
-    print()
-    print("-" * 70)
-    print("TEST 3: _clean_config + _enforce_constraints pipeline")
-    print("-" * 70)
-
-    try:
-        constrained = _enforce_constraints(config)
-        cleaned = _clean_config(constrained)
-        serialized = json.dumps(cleaned)
-        all_passed &= _pp("enforce_constraints succeeded", True)
-        all_passed &= _pp("clean_config succeeded", True)
-        all_passed &= _pp(f"Serialized size: {len(serialized):,} bytes", len(serialized) < 3_500_000)
-
-        # Verify cleaned config is valid JSON
-        reparsed = json.loads(serialized)
-        all_passed &= _pp("Serialized JSON is parseable", reparsed is not None)
-
-        # Verify all arrays are still sorted after cleaning
-        tables_sorted = all(
-            reparsed["data_sources"]["tables"][i]["identifier"] <= reparsed["data_sources"]["tables"][i + 1]["identifier"]
-            for i in range(len(reparsed["data_sources"]["tables"]) - 1)
-        )
-        all_passed &= _pp("Tables sorted after cleaning", tables_sorted)
-    except Exception as e:
-        all_passed &= _pp(f"Pipeline failed: {e}", False)
-
-    # ── Validate the canonical JSON directly ──
-    print()
-    print("-" * 70)
-    print("TEST 4: _validate_config on CANONICAL reference JSON")
-    print("-" * 70)
-
-    val_canonical = _validate_config(config=CANONICAL_JSON)
-    can_errors = val_canonical.get("errors", [])
-    can_warnings = val_canonical.get("warnings", [])
-
-    all_passed &= _pp(f"Canonical validation errors: {len(can_errors)}", len(can_errors) == 0,
-                       "; ".join(f"{e['path']}: {e['message']}" for e in can_errors) if can_errors else "")
-    _pp(f"Canonical validation warnings: {len(can_warnings)}", True,
-        "; ".join(f"{w['path']}: {w['message']}" for w in can_warnings) if can_warnings else "")
-
-    # ── Clean + enforce on canonical ──
-    print()
-    print("-" * 70)
-    print("TEST 5: _clean_config + _enforce_constraints on CANONICAL JSON")
-    print("-" * 70)
-
-    try:
-        can_constrained = _enforce_constraints(CANONICAL_JSON)
-        can_cleaned = _clean_config(can_constrained)
-        can_serialized = json.dumps(can_cleaned)
-        all_passed &= _pp("Canonical enforce_constraints succeeded", True)
-        all_passed &= _pp("Canonical clean_config succeeded", True)
-        all_passed &= _pp(f"Canonical serialized size: {len(can_serialized):,} bytes", True)
-    except Exception as e:
-        all_passed &= _pp(f"Canonical pipeline failed: {e}", False)
-
-    # ── Summary ──
-    print()
-    print("=" * 70)
-    verdict = "ALL TESTS PASSED" if all_passed else "SOME TESTS FAILED"
-    print(f"RESULT: {verdict}")
-    print("=" * 70)
-
-    return all_passed
+        assert len(answers) == 1, bq
+        assert answers[0].get("format") == "SQL", bq
 
 
-if __name__ == "__main__":
-    ok = run_tests()
-    sys.exit(0 if ok else 1)
+# --- 2. _validate_config on the generated config ---
+
+def test_generated_config_validates_without_errors(config):
+    result = _validate_config(config=config)
+    assert result["errors"] == []
+    assert result["valid"] is True
+
+
+# --- 3. _enforce_constraints + _clean_config on the generated config ---
+
+def test_generated_config_survives_enforce_and_clean(config):
+    cleaned = _clean_config(_enforce_constraints(config))
+    serialized = json.dumps(cleaned)
+    assert len(serialized) < 3_500_000
+
+    reparsed = json.loads(serialized)
+    identifiers = [t["identifier"] for t in reparsed["data_sources"]["tables"]]
+    assert identifiers == sorted(identifiers)
+
+
+# --- 4./5. The canonical reference JSON ---
+
+def test_canonical_config_validates_without_errors():
+    result = _validate_config(config=copy.deepcopy(CANONICAL_JSON))
+    assert result["errors"] == []
+    assert result["valid"] is True
+
+
+def test_canonical_config_survives_enforce_and_clean():
+    cleaned = _clean_config(_enforce_constraints(copy.deepcopy(CANONICAL_JSON)))
+    assert isinstance(json.loads(json.dumps(cleaned)), dict)

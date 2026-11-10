@@ -1,6 +1,8 @@
 """End-to-end tests against the deployed Genie Workbench app.
 
-Same tests as test_e2e_local.py but targeting the deployed app URL.
+Drives the create-agent SSE chat (happy path, vague request, single table)
+against the deployed app URL. Standalone script outside pytest's testpaths, so
+./scripts/test.sh and CI never collect it.
 Uses Databricks CLI token for OBO authentication.
 
     GENIE_E2E_APP_URL=https://<app-url> GENIE_E2E_PROFILE=<profile> \\

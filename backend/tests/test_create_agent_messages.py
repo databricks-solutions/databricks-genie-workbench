@@ -1,28 +1,26 @@
-"""Test: verify message building after inspection → plan step transition.
+"""Structural invariants of CreateGenieAgent._build_messages, plus AgentSession
+regression checks.
 
-Simulates the user's exact scenario: auto-pilot, 1 table (nyctaxi trips),
-full inspection with describe_table + assess_data_quality + profile_table_usage.
-Verifies:
-  1. detect_step returns "plan" after inspection completes
-  2. Message list preserves ALL tool calls (no compaction erasure)
-  3. Messages end with a user message (Claude endpoint requirement)
-  4. No consecutive assistant messages
+Ported from the retired root scripts tests/test_compaction_400.py and
+tests/test_inspection_loop.py, which no runner collected. Every other backend
+test that reaches _build_messages replaces it with a lambda, so this is the only
+place its real output is checked.
 """
 
+import asyncio
+import dataclasses
 import json
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pytest
 
-from backend.services.create_agent_session import AgentSession
-from backend.services.create_agent import CreateGenieAgent
 from backend.prompts_create import detect_step
+from backend.services.create_agent import CreateGenieAgent
+from backend.services.create_agent_session import AgentSession, _sessions, get_session
 
 
 def build_nyctaxi_autopilot_session() -> AgentSession:
-    """Build a session matching the user's scenario: 1 nyctaxi table, auto-pilot,
-    describe_table + assess_data_quality + profile_table_usage all completed."""
+    """Auto-pilot session on one nyctaxi table, with describe_table,
+    assess_data_quality and profile_table_usage all completed."""
     session = AgentSession(session_id="test-nyctaxi")
     tc_counter = [0]
 
@@ -92,7 +90,7 @@ def build_nyctaxi_autopilot_session() -> AgentSession:
 
 
 def validate_messages(messages: list[dict]) -> list[str]:
-    """Check for Claude API message structure violations."""
+    """Return Claude API message-structure violations (empty list == valid)."""
     errors = []
 
     if not messages:
@@ -107,7 +105,7 @@ def validate_messages(messages: list[dict]) -> list[str]:
     if non_system[0]["role"] != "user":
         errors.append(f"First non-system message should be 'user', got '{non_system[0]['role']}'")
 
-    # Check for consecutive assistant messages (no user/tool in between)
+    # Consecutive assistant messages (no user/tool in between)
     prev_role = None
     prev_idx = -1
     for i, msg in enumerate(messages):
@@ -119,12 +117,12 @@ def validate_messages(messages: list[dict]) -> list[str]:
         prev_role = role
         prev_idx = i
 
-    # Check last message is user
+    # The Claude endpoint requires the last message to be from the user
     last = non_system[-1]
     if last["role"] != "user":
         errors.append(f"Last message should be 'user', got '{last['role']}'")
 
-    # Check for orphaned tool results
+    # Orphaned tool results
     tc_ids_defined = set()
     for msg in messages:
         for tc in msg.get("tool_calls", []):
@@ -136,7 +134,7 @@ def validate_messages(messages: list[dict]) -> list[str]:
             if tcid and tcid not in tc_ids_defined:
                 errors.append(f"Orphaned tool result: {tcid}")
 
-    # Check all tool_calls have results
+    # Every tool_call has a result
     tc_ids_with_results = {msg.get("tool_call_id") for msg in messages if msg["role"] == "tool"}
     for msg in messages:
         for tc in msg.get("tool_calls", []):
@@ -156,65 +154,56 @@ def find_tool_calls_in_messages(messages: list[dict], tool_name: str) -> int:
     return count
 
 
-def main():
-    agent = CreateGenieAgent()
-    session = build_nyctaxi_autopilot_session()
-
-    step = detect_step(session)
-    print(f"Step detection: {step}")
-    assert step == "plan", f"Expected 'plan', got '{step}'"
-    print("  ✓ detect_step correctly returns 'plan' after inspection")
-
-    messages = agent._build_messages(session)
-
-    print(f"\nMessage structure ({len(messages)} messages):")
-    for i, m in enumerate(messages):
-        role = m["role"]
-        has_tc = bool(m.get("tool_calls"))
-        tc_id = m.get("tool_call_id", "")
-        content_len = len(str(m.get("content", "") or ""))
-        if role == "system":
-            print(f"  [{i}] {role}: {content_len} chars")
-        elif has_tc:
-            tc_names = [tc["function"]["name"] for tc in m["tool_calls"]]
-            print(f"  [{i}] {role}: tool_calls=[{', '.join(tc_names)}], content={content_len}")
-        elif role == "tool":
-            name = m.get("name", "?")
-            print(f"  [{i}] {role}: {name} (tc_id={tc_id}), {content_len} chars")
-        else:
-            preview = str(m.get("content", ""))[:60]
-            print(f"  [{i}] {role}: {content_len} chars — {preview!r}")
-
-    # Verify inspection tool calls are PRESERVED (not compacted away)
-    desc_count = find_tool_calls_in_messages(messages, "describe_table")
-    assess_count = find_tool_calls_in_messages(messages, "assess_data_quality")
-    usage_count = find_tool_calls_in_messages(messages, "profile_table_usage")
-    print(f"\nInspection tool calls preserved in messages:")
-    print(f"  describe_table:      {desc_count}")
-    print(f"  assess_data_quality: {assess_count}")
-    print(f"  profile_table_usage: {usage_count}")
-    assert desc_count >= 1, "describe_table should be in messages!"
-    assert assess_count >= 1, "assess_data_quality should be in messages!"
-    assert usage_count >= 1, "profile_table_usage should be in messages!"
-    print("  ✓ All inspection tool calls preserved — LLM can see they already ran")
-
-    errors = validate_messages(messages)
-    print(f"\nMessage structure validation:")
-    if errors:
-        print(f"  FOUND {len(errors)} ERRORS:")
-        for e in errors:
-            print(f"    ✗ {e}")
-    else:
-        print("  ✓ Valid message structure (user-last, no consecutive assistants)")
-
-    total_chars = sum(len(json.dumps(m)) for m in messages)
-    print(f"\nTotal payload: ~{total_chars:,} chars (~{total_chars // 4:,} tokens)")
-
-    all_passed = step == "plan" and desc_count >= 1 and assess_count >= 1 and usage_count >= 1 and not errors
-    print(f"\n{'=' * 50}")
-    print(f"{'ALL CHECKS PASSED' if all_passed else 'SOME CHECKS FAILED'}")
-    return 0 if all_passed else 1
+@pytest.fixture
+def messages() -> list[dict]:
+    return CreateGenieAgent()._build_messages(build_nyctaxi_autopilot_session())
 
 
-if __name__ == "__main__":
-    exit(main())
+# --- _build_messages ---
+
+def test_fixture_session_is_past_inspection():
+    """Guards the fixture: it must represent the post-inspection state."""
+    assert detect_step(build_nyctaxi_autopilot_session()) == "profiling"
+
+
+def test_build_messages_structure_is_valid(messages):
+    assert validate_messages(messages) == []
+
+
+@pytest.mark.parametrize("tool_name", ["describe_table", "assess_data_quality", "profile_table_usage"])
+def test_build_messages_preserves_inspection_tool_calls(messages, tool_name):
+    """Completed inspection calls stay visible, so the LLM doesn't re-run them."""
+    assert find_tool_calls_in_messages(messages, tool_name) >= 1
+
+
+# --- AgentSession regressions (fixes diagnosed by test_inspection_loop.py) ---
+
+def test_continuation_count_is_a_dataclass_field():
+    """It used to be an ad-hoc `_continuation_count` attribute outside the dataclass."""
+    names = {f.name for f in dataclasses.fields(AgentSession)}
+    assert "continuation_count" in names
+    assert AgentSession(session_id="x").continuation_count == 0
+
+
+def test_session_lock_is_per_session_and_excluded_from_eq_and_repr():
+    lock_field = {f.name: f for f in dataclasses.fields(AgentSession)}["_lock"]
+    assert lock_field.compare is False
+    assert lock_field.repr is False
+
+    a = AgentSession(session_id="x")
+    b = AgentSession(session_id="y")
+    assert isinstance(a._lock, asyncio.Lock)
+    assert a._lock is not b._lock
+    assert "_lock" not in repr(a)
+
+
+def test_get_session_shares_one_object_and_lock(monkeypatch):
+    """Concurrent requests get the same session object, so they must serialize on
+    its lock (the create router takes `async with session._lock`)."""
+    session = AgentSession(session_id="test-shared-lock")
+    monkeypatch.setitem(_sessions, session.session_id, session)
+
+    s1 = get_session(session.session_id)
+    s2 = get_session(session.session_id)
+    assert s1 is s2
+    assert s1._lock is s2._lock

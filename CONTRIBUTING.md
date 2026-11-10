@@ -54,7 +54,7 @@ Please include:
 
 2. Install dependencies:
    ```bash
-   uv sync --frozen
+   uv sync --frozen --extra dev --all-packages   # from the repo root
    cd frontend && npm ci
    ```
 
@@ -69,9 +69,10 @@ See the [README](README.md) for full architecture and environment variable refer
 
 1. Create a `feature/<issue-#>-short-desc` branch from `main`.
 2. Make changes with clear, descriptive commits.
-3. Run the test suite:
+3. Run the test suites (CI runs both):
    ```bash
    ./scripts/test.sh
+   cd frontend && npm test
    ```
 4. Deploy and test against a real Databricks workspace:
    ```bash
