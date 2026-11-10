@@ -1,7 +1,7 @@
-const DOCS_BASE = "https://databricks-solutions.github.io/databricks-genie-workbench/docs/getting-started/deployment-guide/"
+const DOCS_BASE = "https://databricks-solutions.github.io/databricks-genie-workbench/docs/getting-started/"
 
-export const DOCS_RELEASE_CHECK_URL = `${DOCS_BASE}#release-update-check`
-export const DOCS_UPGRADE_URL = `${DOCS_BASE}#upgrading-an-existing-install`
+export const DOCS_RELEASE_CHECK_URL = `${DOCS_BASE}deployment-guide/#release-update-check`
+export const DOCS_UPGRADE_URL = `${DOCS_BASE}upgrading/`
 
 export const COPY = {
   consentText:
