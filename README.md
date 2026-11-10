@@ -101,6 +101,7 @@ Start with the [Introduction](docs/docs/getting-started/introduction.md); the ca
 Common references:
 
 - [Deployment Guide](docs/docs/getting-started/deployment-guide.md): notebook and local installer flows, Lakebase setup, updates, teardown
+- [Upgrading](docs/docs/getting-started/upgrading.md): find your version, upgrade steps, what changes between versions, troubleshooting
 - [Architecture Overview](docs/docs/getting-started/architecture-overview.md): backend, frontend, persistence, deployment design
 - [Authentication & Permissions](docs/docs/platform/authentication.md): OBO vs service principal behavior and required grants
 - [Auto-Optimize](docs/docs/features/auto-optimize.md): GSO optimization pipeline

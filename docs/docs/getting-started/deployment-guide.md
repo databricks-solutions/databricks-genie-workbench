@@ -185,6 +185,8 @@ The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv 
 
 Admin -> Settings shows the installed version, commit, and deploy date, so you can confirm the upgrade landed.
 
+For how to find your version on older installs, what changes between versions, and upgrade troubleshooting, see [Upgrading](./upgrading.md).
+
 ## Release update check
 
 Genie Workbench can tell you when a newer release is available. The check lives on the **Admin** tab, which every user can open.
