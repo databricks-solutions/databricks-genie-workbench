@@ -8,6 +8,7 @@ import { describeScanError } from "@/lib/space-access"
 import { MATURITY_COLORS, getAccuracyBadgeClass } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 import { WelcomeHero } from "@/components/WelcomeHero"
+import { GenieCodeSetupBanner } from "@/components/GenieCodeSetupBanner"
 
 interface SpaceListProps {
   onSelectSpace: (spaceId: string, displayName: string, spaceUrl?: string) => void
@@ -97,6 +98,8 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
     <div className="space-y-6">
       {/* Hero */}
       <WelcomeHero spaces={spaces} loading={loading} onCreateSpace={onCreateSpace} />
+
+      <GenieCodeSetupBanner compact />
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">

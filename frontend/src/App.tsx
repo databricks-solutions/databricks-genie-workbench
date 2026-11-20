@@ -14,6 +14,7 @@ import { HowItWorks } from "@/pages/HowItWorks"
 import { AdminNavDot } from "@/components/update-check/AdminNavDot"
 import { UpdateStatusProvider } from "@/components/update-check/UpdateStatusProvider"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
+import { GenieCodeSetupBanner } from "@/components/GenieCodeSetupBanner"
 import { SpaceDetailLoadError } from "@/components/space-access/SpaceAccessChrome"
 import { ApiError, getSpaceDetail } from "@/lib/api"
 import {
@@ -269,6 +270,9 @@ function WorkbenchApp() {
             <p className="text-muted text-sm mt-1">
               AI-guided creation with live progress tracking — describe what you need and fill in details as you go
             </p>
+          </div>
+          <div className="mb-4">
+            <GenieCodeSetupBanner />
           </div>
           <CreateAgentChat onCreated={handleCreated} />
         </div>
