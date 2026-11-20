@@ -12,6 +12,7 @@ import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { HowItWorks } from "@/pages/HowItWorks"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
+import { GenieCodeSetupBanner } from "@/components/GenieCodeSetupBanner"
 import { getSpaceDetail } from "@/lib/api"
 import {
   LIST_ROUTE,
@@ -264,6 +265,7 @@ export default function App() {
               AI-guided creation with live progress tracking — describe what you need and fill in details as you go
             </p>
           </div>
+          <GenieCodeSetupBanner />
           <CreateAgentChat onCreated={handleCreated} />
         </div>
       </main>
