@@ -53,10 +53,10 @@ export function GenieCodeSetupBannerView({ workspaceHost, compact = false }: Gen
         </p>
         <p className="text-sm text-muted">
           You can also create Genie Agents directly in Databricks. Open Genie Agents in your
-          workspace and click New, and Genie Code helps you set up the agent with table
-          descriptions and example queries. If you are not sure which tables to use, describe
-          your business questions and Genie Code finds the data for you. After you create the
-          agent, come back here to score and optimize it.
+          workspace, click New, and describe what the agent should do, or select your tables and
+          choose Create with guided setup. Genie Code then walks you through the agent details,
+          relevant data, business context, and initial benchmarks. After you create the agent,
+          come back here to score and optimize it.
         </p>
         <div className="flex flex-wrap items-center gap-4 pt-1">
           <a
