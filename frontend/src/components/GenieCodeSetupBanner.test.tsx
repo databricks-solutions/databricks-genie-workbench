@@ -33,3 +33,17 @@ describe('GenieCodeSetupBannerView', () => {
     expect(html.match(/rel="noopener noreferrer"/g)).toHaveLength(2)
   })
 })
+
+describe('GenieCodeSetupBannerView compact (home page)', () => {
+  const html = renderToStaticMarkup(
+    <GenieCodeSetupBannerView workspaceHost="https://example.cloud.databricks.com" compact />,
+  )
+
+  it('shows the one-line Genie Code tip with both links', () => {
+    expect(html).toContain('Set up Genie Agents with Genie Code.')
+    expect(html).not.toMatch(/deprecat/i)
+    expect(html).toContain('href="https://example.cloud.databricks.com/genie/rooms"')
+    expect(html).toContain(`href="${GENIE_AGENTS_SETUP_DOCS_URL}"`)
+    expect(html.match(/target="_blank"/g)).toHaveLength(2)
+  })
+})

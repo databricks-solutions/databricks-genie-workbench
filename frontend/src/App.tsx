@@ -265,7 +265,9 @@ export default function App() {
               AI-guided creation with live progress tracking — describe what you need and fill in details as you go
             </p>
           </div>
-          <GenieCodeSetupBanner />
+          <div className="mb-4">
+            <GenieCodeSetupBanner />
+          </div>
           <CreateAgentChat onCreated={handleCreated} />
         </div>
       </main>
